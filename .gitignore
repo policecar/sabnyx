@@ -1,0 +1,36 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ty_cache/
+
+# Envs
+.venv/
+venv/
+
+# uv
+.python-version
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Obsidian (if the user ever opens the vault in Obsidian)
+.obsidian/
+
+# Temporary / scratch — never commit
+vault/_review/scratch/
+*.tmp
+*.swp
+
+# Secrets (none yet, but reserved)
+.env
+.env.local
+secrets/
