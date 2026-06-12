@@ -13,6 +13,7 @@ from .commands.new import new_cmd
 from .commands.promote import promote_cmd
 from .commands.reweave import reweave_cmd
 from .commands.scan import scan_cmd
+from .commands.serve import serve_cmd
 from .commands.triage import triage_cmd
 
 
@@ -31,6 +32,7 @@ main.add_command(promote_cmd)
 main.add_command(reweave_cmd)
 main.add_command(scan_cmd)
 main.add_command(health_cmd)
+main.add_command(serve_cmd)
 
 
 if __name__ == "__main__":

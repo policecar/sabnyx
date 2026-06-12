@@ -36,6 +36,7 @@ extend to a small circle, and eventually a public/agent-facing surface.
 
     adapters/           interface normalizers (NormalizedEnvelope)
       cli.py            first interface: shell
+      telegram.py       second interface: chat (long-poll)
 
     docs/
       recon/            reuse assessments of Joi's open-source repos
@@ -55,6 +56,24 @@ extend to a small circle, and eventually a public/agent-facing surface.
     uv run sabnyx ask "what do I know about x?"       # LLM: grounded answer
     uv run sabnyx scan                               # LLM: cross-atlas contradictions
     uv run sabnyx health                              # gates 5/6/7: currency, cost, drift
+    uv run sabnyx serve                              # Telegram interface (long-poll)
+
+## Telegram interface
+
+`serve` drives the vault from Telegram — the second NormalizedEnvelope
+source after the CLI. Trusted-sender model (only allowlisted user IDs are
+honored; their captures auto-apply into intake/, still triaged before
+atlas). See docs/decisions/0007.
+
+    export SABNYX_TELEGRAM_TOKEN=...        # from @BotFather
+    export SABNYX_TELEGRAM_ALLOW=123456789  # your numeric Telegram user id(s)
+    uv run sabnyx serve                      # long-poll; --once to drain and exit
+
+    Messages route by shape (no LLM needed to decide):
+      /ask <q>  | text ending in '?'    -> ask, replies with a grounded answer
+      /status | /health                  -> queue / atlas / observations pulse
+      a bare https:// URL                -> ingest the URL
+      /remember <text> | any other text  -> capture the text into intake/
 
 ## LLM configuration
 

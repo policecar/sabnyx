@@ -24,6 +24,8 @@ This file is stable. Change it deliberately.
     operator (you)   anywhere                                   anywhere
     intake-agent     vault/intake/, vault/sources/,
                      ops/events.jsonl, ops/knowledge-log.md     everything
+    telegram-agent   (same as intake-agent; trusted senders only,
+                     auto-applies to intake/ — see ADR 0007)        everything
     triage-agent     vault/_review/, vault/intake/ (frontmatter only),
                      ops/events.jsonl                           everything
     promote-agent    vault/atlas/, vault/intake/ (delete source),

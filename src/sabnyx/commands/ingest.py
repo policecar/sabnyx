@@ -9,6 +9,9 @@ The first LLM-in-the-loop command (plan §Phase 2). One pass:
   5. human approval gate (unless --yes), then apply through the
      validated writers, ledger every mutation, append knowledge-log
 
+Orchestration lives in services.py so the chat interface shares one write
+path. This command owns input acquisition, the approval gate, and output.
+
 Containment: ingest writes to intake/ and sources/ only — never atlas/.
 Promotion stays a separate, deliberate act (triage/promote), exactly the
 defense-in-depth the jibot pipeline prescribes.
@@ -22,44 +25,10 @@ from pathlib import Path
 import click
 from rich.console import Console
 
-from .. import context, ledger, llm, sources, writers
-from ..paths import ATLAS, INTAKE, ROOT, ensure_tree
-from ..schemas import IngestChangeset
+from .. import llm, services, sources
+from ..paths import ROOT, ensure_tree
+from ..services import ACTOR_INGEST as ACTOR
 from ..util import slugify
-
-ACTOR = "sabnyx-ingest"
-
-_DEPTH_GUIDANCE = {
-    "shallow": "This is a short source. Extract concisely: usually one intake file "
-    "with a tight summary. Do not pad.",
-    "standard": "Standard-length source. Extract the core claims and anything the "
-    "operator would want to find again.",
-    "standard-plus": "Dense source. Extract thoroughly: distinct concepts may warrant "
-    "separate intake files.",
-    "deep": "Long-form source (paper/book-length). Extract section by section: key "
-    "points, argument structure, and distinct concepts as separate intake files.",
-}
-
-_TASK_SYSTEM = """You are the intake agent for this vault. Given one raw source and an
-index of what the vault already contains, produce an IngestChangeset.
-
-Rules, in addition to the SPEC and ROUTING contract above:
-
-- Propose intake files only. You never write to atlas/; promotion is a separate
-  human-gated step. This is a containment boundary, not a suggestion.
-- The `description` field is the most load-bearing field in the vault: 30-200
-  chars, distinct from the title, answering "what is this and why would I
-  search for it?". Dense, specific, no marketing language.
-- Check the atlas index before proposing anything. If the source's content is
-  already covered by an existing atlas entry, do NOT duplicate it — propose an
-  observation (category: connection) naming the existing file instead.
-- If the source contradicts a claim suggested by an existing description,
-  propose an observation (category: contradiction) naming the file.
-- If the source references an entity the vault clearly lacks, you may note a
-  gap observation. Be conservative: observations are cheap but not free.
-- Bodies are plain markdown, no frontmatter, no leading H1 (the writer adds
-  the title). Terse but not curt; specific over abstract.
-- Titles become kebab-case slugs; keep them phrase-like, atemporal, no dates."""
 
 
 @click.command("ingest")
@@ -114,7 +83,7 @@ def ingest_cmd(
         console.print("[red]source is empty[/red]")
         sys.exit(1)
 
-    # -- 2. capture raw + classify depth -----------------------------------------
+    # -- 2. capture raw -------------------------------------------------------------
     if not dry_run:
         try:
             src_path = sources.capture(text=text, slug=src_title, actor=ACTOR, source_url=url)
@@ -125,45 +94,22 @@ def ingest_cmd(
     else:
         src_rel = f"vault/sources/{slugify(src_title)}.md (dry run, not written)"
 
-    depth = sources.classify_depth(text, source_url=url)
-    chosen_role = role or llm.role_for_depth(depth)
+    # -- 3 + 4. propose (classify, assemble, extract) -------------------------------
+    proposal = services.build_ingest_proposal(
+        text=text,
+        title=src_title,
+        source_kind=src_kind,
+        source_url=url,
+        src_rel=src_rel,
+        role_override=role,
+        actor=ACTOR,
+    )
     console.print(
         f"captured [bold]{src_rel}[/bold]  "
-        f"(depth: {depth}, role: {chosen_role}, model: {llm.model_for(chosen_role)})"
+        f"(depth: {proposal.depth}, role: {proposal.role}, model: {llm.model_for(proposal.role)})"  # type: ignore[arg-type]
     )
 
-    # -- 3 + 4. context assembly and the LLM pass ---------------------------------
-    user = (
-        f"{context.description_index(ATLAS, 'Atlas index (durable knowledge already in the vault)')}\n\n"
-        f"{context.description_index(INTAKE, 'Intake queue (already captured, awaiting triage)')}\n\n"
-        f"## Extraction depth\n{_DEPTH_GUIDANCE[depth]}\n\n"
-        f"## Source ({src_kind}" + (f", {url}" if url else "") + f": {src_title})\n\n{text}"
-    )
-
-    changeset = llm.parse_structured(
-        task_system=_TASK_SYSTEM,
-        user=user,
-        output_format=IngestChangeset,
-        role=chosen_role,  # type: ignore[arg-type]
-        actor=ACTOR,
-        purpose=f"ingest:{slugify(src_title)}",
-    )
-
-    ledger.append_event(
-        plane="intent",
-        kind="ingest.proposed",
-        actor=ACTOR,
-        subject=src_rel,
-        payload={
-            "summary": changeset.summary,
-            "intake_count": len(changeset.intake_files),
-            "observation_count": len(changeset.observations),
-            "depth": depth,
-            "role": chosen_role,
-        },
-    )
-
-    # -- 5. approval gate ----------------------------------------------------------
+    changeset = proposal.changeset
     console.print(f"\n[bold]Proposed:[/bold] {changeset.summary}\n")
     for pi in changeset.intake_files:
         console.print(f"  [green]+ intake[/green] {slugify(pi.title)}.md ({pi.type})")
@@ -173,6 +119,7 @@ def ingest_cmd(
     if not changeset.intake_files and not changeset.observations:
         console.print("  [dim]nothing to write — source already covered or empty[/dim]")
 
+    # -- 5. approval gate ----------------------------------------------------------
     if dry_run:
         console.print("\n[dim]dry run: nothing written[/dim]")
         return
@@ -183,36 +130,14 @@ def ingest_cmd(
         return
 
     # -- 6. apply through the validated writers --------------------------------------
-    written: list[str] = []
-
-    for pi in changeset.intake_files:
-        rel = writers.write_intake(
-            pi,
-            actor=ACTOR,
-            source=src_kind,
-            source_url=url,
-            trailer=f"<!-- source-id:sabnyx-sources:{Path(src_rel).name} -->",
-            console=console,
-        )
-        if rel:
-            written.append(rel)
-
-    for ob in changeset.observations:
-        rel = writers.write_observation(ob, actor=ACTOR, console=console)
-        if rel:
-            written.append(rel)
-
-    # -- gate 3: provenance log -------------------------------------------------------
-    writers.append_knowledge_log(
-        "ingest",
-        src_title,
-        {"source": src_rel, "url": url, "depth": depth, "files": ", ".join(written) or "none"},
-    )
-    ledger.append_event(
-        kind="ingest.applied",
+    written = services.apply_ingest(
+        proposal,
+        title=src_title,
+        source_kind=src_kind,
+        source_url=url,
+        src_rel=src_rel,
+        console=console,
         actor=ACTOR,
-        subject=src_rel,
-        payload={"written": written, "skipped_or_failed": False},
     )
     console.print(
         f"\n[green]ingest complete[/green] ({len(written)} file(s)). "

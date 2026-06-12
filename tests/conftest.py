@@ -20,6 +20,7 @@ def tmp_vault(tmp_path, monkeypatch):
     from sabnyx.commands import health as health_mod
     from sabnyx.commands import ingest as ingest_mod
     from sabnyx.commands import scan as scan_mod
+    from sabnyx.commands import serve as serve_mod
 
     root = tmp_path
     vault = root / "vault"
@@ -36,7 +37,7 @@ def tmp_vault(tmp_path, monkeypatch):
         "EVENTS_JSONL": root / "ops" / "events.jsonl",
         "KNOWLEDGE_LOG": root / "ops" / "knowledge-log.md",
     }
-    for mod in (paths_mod, sources, ingest_mod, health_mod, ledger):
+    for mod in (paths_mod, sources, ingest_mod, health_mod, serve_mod, ledger):
         for name, value in mapping.items():
             if hasattr(mod, name):
                 monkeypatch.setattr(mod, name, value)
@@ -56,5 +57,6 @@ def tmp_vault(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest_mod, "ensure_tree", _ensure)
     monkeypatch.setattr(ask_mod, "ensure_tree", _ensure)
     monkeypatch.setattr(scan_mod, "ensure_tree", _ensure)
+    monkeypatch.setattr(serve_mod, "ensure_tree", _ensure)
     _ensure()
     return mapping
