@@ -22,8 +22,8 @@ from pathlib import Path
 import click
 from rich.console import Console
 
-from .. import fm, ledger, llm, sources, writers
-from ..paths import ATLAS, INTAKE, KNOWLEDGE_LOG, OBSERVATIONS, ROOT, ensure_tree
+from .. import context, ledger, llm, sources, writers
+from ..paths import ATLAS, INTAKE, ROOT, ensure_tree
 from ..schemas import IngestChangeset
 from ..util import slugify
 
@@ -60,36 +60,6 @@ Rules, in addition to the SPEC and ROUTING contract above:
 - Bodies are plain markdown, no frontmatter, no leading H1 (the writer adds
   the title). Terse but not curt; specific over abstract.
 - Titles become kebab-case slugs; keep them phrase-like, atemporal, no dates."""
-
-
-def _index(dir_: Path, label: str) -> str:
-    """Slug + description index of a vault directory, for filter-before-read."""
-    lines: list[str] = []
-    for p in sorted(dir_.rglob("*.md")):
-        if OBSERVATIONS in p.parents:
-            continue
-        try:
-            meta, _body, _kind = fm.load(p)
-        except Exception:
-            continue
-        tags = ", ".join(meta.get("tags", []))
-        lines.append(f"- {p.stem}: {meta.get('description', '')}" + (f" [{tags}]" if tags else ""))
-    return f"## {label}\n" + ("\n".join(lines) if lines else "(empty)")
-
-
-def _append_knowledge_log(operation: str, title: str, fields: dict[str, str | None]) -> None:
-    """Gate 3 (materia): grep-able provenance line, jibot's log contract.
-    `grep "^# \\[" knowledge-log.md | grep ingest` finds ingestions."""
-    KNOWLEDGE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    if not KNOWLEDGE_LOG.exists():
-        KNOWLEDGE_LOG.write_text(
-            "# Knowledge log\n\nAppend-only provenance trail.\n\n", encoding="utf-8"
-        )
-    with KNOWLEDGE_LOG.open("a", encoding="utf-8") as f:
-        f.write(f"# [{ledger.now().isoformat()}] {operation} | {title}\n")
-        for k, v in fields.items():
-            if v:
-                f.write(f"  {k}: {v}\n")
 
 
 @click.command("ingest")
@@ -164,8 +134,8 @@ def ingest_cmd(
 
     # -- 3 + 4. context assembly and the LLM pass ---------------------------------
     user = (
-        f"{_index(ATLAS, 'Atlas index (durable knowledge already in the vault)')}\n\n"
-        f"{_index(INTAKE, 'Intake queue (already captured, awaiting triage)')}\n\n"
+        f"{context.description_index(ATLAS, 'Atlas index (durable knowledge already in the vault)')}\n\n"
+        f"{context.description_index(INTAKE, 'Intake queue (already captured, awaiting triage)')}\n\n"
         f"## Extraction depth\n{_DEPTH_GUIDANCE[depth]}\n\n"
         f"## Source ({src_kind}" + (f", {url}" if url else "") + f": {src_title})\n\n{text}"
     )
@@ -216,39 +186,16 @@ def ingest_cmd(
     written: list[str] = []
 
     for pi in changeset.intake_files:
-        slug = slugify(pi.title)
-        path = INTAKE / f"{slug}.md"
-        if path.exists():
-            console.print(f"  [yellow]skip (exists)[/yellow] {path.relative_to(ROOT)}")
-            continue
-        meta: dict = {
-            "type": pi.type,
-            "description": pi.description,
-            "source": src_kind,
-            "tags": pi.tags,
-            "status": "draft",
-            "created": ledger.now().isoformat(),
-            "source_agent": ACTOR,
-        }
-        if url:
-            meta["source_url"] = url
-        body = f"# {pi.title}\n\n{pi.body.strip()}\n\n<!-- source-id:sabnyx-sources:{Path(src_rel).name} -->\n"
-        fm.write(path, meta, body)
-        try:
-            fm.load(path)  # belt + suspenders, same as `new`
-        except fm.FrontmatterError as e:
-            console.print(f"  [red]invalid, rolled back:[/red] {e}")
-            path.unlink()
-            continue
-        rel = str(path.relative_to(ROOT))
-        written.append(rel)
-        ledger.append_event(
-            kind="intake.created",
+        rel = writers.write_intake(
+            pi,
             actor=ACTOR,
-            subject=rel,
-            payload={"type": pi.type, "description": pi.description, "slug": slug},
+            source=src_kind,
+            source_url=url,
+            trailer=f"<!-- source-id:sabnyx-sources:{Path(src_rel).name} -->",
+            console=console,
         )
-        console.print(f"  [green]wrote[/green] {rel}")
+        if rel:
+            written.append(rel)
 
     for ob in changeset.observations:
         rel = writers.write_observation(ob, actor=ACTOR, console=console)
@@ -256,7 +203,7 @@ def ingest_cmd(
             written.append(rel)
 
     # -- gate 3: provenance log -------------------------------------------------------
-    _append_knowledge_log(
+    writers.append_knowledge_log(
         "ingest",
         src_title,
         {"source": src_rel, "url": url, "depth": depth, "files": ", ".join(written) or "none"},
