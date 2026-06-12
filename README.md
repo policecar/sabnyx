@@ -25,6 +25,7 @@ extend to a small circle, and eventually a public/agent-facing surface.
         references/     external resources: papers, bookmarks, tools
         ideas/          things I might want to do
       domains/          graduated areas with their own schema (empty for now)
+      sources/          raw immutable artifacts (write-once, no schema)
       _review/          operational, never knowledge
 
     ops/
@@ -45,10 +46,33 @@ extend to a small circle, and eventually a public/agent-facing surface.
 
     uv sync                                           # install deps once
     uv run sabnyx new --type thought                  # create an intake file
+    uv run sabnyx ingest --url https://...            # LLM: source -> intake/
+    uv run sabnyx ingest paper.md                     # same, from a local file
     uv run sabnyx lint                                # gates 1, 2, 4
     uv run sabnyx triage                              # review intake queue
     uv run sabnyx promote vault/intake/<file>.md      # -> atlas
     uv run sabnyx health                              # orphans, links, drift
+
+## LLM configuration
+
+`ingest` (and future LLM commands) talk to a model through one boundary
+(`src/sabnyx/llm.py`). Models are addressed by role; providers are
+switchable by env var — see docs/decisions/0006.
+
+    # default: Anthropic API (needs ANTHROPIC_API_KEY)
+    uv run sabnyx ingest --url https://...
+
+    # any model via OpenRouter (needs OPENROUTER_API_KEY)
+    export SABNYX_LLM_PROVIDER=openrouter
+    export SABNYX_MODEL_DEEP=anthropic/claude-opus-4.8   # or any slug
+
+    # any OpenAI-compatible endpoint (ollama, vllm, ...)
+    export SABNYX_LLM_PROVIDER=openai-compatible
+    export SABNYX_LLM_BASE_URL=http://localhost:11434/v1
+    export SABNYX_MODEL_FAST=llama3.1 SABNYX_MODEL_STANDARD=... SABNYX_MODEL_DEEP=...
+
+    Roles: fast / standard / deep. Override any role on any provider
+    with SABNYX_MODEL_<ROLE>.
 
 ## Status
 

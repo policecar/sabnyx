@@ -28,6 +28,7 @@ ATLAS_REFERENCES: Path = ATLAS / "references"
 ATLAS_IDEAS: Path = ATLAS / "ideas"
 DOMAINS: Path = VAULT / "domains"
 REVIEW: Path = VAULT / "_review"
+SOURCES: Path = VAULT / "sources"  # raw immutable artifacts; no frontmatter schema
 
 OPS: Path = ROOT / "ops"
 EVENTS_JSONL: Path = OPS / "events.jsonl"
@@ -51,11 +52,12 @@ def ensure_tree() -> None:
         ATLAS_IDEAS,
         DOMAINS,
         REVIEW,
+        SOURCES,
         OPS,
     ]:
         p.mkdir(parents=True, exist_ok=True)
     # keep empty dirs in git
-    for p in [DOMAINS, REVIEW, OBSERVATIONS, ATLAS_IDEAS, ATLAS_REFERENCES]:
+    for p in [DOMAINS, REVIEW, SOURCES, OBSERVATIONS, ATLAS_IDEAS, ATLAS_REFERENCES]:
         gk = p / ".gitkeep"
         if not gk.exists():
             gk.write_text("")
