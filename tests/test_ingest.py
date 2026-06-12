@@ -68,47 +68,6 @@ def test_classify_depth():
     assert sources.classify_depth("abstract", source_url="https://arxiv.org/abs/1") == "deep"
 
 
-@pytest.fixture
-def tmp_vault(tmp_path, monkeypatch):
-    """Redirect every path constant the ingest flow touches into tmp_path."""
-    from sabnyx import paths as paths_mod
-    from sabnyx.commands import ingest as ingest_mod
-
-    root = tmp_path
-    vault = root / "vault"
-    mapping = {
-        "ROOT": root,
-        "VAULT": vault,
-        "INTAKE": vault / "intake",
-        "OBSERVATIONS": vault / "intake" / ".observations",
-        "ATLAS": vault / "atlas",
-        "SOURCES": vault / "sources",
-        "OPS": root / "ops",
-        "EVENTS_JSONL": root / "ops" / "events.jsonl",
-        "KNOWLEDGE_LOG": root / "ops" / "knowledge-log.md",
-    }
-    for mod in (paths_mod, sources, ingest_mod, ledger):
-        for name, value in mapping.items():
-            if hasattr(mod, name):
-                monkeypatch.setattr(mod, name, value)
-
-    # ensure_tree is imported into modules by name; patch a tmp-aware version
-    def _ensure():
-        for p in [
-            mapping["INTAKE"],
-            mapping["OBSERVATIONS"],
-            mapping["ATLAS"],
-            mapping["SOURCES"],
-            mapping["OPS"],
-        ]:
-            p.mkdir(parents=True, exist_ok=True)
-
-    monkeypatch.setattr(sources, "ensure_tree", _ensure)
-    monkeypatch.setattr(ingest_mod, "ensure_tree", _ensure)
-    _ensure()
-    return mapping
-
-
 def test_capture_is_write_once(tmp_vault):
     p = sources.capture(text="hello world", slug="My Source", actor="pytest")
     assert p.name == "my-source.md"

@@ -135,6 +135,37 @@ class IngestChangeset(BaseModel):
     observations: list[ProposedObservation] = Field(default_factory=list)
 
 
+# -- reweave changeset (LLM boundary) -------------------------------------------
+
+LinkPriority = Literal["bridge", "enrichment", "correction", "low"]
+
+
+class RelatedAddition(BaseModel):
+    """Links to add to one atlas file's `sabnyx:related` marker block.
+
+    `file` may be the reweave target itself (outbound links) or any other
+    atlas file (backward links). Marker blocks only; prose is never touched.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    file: str  # slug of the atlas file whose Related block gains links
+    add_links: list[str]  # slugs to add as [[wikilinks]]
+    reason: str
+    priority: LinkPriority = "enrichment"
+
+
+class ReweaveChangeset(BaseModel):
+    """Everything one reweave pass wants to do: marker-block link
+    additions plus observations (contradictions, gaps, connections)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    related_additions: list[RelatedAddition] = Field(default_factory=list)
+    observations: list[ProposedObservation] = Field(default_factory=list)
+
+
 # -- normalized envelope (adapters) --------------------------------------------
 
 EnvelopeSource = Literal["cli", "telegram", "email", "web", "slack", "other"]
