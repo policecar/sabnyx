@@ -135,6 +135,23 @@ class IngestChangeset(BaseModel):
     observations: list[ProposedObservation] = Field(default_factory=list)
 
 
+# -- contradiction scan (LLM boundary) ------------------------------------------
+
+
+class ContradictionScan(BaseModel):
+    """Cross-atlas contradiction findings (Gate 5, semantic half).
+
+    Each finding is an observation with category contradiction: two atlas
+    files making conflicting claims, both named in `involves`, with a
+    suggested resolution in the body. jibot's stale-claim detector.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    findings: list[ProposedObservation] = Field(default_factory=list)
+
+
 # -- ask answer (LLM boundary) ----------------------------------------------------
 
 
