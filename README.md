@@ -75,6 +75,21 @@ atlas). See docs/decisions/0007.
       a bare https:// URL                -> ingest the URL
       /remember <text> | any other text  -> capture the text into intake/
 
+## Verify the live path
+
+Everything LLM-side is unit-tested against a faked model. Before first
+real use, confirm the wiring against the actual API in one command:
+
+    export ANTHROPIC_API_KEY=...        # or set up OpenRouter (below)
+    uv run sabnyx verify                 # one cheap structured call, fast role
+    uv run sabnyx verify --all-roles     # exercise fast + standard + deep
+
+It writes nothing to the vault; token usage lands on the ledger
+(`llm.completed`). Then a side-effect-free smoke test of the real
+pipeline:
+
+    uv run sabnyx ingest <some-file>.md --dry-run
+
 ## LLM configuration
 
 `ingest` (and future LLM commands) talk to a model through one boundary

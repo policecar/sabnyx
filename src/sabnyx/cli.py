@@ -15,6 +15,7 @@ from .commands.reweave import reweave_cmd
 from .commands.scan import scan_cmd
 from .commands.serve import serve_cmd
 from .commands.triage import triage_cmd
+from .commands.verify import verify_cmd
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -33,6 +34,7 @@ main.add_command(reweave_cmd)
 main.add_command(scan_cmd)
 main.add_command(health_cmd)
 main.add_command(serve_cmd)
+main.add_command(verify_cmd)
 
 
 if __name__ == "__main__":
