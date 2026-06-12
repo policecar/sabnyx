@@ -91,6 +91,50 @@ class LedgerEvent(BaseModel):
     content_hash: str  # "sha256:<hex>" of canonical payload
 
 
+# -- ingest changeset (LLM boundary) -------------------------------------------
+
+ExtractionDepth = Literal["shallow", "standard", "standard-plus", "deep"]
+ModelRole = Literal["fast", "standard", "deep"]
+
+
+class ProposedIntake(BaseModel):
+    """One intake file proposed by the ingest pass.
+
+    The model proposes; deterministic code slugifies, writes, validates,
+    and rolls back. Containment: ingest writes to intake/ only, never atlas/.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["bookmark", "paper", "note", "thought"]
+    title: str
+    description: str = Field(min_length=30, max_length=200)
+    tags: list[str] = Field(default_factory=list)
+    body: str  # markdown body, no frontmatter, no H1 (added by the writer)
+
+
+class ProposedObservation(BaseModel):
+    """One observation proposed by the ingest pass (gap, contradiction, ...)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: ObservationCategory
+    title: str
+    body: str
+    involves: list[str] = Field(default_factory=list)
+
+
+class IngestChangeset(BaseModel):
+    """Everything one ingest pass wants to write. Applied atomically-ish
+    by deterministic code behind a human approval gate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str  # one paragraph: what the source is, what was extracted, why
+    intake_files: list[ProposedIntake] = Field(default_factory=list)
+    observations: list[ProposedObservation] = Field(default_factory=list)
+
+
 # -- normalized envelope (adapters) --------------------------------------------
 
 EnvelopeSource = Literal["cli", "telegram", "email", "web", "slack", "other"]

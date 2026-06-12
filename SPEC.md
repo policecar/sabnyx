@@ -110,6 +110,8 @@ are the index. This is why Gate 1 exists.
     temporal (intake)    MUST NOT contain promoted authoritative content
     durable (atlas)      MUST NOT contain meeting notes, drafts, or session state
     operational (_review) MUST NOT be treated as knowledge
+    raw (sources)        MUST NOT be treated as knowledge; write-once,
+                         no frontmatter schema, excluded from lint (ADR 0005)
     private              out of scope at stage 0 (solo user)
 
 Small boundary violations compound silently until the system is too

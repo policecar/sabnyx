@@ -24,12 +24,17 @@ def slugify(text: str, max_len: int = 80) -> str:
 
 
 def walk_vault_md(root: Path) -> list[Path]:
-    """Yield all .md files under root, skipping .git and _review/ (operational)."""
+    """Yield all .md files under root, skipping .git, _review/ (operational),
+    and sources/ (raw immutable artifacts; no frontmatter schema applies)."""
+    from .paths import SOURCES
+
     results: list[Path] = []
     for p in root.rglob("*.md"):
         if any(part.startswith(".git") for part in p.parts):
             continue
         if "_review" in p.parts:
+            continue
+        if SOURCES in p.parents:
             continue
         results.append(p)
     return sorted(results)

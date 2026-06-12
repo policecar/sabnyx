@@ -22,7 +22,8 @@ This file is stable. Change it deliberately.
     Role             May write to                              May read
     -------------------------------------------------------------------
     operator (you)   anywhere                                   anywhere
-    intake-agent     vault/intake/, ops/events.jsonl            everything
+    intake-agent     vault/intake/, vault/sources/,
+                     ops/events.jsonl, ops/knowledge-log.md     everything
     triage-agent     vault/_review/, vault/intake/ (frontmatter only),
                      ops/events.jsonl                           everything
     promote-agent    vault/atlas/, vault/intake/ (delete source),
