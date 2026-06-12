@@ -46,3 +46,38 @@ WIKILINK_RE = re.compile(r"\[\[([^\[\]|#]+)(?:\|[^\]]+)?(?:#[^\]]+)?\]\]")
 def extract_wikilinks(body: str) -> list[str]:
     """Return raw wikilink targets (unresolved). E.g. '[[foo-bar]]' -> ['foo-bar']."""
     return [m.group(1).strip() for m in WIKILINK_RE.finditer(body)]
+
+
+# -- marker blocks (SPEC §8: non-destructive agent edits) -------------------------
+
+
+def _markers(name: str) -> tuple[str, str]:
+    return f"<!-- BEGIN sabnyx:{name} -->", f"<!-- END sabnyx:{name} -->"
+
+
+def get_marker_block(body: str, name: str) -> str | None:
+    """Content between the paired sabnyx markers, or None if absent."""
+    begin, end = _markers(name)
+    if begin not in body or end not in body:
+        return None
+    inner = body.split(begin, 1)[1].split(end, 1)[0]
+    return inner.strip("\n")
+
+
+def set_marker_block(body: str, name: str, lines: list[str], heading: str | None = None) -> str:
+    """Replace the named marker block's content, preserving everything
+    outside it byte-for-byte. If the block is absent, append a new
+    section at the end (optionally under `heading`) — append, never
+    rewrite, per the round-trip invariant in docs/reserved-syntax.md."""
+    begin, end = _markers(name)
+    content = "\n".join(lines)
+    block = f"{begin}\n{content}\n{end}" if lines else f"{begin}\n{end}"
+
+    if begin in body and end in body:
+        pre = body.split(begin, 1)[0]
+        post = body.split(end, 1)[1]
+        return pre + block + post
+
+    sep = "" if body.endswith("\n\n") else ("\n" if body.endswith("\n") else "\n\n")
+    section = f"## {heading}\n\n{block}\n" if heading else f"{block}\n"
+    return body + sep + section

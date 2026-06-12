@@ -17,13 +17,12 @@ defense-in-depth the jibot pipeline prescribes.
 from __future__ import annotations
 
 import sys
-from datetime import date as date_cls
 from pathlib import Path
 
 import click
 from rich.console import Console
 
-from .. import fm, ledger, llm, sources
+from .. import fm, ledger, llm, sources, writers
 from ..paths import ATLAS, INTAKE, KNOWLEDGE_LOG, OBSERVATIONS, ROOT, ensure_tree
 from ..schemas import IngestChangeset
 from ..util import slugify
@@ -214,7 +213,6 @@ def ingest_cmd(
         return
 
     # -- 6. apply through the validated writers --------------------------------------
-    today = date_cls.today().isoformat()
     written: list[str] = []
 
     for pi in changeset.intake_files:
@@ -253,35 +251,9 @@ def ingest_cmd(
         console.print(f"  [green]wrote[/green] {rel}")
 
     for ob in changeset.observations:
-        slug = slugify(ob.title)
-        path = OBSERVATIONS / f"{today}-{ob.category}-{slug}.md"
-        if path.exists():
-            console.print(f"  [yellow]skip (exists)[/yellow] {path.relative_to(ROOT)}")
-            continue
-        meta = {
-            "type": "observation",
-            "category": ob.category,
-            "observed": today,
-            "source_agent": ACTOR,
-            "status": "pending",
-            "involves": ob.involves,
-        }
-        fm.write(path, meta, f"# {ob.title}\n\n{ob.body.strip()}\n")
-        try:
-            fm.load(path)
-        except fm.FrontmatterError as e:
-            console.print(f"  [red]invalid, rolled back:[/red] {e}")
-            path.unlink()
-            continue
-        rel = str(path.relative_to(ROOT))
-        written.append(rel)
-        ledger.append_event(
-            kind="observation.created",
-            actor=ACTOR,
-            subject=rel,
-            payload={"category": ob.category, "slug": slug, "involves": ob.involves},
-        )
-        console.print(f"  [yellow]wrote[/yellow] {rel}")
+        rel = writers.write_observation(ob, actor=ACTOR, console=console)
+        if rel:
+            written.append(rel)
 
     # -- gate 3: provenance log -------------------------------------------------------
     _append_knowledge_log(
