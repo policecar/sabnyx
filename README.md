@@ -53,7 +53,8 @@ extend to a small circle, and eventually a public/agent-facing surface.
     uv run sabnyx promote vault/intake/<file>.md      # -> atlas
     uv run sabnyx reweave                             # LLM: link promoted files
     uv run sabnyx ask "what do I know about x?"       # LLM: grounded answer
-    uv run sabnyx health                              # orphans, links, drift
+    uv run sabnyx scan                               # LLM: cross-atlas contradictions
+    uv run sabnyx health                              # gates 5/6/7: currency, cost, drift
 
 ## LLM configuration
 

@@ -11,8 +11,12 @@ from rich.console import Console
 from rich.table import Table
 
 from .. import fm, ledger
-from ..paths import INTAKE, OBSERVATIONS, ROOT, VAULT
+from ..paths import ATLAS, INTAKE, OBSERVATIONS, ROOT, VAULT
 from ..util import extract_wikilinks, walk_vault_md
+
+# Gate 5: jibot flags time-sensitive content whose last_verified is absent
+# or older than 180 days. references are the time-sensitive type at stage 0.
+CURRENCY_DAYS = 180
 
 
 def _slug_index() -> dict[str, Path]:
@@ -78,6 +82,32 @@ def health_cmd(quick: bool) -> None:
         if age is not None and age > 60:
             stale_intake.append((p, age))
 
+    # Gate 5 CURRENCY + Gate 3 MATERIA, over atlas files.
+    stale_atlas: list[tuple[Path, int | None]] = []  # last_verified absent or > CURRENCY_DAYS
+    untracked: list[Path] = []  # no provenance: not promoted, no source comment
+    atlas_count = 0
+    for p in ATLAS.rglob("*.md"):
+        if not p.is_file():
+            continue
+        try:
+            meta, body, kind = fm.load(p)
+        except fm.FrontmatterError:
+            continue
+        if kind != "atlas":
+            continue
+        atlas_count += 1
+
+        age = _age_days(meta.get("last_verified"))
+        if age is None or age > CURRENCY_DAYS:
+            stale_atlas.append((p, age))
+
+        if not meta.get("promoted_from") and "<!-- source-" not in body:
+            untracked.append(p)
+
+    # Gate 6 COST: intake-to-atlas ratio (raw material piling up unrefined).
+    intake_count = len(list(INTAKE.glob("*.md")))
+    cost_ratio = intake_count / atlas_count if atlas_count else float(intake_count)
+
     # Observations
     pending_obs = sum(1 for _ in OBSERVATIONS.glob("*.md"))
 
@@ -87,12 +117,16 @@ def health_cmd(quick: bool) -> None:
     table.add_column("Result", justify="right")
 
     table.add_row("files indexed", str(len(idx)))
-    table.add_row("intake queue", str(len(list(INTAKE.glob("*.md")))))
+    table.add_row("intake queue", str(intake_count))
+    table.add_row("atlas files", str(atlas_count))
+    table.add_row("intake:atlas ratio (Gate 6 cost)", f"{cost_ratio:.2f}")
     table.add_row("pending observations", str(pending_obs))
     table.add_row("broken wikilinks", str(len(broken_links)))
     if not quick:
         table.add_row("atlas orphans", str(len(orphans)))
     table.add_row("stale intake (>60d)", str(len(stale_intake)))
+    table.add_row(f"stale atlas (Gate 5, >{CURRENCY_DAYS}d/unverified)", str(len(stale_atlas)))
+    table.add_row("untracked provenance (Gate 3)", str(len(untracked)))
     table.add_row("schema drift", str(len(schema_drift)))
     table.add_row("ledger events", str(ledger.count()))
     console.print(table)
@@ -103,6 +137,21 @@ def health_cmd(quick: bool) -> None:
             console.print(f"  {path.relative_to(ROOT)}  -> [[{target}]]")
         if len(broken_links) > 20:
             console.print(f"  ... and {len(broken_links) - 20} more")
+
+    if stale_atlas:
+        console.print("\n[yellow]stale atlas (Gate 5, verify or refresh):[/yellow]")
+        for path, age in stale_atlas[:20]:
+            label = "never verified" if age is None else f"{age}d"
+            console.print(f"  {path.relative_to(ROOT)}  ({label})")
+        if len(stale_atlas) > 20:
+            console.print(f"  ... and {len(stale_atlas) - 20} more")
+
+    if untracked:
+        console.print("\n[yellow]untracked provenance (Gate 3):[/yellow]")
+        for path in untracked[:20]:
+            console.print(f"  {path.relative_to(ROOT)}")
+        if len(untracked) > 20:
+            console.print(f"  ... and {len(untracked) - 20} more")
 
     if schema_drift:
         console.print("\n[red]schema drift:[/red]")
@@ -117,11 +166,15 @@ def health_cmd(quick: bool) -> None:
         subject="vault/",
         payload={
             "files": len(idx),
-            "intake": len(list(INTAKE.glob("*.md"))),
+            "intake": intake_count,
+            "atlas": atlas_count,
+            "cost_ratio": round(cost_ratio, 3),
             "observations": pending_obs,
             "broken_links": len(broken_links),
             "orphans": len(orphans) if not quick else None,
             "stale_intake": len(stale_intake),
+            "stale_atlas": len(stale_atlas),
+            "untracked_provenance": len(untracked),
             "schema_drift": len(schema_drift),
             "quick": quick,
         },
