@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from . import __version__
+from .commands.ask import ask_cmd
 from .commands.health import health_cmd
 from .commands.ingest import ingest_cmd
 from .commands.lint import lint_cmd
@@ -22,6 +23,7 @@ def main() -> None:
 
 main.add_command(new_cmd)
 main.add_command(ingest_cmd)
+main.add_command(ask_cmd)
 main.add_command(lint_cmd)
 main.add_command(triage_cmd)
 main.add_command(promote_cmd)

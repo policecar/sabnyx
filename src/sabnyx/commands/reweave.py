@@ -26,14 +26,11 @@ from pathlib import Path
 import click
 from rich.console import Console
 
-from .. import fm, ledger, llm, paths, writers
+from .. import context, fm, ledger, llm, paths, writers
 from ..schemas import ReweaveChangeset
-from ..util import extract_wikilinks, get_marker_block, set_marker_block, walk_vault_md
+from ..util import extract_wikilinks, get_marker_block, set_marker_block
 
 ACTOR = "sabnyx-reweave"
-
-_EXCERPT_CHARS = 2500
-_TOTAL_CHARS = 300_000
 
 _TASK_SYSTEM = """You are the reweave agent for this vault: the backward pass that runs
 after a file is promoted to atlas/. Knowledge compounds through connection, not
@@ -80,11 +77,6 @@ def _pending_targets() -> list[Path]:
     return out
 
 
-def _atlas_slug_index() -> dict[str, Path]:
-    """slug -> path for every atlas file."""
-    return {p.stem: p for p in walk_vault_md(paths.ATLAS)}
-
-
 def _context_for(target: Path, index: dict[str, Path]) -> str:
     """Target in full; every other atlas file as description + excerpt;
     pending observations. Grep-era retrieval — semantic search is phase 5."""
@@ -97,26 +89,10 @@ def _context_for(target: Path, index: dict[str, Path]) -> str:
         t_body.strip(),
         "",
         "## Rest of the atlas (excerpts)",
+        context.excerpts(index, exclude=target)
+        if len(index) > 1
+        else "(the atlas contains no other files)",
     ]
-    budget = _TOTAL_CHARS
-    for slug, p in sorted(index.items()):
-        if p == target or budget <= 0:
-            continue
-        try:
-            meta, body, _ = fm.load(p)
-        except Exception:
-            continue
-        excerpt = body.strip()[:_EXCERPT_CHARS]
-        budget -= len(excerpt)
-        parts += [
-            f"### {slug}",
-            f"description: {meta.get('description', '')}",
-            f"tags: {', '.join(meta.get('tags', []))}",
-            excerpt,
-            "",
-        ]
-    if len(index) <= 1:
-        parts.append("(the atlas contains no other files)")
 
     obs = sorted(paths.OBSERVATIONS.glob("*.md"))
     if obs:
@@ -220,7 +196,7 @@ def reweave_cmd(target: Path | None, role: str, yes: bool, dry_run: bool) -> Non
             return
         console.print(f"pending reweave targets: [bold]{len(targets)}[/bold]")
 
-    index = _atlas_slug_index()
+    index = context.slug_index(paths.ATLAS)
 
     for tgt in targets:
         rel = str(tgt.relative_to(paths.ROOT))
@@ -250,10 +226,10 @@ def reweave_cmd(target: Path | None, role: str, yes: bool, dry_run: bool) -> Non
             console.print("[dim]dry run: nothing written[/dim]")
             continue
 
-        if (changeset.related_additions or changeset.observations) and not yes:
-            if not click.confirm("apply?", default=True):
-                console.print("[dim]declined; intent left pending[/dim]")
-                continue
+        has_changes = bool(changeset.related_additions or changeset.observations)
+        if has_changes and not yes and not click.confirm("apply?", default=True):
+            console.print("[dim]declined; intent left pending[/dim]")
+            continue
 
         modified = _apply_links(tgt, changeset, index, console)
         obs_written: list[str] = []

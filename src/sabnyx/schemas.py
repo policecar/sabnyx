@@ -135,6 +135,24 @@ class IngestChangeset(BaseModel):
     observations: list[ProposedObservation] = Field(default_factory=list)
 
 
+# -- ask answer (LLM boundary) ----------------------------------------------------
+
+
+class AskAnswer(BaseModel):
+    """One grounded answer plus an optional capture proposal.
+
+    Karpathy: "good answers become new pages rather than disappearing
+    into chat history" — jibot's capture-to-jibrain. `capture` is set
+    only when the answer contains durable, novel insight.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str  # markdown, claims drawn from the vault cited as [[wikilinks]]
+    cited: list[str] = Field(default_factory=list)  # slugs actually relied on
+    capture: ProposedIntake | None = None
+
+
 # -- reweave changeset (LLM boundary) -------------------------------------------
 
 LinkPriority = Literal["bridge", "enrichment", "correction", "low"]

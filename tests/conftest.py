@@ -16,6 +16,7 @@ def tmp_vault(tmp_path, monkeypatch):
     that use `paths.X` at call time are covered by patching paths itself.
     """
     from sabnyx import paths as paths_mod
+    from sabnyx.commands import ask as ask_mod
     from sabnyx.commands import ingest as ingest_mod
 
     root = tmp_path
@@ -51,5 +52,6 @@ def tmp_vault(tmp_path, monkeypatch):
 
     monkeypatch.setattr(sources, "ensure_tree", _ensure)
     monkeypatch.setattr(ingest_mod, "ensure_tree", _ensure)
+    monkeypatch.setattr(ask_mod, "ensure_tree", _ensure)
     _ensure()
     return mapping
