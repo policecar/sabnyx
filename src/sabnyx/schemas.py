@@ -138,6 +138,16 @@ class IngestChangeset(BaseModel):
 # -- contradiction scan (LLM boundary) ------------------------------------------
 
 
+class HealthProbe(BaseModel):
+    """Trivial structured output for `sabnyx verify` — confirms the whole
+    structured-output path (call, schema, parse) works end to end live."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    note: str = Field(min_length=1, max_length=200)
+
+
 class ContradictionScan(BaseModel):
     """Cross-atlas contradiction findings (Gate 5, semantic half).
 

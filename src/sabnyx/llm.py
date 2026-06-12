@@ -223,6 +223,35 @@ def parse_structured(
 # -- provider backends ----------------------------------------------------------------
 
 
+def anthropic_params(
+    *,
+    model: str,
+    role: ModelRole,
+    task_system: str,
+    user: str,
+    output_format: type[T],
+    max_tokens: int,
+) -> dict:
+    """The exact kwargs sent to messages.parse. Pure, so the request shape
+    is verifiable offline (test_verify)."""
+    params: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": [
+            # stable prefix first: the vault contract, cached across calls
+            {"type": "text", "text": contract_text(), "cache_control": {"type": "ephemeral"}},
+            # task-specific instructions after the cache breakpoint
+            {"type": "text", "text": task_system},
+        ],
+        "messages": [{"role": "user", "content": user}],
+        "output_format": output_format,
+    }
+    if role != "fast":
+        # adaptive thinking is supported on the sonnet/opus tiers
+        params["thinking"] = {"type": "adaptive"}
+    return params
+
+
 def _call_anthropic(
     *,
     model: str,
@@ -237,28 +266,16 @@ def _call_anthropic(
     prompt caching on the stable contract block, adaptive thinking."""
     import anthropic
 
-    kwargs: dict = {}
-    if role != "fast":
-        # adaptive thinking is supported on the sonnet/opus tiers
-        kwargs["thinking"] = {"type": "adaptive"}
-
     client = anthropic.Anthropic()
     response = client.messages.parse(
-        model=model,
-        max_tokens=max_tokens,
-        system=[
-            # stable prefix first: the vault contract, cached across calls
-            {
-                "type": "text",
-                "text": contract_text(),
-                "cache_control": {"type": "ephemeral"},
-            },
-            # task-specific instructions after the cache breakpoint
-            {"type": "text", "text": task_system},
-        ],
-        messages=[{"role": "user", "content": user}],
-        output_format=output_format,
-        **kwargs,
+        **anthropic_params(
+            model=model,
+            role=role,
+            task_system=task_system,
+            user=user,
+            output_format=output_format,
+            max_tokens=max_tokens,
+        )
     )
 
     if response.stop_reason == "refusal":
@@ -274,6 +291,53 @@ def _call_anthropic(
         "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", None),
         "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", None),
         "stop_reason": response.stop_reason,
+    }
+
+
+def openai_base_url(prov: str) -> str:
+    base_url = os.environ.get(
+        "SABNYX_LLM_BASE_URL",
+        OPENROUTER_BASE_URL if prov == "openrouter" else "",
+    ).rstrip("/")
+    if not base_url:
+        raise ValueError("SABNYX_LLM_BASE_URL is required for provider=openai-compatible")
+    return base_url
+
+
+def openai_api_key(prov: str) -> str:
+    api_key = os.environ.get("SABNYX_LLM_API_KEY") or (
+        os.environ.get("OPENROUTER_API_KEY", "") if prov == "openrouter" else ""
+    )
+    if not api_key:
+        raise ValueError(
+            f"no API key for provider {prov!r}; set SABNYX_LLM_API_KEY (or OPENROUTER_API_KEY)"
+        )
+    return api_key
+
+
+def openai_body(
+    *, model: str, task_system: str, user: str, output_format: type[T], max_tokens: int
+) -> dict:
+    """The OpenAI-compatible chat-completions request body. Pure; the JSON
+    schema is embedded in the prompt so it survives endpoints that ignore
+    response_format."""
+    schema = output_format.model_json_schema()
+    return {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": contract_text() + "\n\n" + task_system},
+            {
+                "role": "user",
+                "content": user
+                + "\n\nRespond with a single JSON object matching this schema, nothing else:\n"
+                + json.dumps(schema),
+            },
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": output_format.__name__, "schema": schema, "strict": True},
+        },
     }
 
 
@@ -293,39 +357,15 @@ def _call_openai_compatible(
     regardless — the schema is enforced on our side either way."""
     import httpx
 
-    base_url = os.environ.get(
-        "SABNYX_LLM_BASE_URL",
-        OPENROUTER_BASE_URL if prov == "openrouter" else "",
-    ).rstrip("/")
-    if not base_url:
-        raise ValueError("SABNYX_LLM_BASE_URL is required for provider=openai-compatible")
-
-    api_key = os.environ.get("SABNYX_LLM_API_KEY") or (
-        os.environ.get("OPENROUTER_API_KEY", "") if prov == "openrouter" else ""
+    base_url = openai_base_url(prov)
+    api_key = openai_api_key(prov)
+    body = openai_body(
+        model=model,
+        task_system=task_system,
+        user=user,
+        output_format=output_format,
+        max_tokens=max_tokens,
     )
-    if not api_key:
-        raise ValueError(
-            f"no API key for provider {prov!r}; set SABNYX_LLM_API_KEY (or OPENROUTER_API_KEY)"
-        )
-
-    schema = output_format.model_json_schema()
-    body = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": [
-            {"role": "system", "content": contract_text() + "\n\n" + task_system},
-            {
-                "role": "user",
-                "content": user
-                + "\n\nRespond with a single JSON object matching this schema, nothing else:\n"
-                + json.dumps(schema),
-            },
-        ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": output_format.__name__, "schema": schema, "strict": True},
-        },
-    }
     headers = {"Authorization": f"Bearer {api_key}"}
     if prov == "openrouter":
         headers["HTTP-Referer"] = "https://github.com/policecar/sabnyx"
