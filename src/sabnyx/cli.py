@@ -14,6 +14,7 @@ from .commands.promote import promote_cmd
 from .commands.reweave import reweave_cmd
 from .commands.scan import scan_cmd
 from .commands.serve import serve_cmd
+from .commands.tend import tend_cmd
 from .commands.triage import triage_cmd
 from .commands.verify import verify_cmd
 
@@ -34,6 +35,7 @@ main.add_command(new_cmd)
 main.add_command(ingest_cmd)
 main.add_command(ask_cmd)
 main.add_command(lint_cmd)
+main.add_command(tend_cmd)
 main.add_command(triage_cmd)
 main.add_command(promote_cmd)
 main.add_command(reweave_cmd)
