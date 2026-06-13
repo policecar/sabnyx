@@ -6,6 +6,7 @@ import click
 
 from . import __version__
 from .commands.ask import ask_cmd
+from .commands.entities import entities_cmd
 from .commands.health import health_cmd
 from .commands.ingest import ingest_cmd
 from .commands.lint import lint_cmd
@@ -40,6 +41,7 @@ main.add_command(triage_cmd)
 main.add_command(promote_cmd)
 main.add_command(reweave_cmd)
 main.add_command(scan_cmd)
+main.add_command(entities_cmd)
 main.add_command(health_cmd)
 main.add_command(serve_cmd)
 main.add_command(verify_cmd)
