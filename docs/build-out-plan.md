@@ -82,23 +82,24 @@ direction only: vault → halbor.
 - **Phase 2 — opsctl** (`342edb4`): Rust crate `opsctl/` (query / project /
   supervise), ledger byte/hash-compatible with Python. 15 Rust tests.
 - README rewritten and accurate (`f1e5095`).
+- **Phase 3 — lightweight entity layer**: SPEC §2/§3 un-defer
+  `person`/`org`, add `project` + `aliases`; `schemas.AtlasType` +
+  `AtlasFrontmatter.aliases`; `paths` entity dirs (`atlas/people|orgs|
+  projects`) in `ATLAS_TYPE_DIRS` + `ensure_tree` + `ENTITY_TYPES`;
+  `promote --as person|org|project`; new `sabnyx entities` group —
+  `list` (entity pages + aliases), `gaps` (broken wikilinks ≥ threshold
+  distinct referrers → `gap` observations, deduped, `--dry-run`),
+  `resolve` (slug/alias collision report). 135 Python tests (22 new).
 
-**Next: Phase 3 — lightweight entity layer.** Planned changes:
-- SPEC §2: un-defer `person`/`org` types; add `project`. Note: lightweight
-  (entity pages + `aliases`), NOT Senzing-scale resolution (stays out).
-- `schemas.py`: `AtlasType += person|org|project`; `AtlasFrontmatter.aliases`.
-- `paths.py`: entity type dirs (e.g. `atlas/people`, `atlas/orgs`,
-  `atlas/projects`) + `ensure_tree`; `promote --as` choices.
-- New `sabnyx entities` command: `list`, `gaps` (recurring broken-wikilink
-  targets ≥ N → `gap` observations), `resolve` (alias/dup collisions, report).
-- Tests; keep the 113 green.
-
-Then Phase 4 (retrieval seam) and Phase 5 (**halbor** — sibling repo at
-`/Users/p/src/_px/halbor`, the read-only projection/face; vault → halbor only).
+**Next: Phase 4 — retrieval seam.** Pluggable retrieval interface; grep impl
+now, local-embedding vector index a drop-in later (deferred until the vault
+outgrows grep — the doc's own rule). Then Phase 5 (**halbor** — sibling repo
+at `/Users/p/src/_px/halbor`, the read-only projection/face; vault → halbor
+only).
 
 **Environment / resume checklist:**
 - Work in worktree `/Users/p/src/_px/sabnyx/.worktrees/brain` (branch
-  `feat/brain-buildout`, off `feat/jibot-agent`). `uv run pytest -q` → 113.
+  `feat/brain-buildout`, off `feat/jibot-agent`). `uv run pytest -q` → 135.
 - Other worktree: `.worktrees/kimi-agent` (branch `feat/jibot-agent`, the Kimi
   agent; PR to `main` deprioritized but pending push by the operator).
 - `main` has an uncommitted `.gitignore` (the `moonshot` ignore fix) — folds in

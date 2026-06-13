@@ -18,9 +18,9 @@ from ..services import promote_file
 @click.option(
     "--as",
     "atlas_type",
-    type=click.Choice(["concept", "reference", "idea"]),
+    type=click.Choice(["concept", "reference", "idea", "person", "org", "project"]),
     required=True,
-    help="Atlas type to promote as.",
+    help="Atlas type to promote as (concept/reference/idea, or entity: person/org/project).",
 )
 @click.option(
     "--last-verified",

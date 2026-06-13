@@ -18,6 +18,7 @@ def tmp_vault(tmp_path, monkeypatch):
     from sabnyx import paths as paths_mod
     from sabnyx import services as services_mod
     from sabnyx.commands import ask as ask_mod
+    from sabnyx.commands import entities as entities_mod
     from sabnyx.commands import health as health_mod
     from sabnyx.commands import ingest as ingest_mod
     from sabnyx.commands import promote as promote_mod
@@ -31,6 +32,9 @@ def tmp_vault(tmp_path, monkeypatch):
     atlas_concepts = vault / "atlas" / "concepts"
     atlas_references = vault / "atlas" / "references"
     atlas_ideas = vault / "atlas" / "ideas"
+    atlas_people = vault / "atlas" / "people"
+    atlas_orgs = vault / "atlas" / "orgs"
+    atlas_projects = vault / "atlas" / "projects"
     mapping = {
         "ROOT": root,
         "VAULT": vault,
@@ -40,6 +44,9 @@ def tmp_vault(tmp_path, monkeypatch):
         "ATLAS_CONCEPTS": atlas_concepts,
         "ATLAS_REFERENCES": atlas_references,
         "ATLAS_IDEAS": atlas_ideas,
+        "ATLAS_PEOPLE": atlas_people,
+        "ATLAS_ORGS": atlas_orgs,
+        "ATLAS_PROJECTS": atlas_projects,
         "SOURCES": vault / "sources",
         "OPS": root / "ops",
         "EVENTS_JSONL": root / "ops" / "events.jsonl",
@@ -48,6 +55,9 @@ def tmp_vault(tmp_path, monkeypatch):
             "concept": atlas_concepts,
             "reference": atlas_references,
             "idea": atlas_ideas,
+            "person": atlas_people,
+            "org": atlas_orgs,
+            "project": atlas_projects,
         },
     }
     for mod in (
@@ -61,6 +71,7 @@ def tmp_vault(tmp_path, monkeypatch):
         promote_mod,
         reweave_mod,
         services_mod,
+        entities_mod,
     ):
         for name, value in mapping.items():
             if hasattr(mod, name):
@@ -73,6 +84,9 @@ def tmp_vault(tmp_path, monkeypatch):
             "ATLAS_CONCEPTS",
             "ATLAS_REFERENCES",
             "ATLAS_IDEAS",
+            "ATLAS_PEOPLE",
+            "ATLAS_ORGS",
+            "ATLAS_PROJECTS",
             "SOURCES",
             "OPS",
         ):
@@ -84,5 +98,6 @@ def tmp_vault(tmp_path, monkeypatch):
     monkeypatch.setattr(scan_mod, "ensure_tree", _ensure)
     monkeypatch.setattr(serve_mod, "ensure_tree", _ensure)
     monkeypatch.setattr(tend_mod, "ensure_tree", _ensure)
+    monkeypatch.setattr(entities_mod, "ensure_tree", _ensure)
     _ensure()
     return mapping

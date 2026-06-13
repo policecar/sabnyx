@@ -14,7 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # -- frontmatter ---------------------------------------------------------------
 
 IntakeType = Literal["bookmark", "paper", "note", "thought", "meeting-extract"]
-AtlasType = Literal["concept", "reference", "idea"]
+# Knowledge types are the claim-bearing atlas tier; entity types (person/org/
+# project) are lightweight reference scaffolding un-deferred in Phase 3.
+AtlasKnowledgeType = Literal["concept", "reference", "idea"]
+AtlasEntityType = Literal["person", "org", "project"]
+AtlasType = Literal["concept", "reference", "idea", "person", "org", "project"]
 ObservationCategory = Literal["gap", "contradiction", "connection", "friction", "structural"]
 ObservationStatus = Literal["pending", "promoted", "archived"]
 IntakeSource = Literal["manual", "web", "email", "import", "clipboard"]
@@ -52,6 +56,9 @@ class AtlasFrontmatter(BaseModel):
     type: AtlasType
     description: str = Field(min_length=30, max_length=200)
     tags: list[str] = Field(default_factory=list)
+    # Alternate names this page answers to (entity dedup/resolution, Phase 3).
+    # Lightweight: a flat list of strings, NOT Senzing-scale identity matching.
+    aliases: list[str] = Field(default_factory=list)
     status: Literal["final"] = "final"
     promoted_from: str | None = None
     promoted_date: date | None = None
