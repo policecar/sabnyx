@@ -90,14 +90,26 @@ direction only: vault → halbor.
   `list` (entity pages + aliases), `gaps` (broken wikilinks ≥ threshold
   distinct referrers → `gap` observations, deduped, `--dry-run`),
   `resolve` (slug/alias collision report). 135 Python tests (22 new).
+- **Phase 4 — retrieval seam**: `retrieval.Retriever` protocol + default
+  `GrepRetriever` wrapping `context.excerpts`, which gains an `order=` hook
+  (default byte-identical to the old slug-sorted dump). The grep impl is
+  *keyword-ranked* — term-overlap ordering, reorder-within-budget /
+  never-drop-while-it-fits — so the `query` is load-bearing now and budget
+  truncation degrades by relevance (the observable trigger for a later
+  vector phase). `SABNYX_RETRIEVER` switch via `config.retriever_name()`
+  (default `grep`; unknown → fail-fast). Call sites: `ask` passes the
+  question, `reweave` passes the target page, `scan` passes no query (full
+  dump), ingest untouched (`description_index`). Vector index still deferred
+  (YAGNI — 3 atlas files, ~120-file budget headroom). 144 Python tests
+  (9 new); 135 pre-existing stayed byte-for-byte green.
 
-**Next: Phase 4 — retrieval seam.** Pluggable retrieval interface; grep impl
-now, local-embedding vector index a drop-in later (deferred until the vault
-outgrows grep — the doc's own rule). Then Phase 5 (**halbor** — sibling repo
-at `/Users/USER/src/halbor`, the read-only projection/face; vault → halbor
-only).
+**Next: Phase 5 — halbor (the face).** Sibling repo at
+`/Users/USER/src/halbor` (currently empty): read-only projection of the
+vault — frontmatter sensitivity filter → staged markdown + `llms.txt`, plus a
+thin persona/query interface. One direction only: vault → halbor.
 
-Phase 4 planning notes (verified surface, 2026-06-13):
+Phase 4 as built (2026-06-13) — the surface below, with the grep impl
+keyword-ranked rather than query-blind:
 - All retrieval lives in `context.py`: `slug_index(dir)`, `description_index(
   dir, label)`, `excerpts(index, exclude=None, *_chars)`. The thing to make
   pluggable is `excerpts` — today it dumps every file body within a 300k-char
@@ -125,7 +137,7 @@ Phase 4 planning notes (verified surface, 2026-06-13):
 
 **Environment / resume checklist:**
 - Work in worktree `/Users/USER/src/sabnyx/.worktrees/brain` (branch
-  `feat/brain-buildout`, off `feat/jibot-agent`). `uv run pytest -q` → 135.
+  `feat/brain-buildout`, off `feat/jibot-agent`). `uv run pytest -q` → 144.
 - Other worktree: `.worktrees/kimi-agent` (branch `feat/jibot-agent`, the Kimi
   agent; PR to `main` deprioritized but pending push by the operator).
 - `main` has an uncommitted `.gitignore` (the `moonshot` ignore fix) — folds in

@@ -21,6 +21,18 @@ from .paths import ROOT
 # Default trusted source agents for deterministic auto-promote.
 _DEFAULT_TRUSTED_SOURCES = {"sabnyx-ingest"}
 
+# Default retrieval implementation behind the Retriever seam (retrieval.py).
+_DEFAULT_RETRIEVER = "grep"
+
+
+def retriever_name() -> str:
+    """Return the retriever implementation name behind the Retriever seam.
+
+    Reads ``SABNYX_RETRIEVER`` from the environment; defaults to ``grep``.
+    Pure and side-effect-free beyond reading ``os.environ``.
+    """
+    return os.environ.get("SABNYX_RETRIEVER", "").strip() or _DEFAULT_RETRIEVER
+
 
 def trusted_sources() -> set[str]:
     """Return the set of source_agent values trusted for auto-promotion.

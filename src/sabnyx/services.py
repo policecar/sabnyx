@@ -22,7 +22,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from . import context, ledger, llm, paths, sources, writers
+from . import context, ledger, llm, paths, retrieval, sources, writers
 from .schemas import AskAnswer, IngestChangeset, ProposedIntake, TriageBatch
 from .util import extract_wikilinks, slugify
 
@@ -504,7 +504,7 @@ def answer_question(
     index = context.slug_index(paths.ATLAS)
     user = (
         "## Atlas (durable knowledge; excerpts)\n"
-        f"{context.excerpts(index)}\n\n"
+        f"{retrieval.get_retriever().retrieve(question, index)}\n\n"
         f"{context.description_index(paths.INTAKE, 'Intake queue (drafts, not yet authoritative)')}\n\n"
         f"## Question\n{question}"
     )
