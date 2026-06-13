@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import click
@@ -29,13 +29,18 @@ def _slug_index() -> dict[str, Path]:
     return idx
 
 
-def _age_days(ts: datetime | str | None) -> int | None:
+def _age_days(ts: datetime | date | str | None) -> int | None:
     if ts is None:
         return None
     if isinstance(ts, str):
         ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=UTC)
+    # NB: datetime is a subclass of date, so test datetime FIRST.
+    if isinstance(ts, datetime):
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+    elif isinstance(ts, date):
+        # a bare YAML date (e.g. `last_verified: 2026-06-13`) -> midnight UTC
+        ts = datetime(ts.year, ts.month, ts.day, tzinfo=UTC)
     return (datetime.now(UTC) - ts).days
 
 
