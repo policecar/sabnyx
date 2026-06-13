@@ -25,6 +25,7 @@ extend to a small circle, and eventually a public/agent-facing surface.
         references/     external resources: papers, bookmarks, tools
         ideas/          things I might want to do
       domains/          graduated areas with their own schema (empty for now)
+      sources/          raw immutable artifacts (write-once, no schema)
       _review/          operational, never knowledge
 
     ops/
@@ -35,6 +36,7 @@ extend to a small circle, and eventually a public/agent-facing surface.
 
     adapters/           interface normalizers (NormalizedEnvelope)
       cli.py            first interface: shell
+      telegram.py       second interface: chat (long-poll)
 
     docs/
       recon/            reuse assessments of Joi's open-source repos
@@ -45,10 +47,69 @@ extend to a small circle, and eventually a public/agent-facing surface.
 
     uv sync                                           # install deps once
     uv run sabnyx new --type thought                  # create an intake file
+    uv run sabnyx ingest --url https://...            # LLM: source -> intake/
+    uv run sabnyx ingest paper.md                     # same, from a local file
     uv run sabnyx lint                                # gates 1, 2, 4
     uv run sabnyx triage                              # review intake queue
     uv run sabnyx promote vault/intake/<file>.md      # -> atlas
-    uv run sabnyx health                              # orphans, links, drift
+    uv run sabnyx reweave                             # LLM: link promoted files
+    uv run sabnyx ask "what do I know about x?"       # LLM: grounded answer
+    uv run sabnyx scan                               # LLM: cross-atlas contradictions
+    uv run sabnyx health                              # gates 5/6/7: currency, cost, drift
+    uv run sabnyx serve                              # Telegram interface (long-poll)
+
+## Telegram interface
+
+`serve` drives the vault from Telegram — the second NormalizedEnvelope
+source after the CLI. Trusted-sender model (only allowlisted user IDs are
+honored; their captures auto-apply into intake/, still triaged before
+atlas). See docs/decisions/0007.
+
+    export SABNYX_TELEGRAM_TOKEN=...        # from @BotFather
+    export SABNYX_TELEGRAM_ALLOW=123456789  # your numeric Telegram user id(s)
+    uv run sabnyx serve                      # long-poll; --once to drain and exit
+
+    Messages route by shape (no LLM needed to decide):
+      /ask <q>  | text ending in '?'    -> ask, replies with a grounded answer
+      /status | /health                  -> queue / atlas / observations pulse
+      a bare https:// URL                -> ingest the URL
+      /remember <text> | any other text  -> capture the text into intake/
+
+## Verify the live path
+
+Everything LLM-side is unit-tested against a faked model. Before first
+real use, confirm the wiring against the actual API in one command:
+
+    export ANTHROPIC_API_KEY=...        # or set up OpenRouter (below)
+    uv run sabnyx verify                 # one cheap structured call, fast role
+    uv run sabnyx verify --all-roles     # exercise fast + standard + deep
+
+It writes nothing to the vault; token usage lands on the ledger
+(`llm.completed`). Then a side-effect-free smoke test of the real
+pipeline:
+
+    uv run sabnyx ingest <some-file>.md --dry-run
+
+## LLM configuration
+
+`ingest` (and future LLM commands) talk to a model through one boundary
+(`src/sabnyx/llm.py`). Models are addressed by role; providers are
+switchable by env var — see docs/decisions/0006.
+
+    # default: Anthropic API (needs ANTHROPIC_API_KEY)
+    uv run sabnyx ingest --url https://...
+
+    # any model via OpenRouter (needs OPENROUTER_API_KEY)
+    export SABNYX_LLM_PROVIDER=openrouter
+    export SABNYX_MODEL_DEEP=anthropic/claude-opus-4.8   # or any slug
+
+    # any OpenAI-compatible endpoint (ollama, vllm, ...)
+    export SABNYX_LLM_PROVIDER=openai-compatible
+    export SABNYX_LLM_BASE_URL=http://localhost:11434/v1
+    export SABNYX_MODEL_FAST=llama3.1 SABNYX_MODEL_STANDARD=... SABNYX_MODEL_DEEP=...
+
+    Roles: fast / standard / deep. Override any role on any provider
+    with SABNYX_MODEL_<ROLE>.
 
 ## Status
 

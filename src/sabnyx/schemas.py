@@ -91,6 +91,126 @@ class LedgerEvent(BaseModel):
     content_hash: str  # "sha256:<hex>" of canonical payload
 
 
+# -- ingest changeset (LLM boundary) -------------------------------------------
+
+ExtractionDepth = Literal["shallow", "standard", "standard-plus", "deep"]
+ModelRole = Literal["fast", "standard", "deep"]
+
+
+class ProposedIntake(BaseModel):
+    """One intake file proposed by the ingest pass.
+
+    The model proposes; deterministic code slugifies, writes, validates,
+    and rolls back. Containment: ingest writes to intake/ only, never atlas/.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["bookmark", "paper", "note", "thought"]
+    title: str
+    description: str = Field(min_length=30, max_length=200)
+    tags: list[str] = Field(default_factory=list)
+    body: str  # markdown body, no frontmatter, no H1 (added by the writer)
+
+
+class ProposedObservation(BaseModel):
+    """One observation proposed by the ingest pass (gap, contradiction, ...)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: ObservationCategory
+    title: str
+    body: str
+    involves: list[str] = Field(default_factory=list)
+
+
+class IngestChangeset(BaseModel):
+    """Everything one ingest pass wants to write. Applied atomically-ish
+    by deterministic code behind a human approval gate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str  # one paragraph: what the source is, what was extracted, why
+    intake_files: list[ProposedIntake] = Field(default_factory=list)
+    observations: list[ProposedObservation] = Field(default_factory=list)
+
+
+# -- contradiction scan (LLM boundary) ------------------------------------------
+
+
+class HealthProbe(BaseModel):
+    """Trivial structured output for `sabnyx verify` — confirms the whole
+    structured-output path (call, schema, parse) works end to end live."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    note: str = Field(min_length=1, max_length=200)
+
+
+class ContradictionScan(BaseModel):
+    """Cross-atlas contradiction findings (Gate 5, semantic half).
+
+    Each finding is an observation with category contradiction: two atlas
+    files making conflicting claims, both named in `involves`, with a
+    suggested resolution in the body. jibot's stale-claim detector.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    findings: list[ProposedObservation] = Field(default_factory=list)
+
+
+# -- ask answer (LLM boundary) ----------------------------------------------------
+
+
+class AskAnswer(BaseModel):
+    """One grounded answer plus an optional capture proposal.
+
+    Karpathy: "good answers become new pages rather than disappearing
+    into chat history" — jibot's capture-to-jibrain. `capture` is set
+    only when the answer contains durable, novel insight.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str  # markdown, claims drawn from the vault cited as [[wikilinks]]
+    cited: list[str] = Field(default_factory=list)  # slugs actually relied on
+    capture: ProposedIntake | None = None
+
+
+# -- reweave changeset (LLM boundary) -------------------------------------------
+
+LinkPriority = Literal["bridge", "enrichment", "correction", "low"]
+
+
+class RelatedAddition(BaseModel):
+    """Links to add to one atlas file's `sabnyx:related` marker block.
+
+    `file` may be the reweave target itself (outbound links) or any other
+    atlas file (backward links). Marker blocks only; prose is never touched.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    file: str  # slug of the atlas file whose Related block gains links
+    add_links: list[str]  # slugs to add as [[wikilinks]]
+    reason: str
+    priority: LinkPriority = "enrichment"
+
+
+class ReweaveChangeset(BaseModel):
+    """Everything one reweave pass wants to do: marker-block link
+    additions plus observations (contradictions, gaps, connections)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    related_additions: list[RelatedAddition] = Field(default_factory=list)
+    observations: list[ProposedObservation] = Field(default_factory=list)
+
+
 # -- normalized envelope (adapters) --------------------------------------------
 
 EnvelopeSource = Literal["cli", "telegram", "email", "web", "slack", "other"]
