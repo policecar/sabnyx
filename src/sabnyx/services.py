@@ -5,22 +5,308 @@ can never drift. Input acquisition, gating, and presentation stay with the
 caller; this module owns the model calls, the validated writes, the
 provenance log, and the ledger trail. Console is injected so callers can
 route progress to a terminal or a string buffer.
+
+@decision DEC-01: promote_file is a service function, not a CLI concern
+@rationale: `sabnyx tend` and `sabnyx promote` both need the same promote
+  logic; extracting it here prevents duplication and keeps CLI code thin.
+@decision DEC-02: auto_promote_decision is pure (no IO)
+@rationale: Six boolean gates that depend only on passed-in data → fully
+  unit-testable with no fixtures, no filesystem, no monkeypatching.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date as date_cls
 from pathlib import Path
 
 from rich.console import Console
 
-from . import context, ledger, llm, paths, sources, writers
-from .schemas import AskAnswer, IngestChangeset, ProposedIntake
+from . import context, ledger, llm, paths, retrieval, sources, writers
+from .schemas import AskAnswer, IngestChangeset, ProposedIntake, TriageBatch
 from .util import extract_wikilinks, slugify
 
 ACTOR_INGEST = "sabnyx-ingest"
 ACTOR_ASK = "sabnyx-ask"
+ACTOR_TEND = "sabnyx-tend"
+
+
+# -- promote (reusable service) -------------------------------------------------
+
+
+def promote_file(
+    source: Path,
+    atlas_type: str,
+    *,
+    last_verified: str | None = None,
+    actor: str = "sabnyx-cli",
+) -> Path:
+    """Promote an intake file to atlas/<atlas_type>/<slug>.md.
+
+    Contains the core logic extracted from commands/promote.py.
+    Callers are responsible for the guards:
+      - source must be under INTAKE
+      - dest must not exist
+      - kind must be "intake"
+    This function writes, validates, rolls back on failure, unlinks the
+    source, appends the knowledge log, and emits ledger events.
+
+    Returns the destination Path.
+    Raises RuntimeError on validation failure (destination is rolled back).
+    """
+    from . import fm
+    from .paths import ATLAS_TYPE_DIRS, KNOWLEDGE_LOG, ROOT
+
+    meta, body, _kind = fm.load(source)
+
+    dest_dir = ATLAS_TYPE_DIRS[atlas_type]
+    dest = dest_dir / source.name
+    today = date_cls.today().isoformat()
+
+    new_meta = {
+        "type": atlas_type,
+        "description": meta["description"],
+        "tags": meta.get("tags", []),
+        "status": "final",
+        "promoted_from": str(source.relative_to(ROOT)),
+        "promoted_date": today,
+        "last_verified": last_verified or today,
+        "proof": None,
+    }
+
+    # Preserve source provenance as HTML comments in the body (round-trip).
+    provenance_lines = []
+    if src_url := meta.get("source_url"):
+        provenance_lines.append(f"<!-- source-url: {src_url} -->")
+    if src_date := meta.get("source_date"):
+        provenance_lines.append(f"<!-- source-date: {src_date} -->")
+    if meta.get("source"):
+        provenance_lines.append(f"<!-- source-kind: {meta['source']} -->")
+    provenance = ("\n".join(provenance_lines) + "\n\n") if provenance_lines else ""
+
+    # Add an empty Related marker block for future reweave passes.
+    related_block = "\n\n## Related\n\n<!-- BEGIN sabnyx:related -->\n<!-- END sabnyx:related -->\n"
+    new_body = provenance + body.rstrip() + related_block
+
+    fm.write(dest, new_meta, new_body)
+
+    # Validate what we wrote, before touching the source
+    try:
+        fm.load(dest)
+    except fm.FrontmatterError as e:
+        dest.unlink()
+        raise RuntimeError(f"wrote invalid atlas file, rolled back: {e}") from e
+
+    # Remove the intake source
+    source.unlink()
+
+    # Provenance log (Gate 3 materia)
+    KNOWLEDGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    if not KNOWLEDGE_LOG.exists():
+        KNOWLEDGE_LOG.write_text(
+            "# Knowledge log\n\nAppend-only provenance trail.\n\n", encoding="utf-8"
+        )
+    with KNOWLEDGE_LOG.open("a", encoding="utf-8") as f:
+        f.write(
+            f"- {today} promote: `{source.relative_to(ROOT)}` -> "
+            f"`{dest.relative_to(ROOT)}` ({atlas_type})\n"
+        )
+
+    ledger.append_event(
+        kind="atlas.promoted",
+        actor=actor,
+        subject=str(dest.relative_to(ROOT)),
+        payload={
+            "from": str(source.relative_to(ROOT)),
+            "as": atlas_type,
+            "description": meta["description"],
+            "source_url": meta.get("source_url"),
+        },
+    )
+
+    # Emit a reweave prompt as a separate event (not an action yet).
+    ledger.append_event(
+        plane="intent",
+        kind="reweave.proposed",
+        actor=actor,
+        subject=str(dest.relative_to(ROOT)),
+        payload={
+            "description": meta["description"],
+            "tags": meta.get("tags", []),
+            "prompt": (
+                "now that this file exists, what existing atlas files should "
+                "link to it or be updated by it? look for contradictions and "
+                "bridge links; propose additions to the Related marker block "
+                "and write observations for conflicts."
+            ),
+        },
+    )
+
+    return dest
+
+
+# -- auto-promote gate (pure, no IO) -------------------------------------------
+
+
+# Map intake types to their atlas counterpart (deterministic tier).
+# Types absent from this map are not auto-promotable.
+_AUTO_PROMOTE_TYPE_MAP: dict[str, str] = {
+    "bookmark": "reference",
+    "paper": "reference",
+}
+
+# These types require LLM judgment or are temporal — not auto-promotable.
+_LLM_TIER_TYPES = frozenset({"note", "thought"})
+_TEMPORAL_TYPES = frozenset({"meeting-extract", "observation"})
+
+_REQUIRED_FIELDS = frozenset({"type", "description", "source", "status"})
+
+
+@dataclass
+class AutoPromoteDecision:
+    """Result of the deterministic auto-promote gate check.
+
+    promotable=True means all six gates passed.
+    atlas_type is set only when promotable=True.
+    reasons records why any gate failed (or a success note).
+    """
+
+    promotable: bool
+    atlas_type: str | None
+    reasons: list[str] = field(default_factory=list)
+
+
+def auto_promote_decision(
+    meta: dict,
+    kind: str,
+    *,
+    trusted: set[str],
+    atlas_slugs: set[str],
+    source_slug: str,
+) -> AutoPromoteDecision:
+    """Evaluate an intake file against all six auto-promote gates.
+
+    Pure function — no IO, no filesystem, no ledger.
+
+    Gates (all must pass for promotable=True):
+      1. Promotable type: bookmark/paper → reference. note/thought deferred
+         to LLM tier. meeting-extract/observation never auto-promoted.
+      2. Not temporal (meeting-extract excluded explicitly).
+      3. Required fields present: type, description, source, status.
+      4. len(description) >= 30.
+      5. source_slug not already in atlas_slugs (no duplicate).
+      6. meta.get("source_agent") in trusted.
+    """
+    intake_type = meta.get("type", "")
+    reasons: list[str] = []
+
+    # Gate 1 + 2: promotable type / not temporal
+    if kind == "observation":
+        return AutoPromoteDecision(
+            promotable=False, atlas_type=None, reasons=["observations are never auto-promoted"]
+        )
+    if intake_type in _TEMPORAL_TYPES:
+        return AutoPromoteDecision(
+            promotable=False, atlas_type=None, reasons=["temporal type → not auto-promotable"]
+        )
+    if intake_type in _LLM_TIER_TYPES:
+        return AutoPromoteDecision(
+            promotable=False, atlas_type=None, reasons=["needs judgment → LLM tier"]
+        )
+    atlas_type = _AUTO_PROMOTE_TYPE_MAP.get(intake_type)
+    if atlas_type is None:
+        return AutoPromoteDecision(
+            promotable=False,
+            atlas_type=None,
+            reasons=[f"unknown type {intake_type!r} → not auto-promotable"],
+        )
+
+    # Gate 3: required fields present
+    missing = [f for f in _REQUIRED_FIELDS if not meta.get(f)]
+    if missing:
+        reasons.append(f"missing required fields: {', '.join(sorted(missing))}")
+
+    # Gate 4: description length
+    desc = meta.get("description", "")
+    if len(desc) < 30:
+        reasons.append(f"description too short ({len(desc)} < 30 chars)")
+
+    # Gate 5: no duplicate slug
+    if source_slug in atlas_slugs:
+        reasons.append(f"slug {source_slug!r} already exists in atlas")
+
+    # Gate 6: trusted source_agent
+    source_agent = meta.get("source_agent", "")
+    if source_agent not in trusted:
+        reasons.append(f"source_agent {source_agent!r} not in trusted set")
+
+    if reasons:
+        return AutoPromoteDecision(promotable=False, atlas_type=None, reasons=reasons)
+
+    return AutoPromoteDecision(promotable=True, atlas_type=atlas_type, reasons=[])
+
+
+# -- LLM triage tier -----------------------------------------------------------
+
+TRIAGE_TASK_SYSTEM = """You are the triage agent for this vault. Given a list of intake files
+with their metadata and descriptions, propose a routing decision for each.
+
+Rules:
+- action "promote": the file has durable value and should be promoted to atlas/.
+  Set atlas_type to "concept" (analytical, structural knowledge), "reference"
+  (a source, link, or dataset), or "idea" (hypothetical, speculative thought).
+- action "keep": the file may have future value but is not ready to promote.
+  Leave it in intake/ for manual review.
+- action "discard": the file has no lasting value (noise, duplicate, superseded).
+  We never delete automatically — this is a note for the operator.
+- Be conservative: when uncertain, prefer "keep" over "discard".
+- reason: one concise sentence explaining the decision.
+Return a TriageBatch with one TriageItem per input file."""
+
+
+def triage_batch(files: list[Path], *, role: str = "standard") -> TriageBatch:
+    """Run a batched LLM triage pass over `files`.
+
+    Assembles a description of each file's metadata, calls parse_structured
+    to get per-item routing decisions, and ledgers the intent. Does not write
+    or move any files — the caller applies decisions.
+    """
+    from . import fm
+
+    lines: list[str] = []
+    for p in files:
+        try:
+            meta, _body, _kind = fm.load(p)
+        except Exception as e:
+            lines.append(f"- slug: {p.stem}  [INVALID: {e}]")
+            continue
+        lines.append(
+            f"- slug: {p.stem}\n"
+            f"  type: {meta.get('type', '?')}\n"
+            f"  description: {meta.get('description', '')}\n"
+            f"  source_agent: {meta.get('source_agent', '')}\n"
+            f"  tags: {', '.join(meta.get('tags', []))}"
+        )
+
+    user = "## Intake files to triage\n\n" + "\n".join(lines)
+
+    ledger.append_event(
+        plane="intent",
+        kind="triage.llm",
+        actor=ACTOR_TEND,
+        subject="intake/",
+        payload={"file_count": len(files), "role": role},
+    )
+
+    return llm.parse_structured(
+        task_system=TRIAGE_TASK_SYSTEM,
+        user=user,
+        output_format=TriageBatch,
+        role=role,  # type: ignore[arg-type]
+        actor=ACTOR_TEND,
+        purpose="triage:batch",
+    )
+
 
 DEPTH_GUIDANCE = {
     "shallow": "This is a short source. Extract concisely: usually one intake file "
@@ -218,7 +504,7 @@ def answer_question(
     index = context.slug_index(paths.ATLAS)
     user = (
         "## Atlas (durable knowledge; excerpts)\n"
-        f"{context.excerpts(index)}\n\n"
+        f"{retrieval.get_retriever().retrieve(question, index)}\n\n"
         f"{context.description_index(paths.INTAKE, 'Intake queue (drafts, not yet authoritative)')}\n\n"
         f"## Question\n{question}"
     )

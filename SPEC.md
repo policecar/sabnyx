@@ -29,17 +29,33 @@ must go through triage.
 
 ### Atlas types (durable)
 
+#### Knowledge types (claim-bearing)
+
     concept    a pattern, idea, or mental model worth finding again
     reference  an external resource: paper, book, tool, website
     idea       something the operator wants to do or try
+
+#### Entity types (lightweight reference scaffolding)
+
+    person     a person the vault refers to
+    org        an organization, company, or institution
+    project    a named effort the vault tracks
+
+Entity pages live under `atlas/people`, `atlas/orgs`, `atlas/projects`.
+They carry the atlas schema plus an `aliases` list (alternate names the
+page answers to). This is deliberately lightweight: entity pages and
+aliases, NOT Senzing-scale identity resolution or a people CRM (those
+stay explicit non-goals). The `entities` command surfaces gaps
+(targets referenced N× with no page) and alias/slug collisions.
 
 ### Observation type (meta)
 
     observation  an agent-logged signal about the system itself
 
-DEVIATION from jibot: we drop `person` and `organization` types at
-stage 0. People graph returns in stage 3 when the vault is big enough
-to need one.
+DEVIATION from jibot: we use `person`/`org`/`project` rather than jibot's
+`person`/`organization`. Un-deferred in Phase 3 as the lightweight entity
+layer above (stage 0 dropped them until the vault was big enough to need
+one); large-scale entity resolution remains out of scope.
 
 ## 3. Frontmatter schemas
 
@@ -63,9 +79,10 @@ script enforces this and the git pre-commit hook blocks violations.
 ### Atlas schema
 
     ---
-    type: concept | reference | idea
+    type: concept | reference | idea | person | org | project
     description: "<30-200 chars>"
     tags: []
+    aliases: []                           # alternate names (entity types)
     status: final
     promoted_from: intake/<slug>.md       # null if born in atlas
     promoted_date: 2026-04-22
@@ -79,7 +96,7 @@ script enforces this and the git pre-commit hook blocks violations.
     type: observation
     category: gap | contradiction | connection | friction | structural
     observed: 2026-04-22
-    source_agent: manual | sabnyx-cli | triage | reweave | health
+    source_agent: manual | sabnyx-cli | triage | reweave | health | sabnyx-entities
     status: pending | promoted | archived
     involves: ["<file1.md>", "<file2.md>"]
     ---

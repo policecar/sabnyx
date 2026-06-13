@@ -14,7 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # -- frontmatter ---------------------------------------------------------------
 
 IntakeType = Literal["bookmark", "paper", "note", "thought", "meeting-extract"]
-AtlasType = Literal["concept", "reference", "idea"]
+# Knowledge types are the claim-bearing atlas tier; entity types (person/org/
+# project) are lightweight reference scaffolding un-deferred in Phase 3.
+AtlasKnowledgeType = Literal["concept", "reference", "idea"]
+AtlasEntityType = Literal["person", "org", "project"]
+AtlasType = Literal["concept", "reference", "idea", "person", "org", "project"]
 ObservationCategory = Literal["gap", "contradiction", "connection", "friction", "structural"]
 ObservationStatus = Literal["pending", "promoted", "archived"]
 IntakeSource = Literal["manual", "web", "email", "import", "clipboard"]
@@ -52,6 +56,9 @@ class AtlasFrontmatter(BaseModel):
     type: AtlasType
     description: str = Field(min_length=30, max_length=200)
     tags: list[str] = Field(default_factory=list)
+    # Alternate names this page answers to (entity dedup/resolution, Phase 3).
+    # Lightweight: a flat list of strings, NOT Senzing-scale identity matching.
+    aliases: list[str] = Field(default_factory=list)
     status: Literal["final"] = "final"
     promoted_from: str | None = None
     promoted_date: date | None = None
@@ -209,6 +216,33 @@ class ReweaveChangeset(BaseModel):
     summary: str
     related_additions: list[RelatedAddition] = Field(default_factory=list)
     observations: list[ProposedObservation] = Field(default_factory=list)
+
+
+# -- triage batch (LLM boundary) -----------------------------------------------
+
+
+class TriageItem(BaseModel):
+    """One triage decision proposed by the LLM triage pass.
+
+    action: promote → the LLM wants this file promoted as atlas_type.
+            keep    → stays in intake/ for manual review.
+            discard → note only; we never auto-delete.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str
+    action: Literal["promote", "keep", "discard"]
+    atlas_type: Literal["concept", "reference", "idea"] | None = None
+    reason: str
+
+
+class TriageBatch(BaseModel):
+    """Batch triage decisions from one LLM call over the deferred intake queue."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[TriageItem] = Field(default_factory=list)
 
 
 # -- normalized envelope (adapters) --------------------------------------------
