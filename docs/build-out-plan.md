@@ -97,6 +97,32 @@ outgrows grep — the doc's own rule). Then Phase 5 (**halbor** — sibling repo
 at `/Users/USER/src/halbor`, the read-only projection/face; vault → halbor
 only).
 
+Phase 4 planning notes (verified surface, 2026-06-13):
+- All retrieval lives in `context.py`: `slug_index(dir)`, `description_index(
+  dir, label)`, `excerpts(index, exclude=None, *_chars)`. The thing to make
+  pluggable is `excerpts` — today it dumps every file body within a 300k-char
+  budget, query-blind. `description_index` (the cheap slug+desc index) can
+  stay as-is for now.
+- Call sites that must keep working unchanged (the seam's contract):
+  `services.build_ingest_proposal` (desc_index ATLAS+INTAKE),
+  `services.answer_question` (slug_index+excerpts+desc_index),
+  `commands/scan.py` (slug_index+excerpts),
+  `commands/reweave.py` (slug_index+excerpts(exclude=target)),
+  `commands/tend.py` (slug_index for the reweave pass).
+- Proposed shape: a `Retriever` protocol with `retrieve(query, index, *,
+  exclude, budget) -> str` (returns the same excerpt-block string excerpts
+  produces now). Default `GrepRetriever` wraps current `excerpts` behaviour
+  (optionally keyword-filtered by the query); a later `VectorRetriever` is a
+  drop-in. `ask`/`scan`/`reweave` pass their query/target as the query;
+  ingest has no query so it keeps the full-dump path. Keep `context.excerpts`
+  as the grep impl's core so nothing else moves. Add `SABNYX_RETRIEVER`
+  env/config switch (default `grep`). Keep all 135 tests green; add retriever
+  unit tests + a seam test that `ask` still cites correctly with the grep
+  retriever.
+- YAGNI guard: do NOT build the vector index in Phase 4 — only the seam +
+  grep impl. Vector index is its own later phase once grep demonstrably
+  hurts (the doc's own deferral rule).
+
 **Environment / resume checklist:**
 - Work in worktree `/Users/USER/src/sabnyx/.worktrees/brain` (branch
   `feat/brain-buildout`, off `feat/jibot-agent`). `uv run pytest -q` → 135.
