@@ -33,12 +33,13 @@ def _credential_hint(prov: str) -> str | None:
         if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
             return None
         return "no Anthropic credential — set ANTHROPIC_API_KEY (or run `ant auth login`)."
-    # openrouter / openai-compatible
-    if os.environ.get("SABNYX_LLM_API_KEY") or (
-        prov == "openrouter" and os.environ.get("OPENROUTER_API_KEY")
-    ):
+    # openrouter / openai-compatible / moonshot
+    native = {"openrouter": "OPENROUTER_API_KEY", "moonshot": "MOONSHOT_API_KEY"}.get(prov)
+    if os.environ.get("SABNYX_LLM_API_KEY") or (native and os.environ.get(native)):
         return None
-    return f"no API key for {prov} — set SABNYX_LLM_API_KEY (or OPENROUTER_API_KEY)."
+    hint = f"SABNYX_LLM_API_KEY (or {native})" if native else "SABNYX_LLM_API_KEY"
+    return f"no API key for {prov} — set {hint}."
+
 
 _TASK_SYSTEM = (
     "This is a connectivity probe. Reply with ok=true and a short note "

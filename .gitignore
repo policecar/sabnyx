@@ -7,6 +7,9 @@ __pycache__/
 .ruff_cache/
 .ty_cache/
 
+# Git worktrees live here (in-repo, contained, never tracked)
+.worktrees/
+
 # Envs
 .venv/
 venv/
@@ -30,7 +33,9 @@ vault/_review/scratch/
 *.tmp
 *.swp
 
-# Secrets (none yet, but reserved)
+# Secrets
 .env
 .env.local
 secrets/
+# local Kimi/Moonshot API key (MOONSHOT_API_KEY=sk-...) — never commit
+moonshot
