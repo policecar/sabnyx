@@ -26,7 +26,7 @@ from pathlib import Path
 import click
 from rich.console import Console
 
-from .. import context, fm, ledger, llm, paths, writers
+from .. import context, fm, ledger, llm, paths, retrieval, writers
 from ..schemas import ReweaveChangeset
 from ..util import extract_wikilinks, get_marker_block, set_marker_block
 
@@ -79,8 +79,12 @@ def _pending_targets() -> list[Path]:
 
 def _context_for(target: Path, index: dict[str, Path]) -> str:
     """Target in full; every other atlas file as description + excerpt;
-    pending observations. Grep-era retrieval — semantic search is phase 5."""
+    pending observations. Retrieval goes through the Retriever seam, ranking
+    the rest of the atlas by overlap with the target page."""
     t_meta, t_body, _ = fm.load(target)
+    query = " ".join(
+        [target.stem, t_meta.get("description", ""), " ".join(t_meta.get("tags", []))]
+    )
     parts = [
         f"## Target (recently promoted): {target.stem}",
         f"description: {t_meta.get('description', '')}",
@@ -89,7 +93,7 @@ def _context_for(target: Path, index: dict[str, Path]) -> str:
         t_body.strip(),
         "",
         "## Rest of the atlas (excerpts)",
-        context.excerpts(index, exclude=target)
+        retrieval.get_retriever().retrieve(query, index, exclude=target)
         if len(index) > 1
         else "(the atlas contains no other files)",
     ]
