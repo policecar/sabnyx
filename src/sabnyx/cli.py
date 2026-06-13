@@ -22,6 +22,12 @@ from .commands.verify import verify_cmd
 @click.version_option(__version__, prog_name="sabnyx")
 def main() -> None:
     """sabnyx — a personal knowledge vault with a three-tier pipeline."""
+    # Load .env / moonshot from the repo root (gitignored) so provider
+    # credentials are available without an exported environment. Real env
+    # vars always win — load_local_env never overrides what is already set.
+    from .config import load_local_env
+
+    load_local_env()
 
 
 main.add_command(new_cmd)

@@ -57,13 +57,22 @@ ROLE_MODELS: dict[str, dict[str, str]] = {
         "standard": "",
         "deep": "",
     },
+    "moonshot": {
+        # Moonshot / Kimi (OpenAI-compatible). A cheap small-context model for
+        # the fast role, the K2 flagship for standard, the newest K2 for deep.
+        # Override any of these with SABNYX_MODEL_FAST/_STANDARD/_DEEP.
+        "fast": "moonshot-v1-32k",
+        "standard": "kimi-k2.5",
+        "deep": "kimi-k2.6",
+    },
 }
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+MOONSHOT_BASE_URL = "https://api.moonshot.ai/v1"
 
 
 def provider() -> str:
-    """Active provider. anthropic | openrouter | openai-compatible."""
+    """Active provider. anthropic | openrouter | openai-compatible | moonshot."""
     p = os.environ.get("SABNYX_LLM_PROVIDER", "anthropic").lower()
     if p not in ROLE_MODELS:
         raise ValueError(f"unknown SABNYX_LLM_PROVIDER={p!r}; one of {sorted(ROLE_MODELS)}")
@@ -294,10 +303,16 @@ def _call_anthropic(
     }
 
 
+_PROVIDER_DEFAULT_BASE_URL = {
+    "openrouter": OPENROUTER_BASE_URL,
+    "moonshot": MOONSHOT_BASE_URL,
+}
+
+
 def openai_base_url(prov: str) -> str:
     base_url = os.environ.get(
         "SABNYX_LLM_BASE_URL",
-        OPENROUTER_BASE_URL if prov == "openrouter" else "",
+        _PROVIDER_DEFAULT_BASE_URL.get(prov, ""),
     ).rstrip("/")
     if not base_url:
         raise ValueError("SABNYX_LLM_BASE_URL is required for provider=openai-compatible")
@@ -305,23 +320,43 @@ def openai_base_url(prov: str) -> str:
 
 
 def openai_api_key(prov: str) -> str:
-    api_key = os.environ.get("SABNYX_LLM_API_KEY") or (
-        os.environ.get("OPENROUTER_API_KEY", "") if prov == "openrouter" else ""
-    )
+    # provider-native key var honored as a fallback after the generic one
+    native = {"openrouter": "OPENROUTER_API_KEY", "moonshot": "MOONSHOT_API_KEY"}.get(prov)
+    api_key = os.environ.get("SABNYX_LLM_API_KEY") or (os.environ.get(native, "") if native else "")
     if not api_key:
-        raise ValueError(
-            f"no API key for provider {prov!r}; set SABNYX_LLM_API_KEY (or OPENROUTER_API_KEY)"
-        )
+        hint = f"SABNYX_LLM_API_KEY (or {native})" if native else "SABNYX_LLM_API_KEY"
+        raise ValueError(f"no API key for provider {prov!r}; set {hint}")
     return api_key
 
 
 def openai_body(
-    *, model: str, task_system: str, user: str, output_format: type[T], max_tokens: int
+    *,
+    model: str,
+    task_system: str,
+    user: str,
+    output_format: type[T],
+    max_tokens: int,
+    prov: str = "openai-compatible",
 ) -> dict:
     """The OpenAI-compatible chat-completions request body. Pure; the JSON
     schema is embedded in the prompt so it survives endpoints that ignore
-    response_format."""
+    response_format.
+
+    Moonshot/Kimi supports the universal ``{"type": "json_object"}`` mode but
+    not OpenAI's strict ``json_schema`` type, so it gets the former. Either
+    way the schema rides in the prompt and we validate with pydantic on our
+    side — the response_format is a hint, never the contract.
+    """
     schema = output_format.model_json_schema()
+    if prov == "moonshot":
+        # json_object mode requires the word "json" to appear in the messages;
+        # the user content below already does.
+        response_format: dict = {"type": "json_object"}
+    else:
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": output_format.__name__, "schema": schema, "strict": True},
+        }
     return {
         "model": model,
         "max_tokens": max_tokens,
@@ -330,14 +365,14 @@ def openai_body(
             {
                 "role": "user",
                 "content": user
-                + "\n\nRespond with a single JSON object matching this schema, nothing else:\n"
+                + "\n\nReturn ONLY a single JSON object that is a valid *instance* of the "
+                "schema below — that is, the actual data, NOT the schema definition "
+                'itself (do not echo keys like "$defs", "properties", or "title"). '
+                "No prose, no markdown code fences.\nJSON schema (for reference only):\n"
                 + json.dumps(schema),
             },
         ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": output_format.__name__, "schema": schema, "strict": True},
-        },
+        "response_format": response_format,
     }
 
 
@@ -365,6 +400,7 @@ def _call_openai_compatible(
         user=user,
         output_format=output_format,
         max_tokens=max_tokens,
+        prov=prov,
     )
     headers = {"Authorization": f"Bearer {api_key}"}
     if prov == "openrouter":
