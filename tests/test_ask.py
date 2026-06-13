@@ -82,6 +82,20 @@ def test_ask_without_capture_proposal_never_prompts(tmp_vault, monkeypatch):
     assert not list(tmp_vault["INTAKE"].glob("*.md"))
 
 
+def test_clean_citations_drops_blanks_and_dedupes():
+    from sabnyx.services import _clean_citations
+
+    assert _clean_citations(["a", "", " a ", "B", "b"], "irrelevant") == ["a", "B"]
+
+
+def test_clean_citations_falls_back_to_answer_wikilinks():
+    from sabnyx.services import _clean_citations
+
+    # model left cited blank but cited inline — recover from the prose
+    out = _clean_citations(["", "  "], "see [[foo-bar]] and [[baz]] and [[foo-bar]]")
+    assert out == ["foo-bar", "baz"]
+
+
 def test_ask_routes_by_message(tmp_vault, monkeypatch):
     _, calls = _run_ask(monkeypatch, ["[deep] q?", "--no-capture"])
     assert calls[0]["role"] == "deep"

@@ -19,6 +19,7 @@ import sys
 import click
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 
 from .. import llm, services
 from ..paths import ensure_tree
@@ -62,7 +63,9 @@ def ask_cmd(question: str, role: str | None, capture_flag: bool | None, yes: boo
     console.print()
     console.print(Markdown(answer.answer))
     if answer.cited:
-        console.print(f"\n[dim]cited: {', '.join(f'[[{s}]]' for s in answer.cited)}[/dim]")
+        # escape so Rich renders the [[wikilink]] brackets literally
+        cites = escape(", ".join(f"[[{s}]]" for s in answer.cited))
+        console.print(f"\n[dim]cited: {cites}[/dim]")
 
     # -- capture: the answer becomes a page ------------------------------------------
     if answer.capture is None or capture_flag is False:
