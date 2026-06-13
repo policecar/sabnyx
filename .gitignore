@@ -39,3 +39,6 @@ vault/_review/scratch/
 secrets/
 # local Kimi/Moonshot API key (MOONSHOT_API_KEY=sk-...) — never commit
 moonshot
+
+# Rust build output
+/opsctl/target/
