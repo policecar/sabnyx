@@ -20,7 +20,7 @@ def test_moonshot_is_a_known_provider(monkeypatch):
 def test_moonshot_role_defaults(monkeypatch):
     for var in ("SABNYX_MODEL_FAST", "SABNYX_MODEL_STANDARD", "SABNYX_MODEL_DEEP"):
         monkeypatch.delenv(var, raising=False)
-    assert llm.model_for("fast", "moonshot") == "moonshot-v1-32k"
+    assert llm.model_for("fast", "moonshot") == "kimi-k2.5"
     assert llm.model_for("standard", "moonshot") == "kimi-k2.5"
     assert llm.model_for("deep", "moonshot") == "kimi-k2.6"
 

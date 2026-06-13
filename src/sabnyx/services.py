@@ -17,7 +17,7 @@ from rich.console import Console
 
 from . import context, ledger, llm, paths, sources, writers
 from .schemas import AskAnswer, IngestChangeset, ProposedIntake
-from .util import slugify
+from .util import extract_wikilinks, slugify
 
 ACTOR_INGEST = "sabnyx-ingest"
 ACTOR_ASK = "sabnyx-ask"
@@ -190,6 +190,25 @@ class AskResult:
     role: str
 
 
+def _clean_citations(cited: list[str], answer_text: str) -> list[str]:
+    """Make `cited` trustworthy regardless of how the model filled it.
+
+    Models (especially smaller ones) sometimes return blank citation slots or
+    cite inline but leave `cited` empty. Drop blanks, dedupe order-preserving,
+    and fall back to the [[wikilinks]] actually present in the answer prose."""
+    candidates = [c.strip() for c in cited if c and c.strip()]
+    if not candidates:
+        candidates = extract_wikilinks(answer_text)
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for c in candidates:
+        key = c.lower()
+        if key not in seen:
+            seen.add(key)
+            cleaned.append(c)
+    return cleaned
+
+
 def answer_question(
     *, question: str, role_override: str | None = None, actor: str = ACTOR_ASK
 ) -> AskResult:
@@ -212,6 +231,7 @@ def answer_question(
         actor=actor,
         purpose=purpose,
     )
+    answer.cited = _clean_citations(answer.cited, answer.answer)
     ledger.append_event(
         plane="projection",
         kind="ask.answered",

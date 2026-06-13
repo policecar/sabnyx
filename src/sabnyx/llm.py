@@ -58,10 +58,11 @@ ROLE_MODELS: dict[str, dict[str, str]] = {
         "deep": "",
     },
     "moonshot": {
-        # Moonshot / Kimi (OpenAI-compatible). A cheap small-context model for
-        # the fast role, the K2 flagship for standard, the newest K2 for deep.
-        # Override any of these with SABNYX_MODEL_FAST/_STANDARD/_DEEP.
-        "fast": "moonshot-v1-32k",
+        # Moonshot / Kimi (OpenAI-compatible). All three roles use the sharp
+        # K2 family — the older moonshot-v1 models follow structured-output
+        # instructions poorly. fast/standard share the cheaper K2.5; deep gets
+        # the newest K2.6. Override any with SABNYX_MODEL_FAST/_STANDARD/_DEEP.
+        "fast": "kimi-k2.5",
         "standard": "kimi-k2.5",
         "deep": "kimi-k2.6",
     },
