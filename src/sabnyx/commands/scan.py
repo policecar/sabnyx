@@ -21,7 +21,7 @@ from __future__ import annotations
 import click
 from rich.console import Console
 
-from .. import context, fm, ledger, llm, paths, writers
+from .. import context, fm, ledger, llm, paths, retrieval, writers
 from ..paths import ensure_tree
 from ..schemas import ContradictionScan
 
@@ -88,7 +88,9 @@ def scan_cmd(role: str, yes: bool, dry_run: bool) -> None:
 
     result = llm.parse_structured(
         task_system=_TASK_SYSTEM,
-        user="## Atlas (durable knowledge; excerpts)\n" + context.excerpts(index),
+        user="## Atlas (durable knowledge; excerpts)\n"
+        # Contradiction scan wants the whole atlas, not a query-ranked slice.
+        + retrieval.get_retriever().retrieve(None, index),
         output_format=ContradictionScan,
         role=role,  # type: ignore[arg-type]
         actor=ACTOR,
