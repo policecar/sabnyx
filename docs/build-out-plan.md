@@ -102,11 +102,22 @@ direction only: vault → halbor.
   dump), ingest untouched (`description_index`). Vector index still deferred
   (YAGNI — 3 atlas files, ~120-file budget headroom). 144 Python tests
   (9 new); 135 pre-existing stayed byte-for-byte green.
+- **Phase 5 — halbor v0 (the face), in progress**: sibling repo
+  `/Users/USER/src/halbor`, branch `feat/projection-core` @ `7e4ff40` (off
+  its `main`). Projection core shipped: `halbor project` reads the vault as a
+  *data contract* (markdown+frontmatter, no sabnyx code dep) and emits staged
+  markdown + `llms.txt`. Two sensitivity gates — structural (atlas-only; the
+  temporal/operational/raw tiers are never read) + per-file `visibility:`
+  (opt-out, fail-closed on odd values) — plus frontmatter redaction (allowlist
+  `description`/`tags`) and a one-direction guard that refuses to write into
+  the vault. Contract in halbor `docs/adr/0001-projection-contract.md`. 16
+  tests; verified against the live vault. **Deferred to v1:** the thin
+  persona/query interface over the projected face (reuses the retrieval seam).
 
-**Next: Phase 5 — halbor (the face).** Sibling repo at
-`/Users/USER/src/halbor` (currently empty): read-only projection of the
-vault — frontmatter sensitivity filter → staged markdown + `llms.txt`, plus a
-thin persona/query interface. One direction only: vault → halbor.
+**Next: Phase 5 v1 — halbor persona/query interface.** A `halbor ask`-style
+conversational face over the *projected* vault (`build/site` + `llms.txt`),
+grounded + cited, reusing the Phase 4 retrieval pattern. Still one direction:
+vault → face → reader; the face never writes back.
 
 Phase 4 as built (2026-06-13) — the surface below, with the grep impl
 keyword-ranked rather than query-blind:
