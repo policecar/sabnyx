@@ -69,3 +69,40 @@ direction only: vault → halbor.
 - Multi-machine Syncthing (git already syncs one user across machines)
 - NanoClaw container fleet / multi-channel gateway
 - Payments (x402/USDC) — not even in jibot; ledger hashing covers integrity
+
+## Progress & resume (last updated 2026-06-13)
+
+**Done (committed on `feat/brain-buildout`):**
+- Phase 0 (pre-existing, from `feat/jibot-agent`): full LLM loop —
+  ingest / ask / reweave / scan / verify / serve — + Kimi/Moonshot provider,
+  citation fixes, the captured jibot source mirror.
+- **Phase 1 — heartbeat** (`effa4fe`): `sabnyx tend` (two-speed triage →
+  reweave → health), `services.promote_file`, deterministic gate,
+  `config.trusted_sources`, `recipes/heartbeat.sh`. 113 Python tests.
+- **Phase 2 — opsctl** (`342edb4`): Rust crate `opsctl/` (query / project /
+  supervise), ledger byte/hash-compatible with Python. 15 Rust tests.
+- README rewritten and accurate (`f1e5095`).
+
+**Next: Phase 3 — lightweight entity layer.** Planned changes:
+- SPEC §2: un-defer `person`/`org` types; add `project`. Note: lightweight
+  (entity pages + `aliases`), NOT Senzing-scale resolution (stays out).
+- `schemas.py`: `AtlasType += person|org|project`; `AtlasFrontmatter.aliases`.
+- `paths.py`: entity type dirs (e.g. `atlas/people`, `atlas/orgs`,
+  `atlas/projects`) + `ensure_tree`; `promote --as` choices.
+- New `sabnyx entities` command: `list`, `gaps` (recurring broken-wikilink
+  targets ≥ N → `gap` observations), `resolve` (alias/dup collisions, report).
+- Tests; keep the 113 green.
+
+Then Phase 4 (retrieval seam) and Phase 5 (**halbor** — sibling repo at
+`/Users/p/src/_px/halbor`, the read-only projection/face; vault → halbor only).
+
+**Environment / resume checklist:**
+- Work in worktree `/Users/p/src/_px/sabnyx/.worktrees/brain` (branch
+  `feat/brain-buildout`, off `feat/jibot-agent`). `uv run pytest -q` → 113.
+- Other worktree: `.worktrees/kimi-agent` (branch `feat/jibot-agent`, the Kimi
+  agent; PR to `main` deprioritized but pending push by the operator).
+- `main` has an uncommitted `.gitignore` (the `moonshot` ignore fix) — folds in
+  when `feat/jibot-agent`/`feat/brain-buildout` merges, or commit it to main.
+- Kimi key lives in the gitignored `moonshot` file at each worktree root
+  (`MOONSHOT_API_KEY=...`); `SABNYX_LLM_PROVIDER=moonshot`. Use sparingly.
+- halbor repo: `/Users/p/src/_px/halbor` (sibling), currently empty.
