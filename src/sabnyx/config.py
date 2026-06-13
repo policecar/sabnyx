@@ -18,6 +18,24 @@ from pathlib import Path
 
 from .paths import ROOT
 
+# Default trusted source agents for deterministic auto-promote.
+_DEFAULT_TRUSTED_SOURCES = {"sabnyx-ingest"}
+
+
+def trusted_sources() -> set[str]:
+    """Return the set of source_agent values trusted for auto-promotion.
+
+    Reads ``SABNYX_TRUSTED_SOURCES`` (comma-separated) from the environment.
+    If the variable is absent or empty, returns the default ``{"sabnyx-ingest"}``.
+
+    Pure and side-effect-free beyond reading ``os.environ``.
+    """
+    raw = os.environ.get("SABNYX_TRUSTED_SOURCES", "").strip()
+    if not raw:
+        return set(_DEFAULT_TRUSTED_SOURCES)
+    return {s.strip() for s in raw.split(",") if s.strip()}
+
+
 # Files checked, in order. Later files do not override earlier ones, and
 # nothing overrides a variable already present in the environment.
 LOCAL_ENV_FILES = (".env", "moonshot")

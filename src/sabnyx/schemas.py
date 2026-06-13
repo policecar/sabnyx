@@ -211,6 +211,33 @@ class ReweaveChangeset(BaseModel):
     observations: list[ProposedObservation] = Field(default_factory=list)
 
 
+# -- triage batch (LLM boundary) -----------------------------------------------
+
+
+class TriageItem(BaseModel):
+    """One triage decision proposed by the LLM triage pass.
+
+    action: promote → the LLM wants this file promoted as atlas_type.
+            keep    → stays in intake/ for manual review.
+            discard → note only; we never auto-delete.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str
+    action: Literal["promote", "keep", "discard"]
+    atlas_type: Literal["concept", "reference", "idea"] | None = None
+    reason: str
+
+
+class TriageBatch(BaseModel):
+    """Batch triage decisions from one LLM call over the deferred intake queue."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[TriageItem] = Field(default_factory=list)
+
+
 # -- normalized envelope (adapters) --------------------------------------------
 
 EnvelopeSource = Literal["cli", "telegram", "email", "web", "slack", "other"]
