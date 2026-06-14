@@ -183,3 +183,65 @@ def test_ask_feeds_grep_context_and_still_cites(tmp_vault, monkeypatch):
     assert "Agents prefer markdown surfaces" in user
     # and the citation survived end-to-end
     assert "markdown-is-the-new-html" in result.output
+
+
+# ---------------------------------------------------------------------------
+# VectorRetriever — opt-in semantic retrieval (model2vec stubbed, real cosine)
+# ---------------------------------------------------------------------------
+
+
+class _FakeStaticModel:
+    """Deterministic stand-in for model2vec: 3-dim keyword-count vectors over
+    (vector/embedding/cosine, markdown/html, git/sync)."""
+
+    def encode(self, texts):
+        import numpy as np
+
+        def vec(t: str):
+            t = t.lower()
+            return [
+                t.count("vector") + t.count("embedding") + t.count("cosine"),
+                t.count("markdown") + t.count("html"),
+                t.count("git") + t.count("sync"),
+            ]
+
+        return np.asarray([vec(t) for t in texts], dtype="float32")
+
+
+def test_vector_registered_and_resolves(monkeypatch):
+    monkeypatch.setenv("SABNYX_RETRIEVER", "vector")
+    r = retrieval.get_retriever()
+    assert isinstance(r, retrieval.VectorRetriever)
+    assert r.name == "vector"
+    assert "vector" in retrieval._REGISTRY
+
+
+def test_vector_ranks_semantically_relevant_first(atlas, monkeypatch):
+    _, index = atlas
+    monkeypatch.setattr(retrieval, "_embedder", _FakeStaticModel)
+    out = retrieval.VectorRetriever().retrieve("semantic embeddings cosine recall", index)
+    for slug in index:
+        assert f"### {slug}" in out, slug  # recall preserved within budget
+    pos = {s: out.index(f"### {s}") for s in index}
+    assert pos["vector-search"] < pos["markdown-surfaces"]
+    assert pos["vector-search"] < pos["git-sync"]
+
+
+def test_vector_no_query_is_grep_dump_and_stays_lazy(atlas, monkeypatch):
+    _, index = atlas
+
+    def _boom():
+        raise AssertionError("_embedder must not load when there is no query")
+
+    monkeypatch.setattr(retrieval, "_embedder", _boom)
+    assert retrieval.VectorRetriever().retrieve(None, index) == context.excerpts(index)
+
+
+def test_vector_exclude_is_honored(atlas, monkeypatch):
+    _, index = atlas
+    monkeypatch.setattr(retrieval, "_embedder", _FakeStaticModel)
+    out = retrieval.VectorRetriever().retrieve(
+        "vector embeddings", index, exclude=index["vector-search"]
+    )
+    assert "### vector-search" not in out
+    assert "### markdown-surfaces" in out
