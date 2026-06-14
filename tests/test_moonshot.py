@@ -74,3 +74,64 @@ def test_non_moonshot_body_keeps_json_schema():
         max_tokens=200,
     )
     assert b["response_format"]["type"] == "json_schema"
+
+
+# -- the empty-content / reasoning-budget path ----------------------------------------
+
+
+class _FakeResp:
+    """Minimal stand-in for an httpx.Response at the chat-completions boundary."""
+
+    def __init__(self, payload: dict, status_code: int = 200, text: str = ""):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = text
+
+    def raise_for_status(self) -> None:  # 2xx in these tests
+        pass
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def _completion(content: str, finish_reason: str = "stop") -> dict:
+    return {
+        "choices": [{"message": {"content": content}, "finish_reason": finish_reason}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+
+
+def _call(monkeypatch, payload: dict, *, max_tokens: int = 2048):
+    import httpx
+
+    monkeypatch.delenv("SABNYX_LLM_API_KEY", raising=False)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "sk-kimi")
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: _FakeResp(payload))
+    return llm._call_openai_compatible(
+        prov="moonshot",
+        model="kimi-k2.5",
+        task_system="t",
+        user="u",
+        output_format=HealthProbe,
+        max_tokens=max_tokens,
+        purpose="verify",
+    )
+
+
+def test_openai_compatible_parses_valid_content(monkeypatch):
+    parsed, usage = _call(monkeypatch, _completion('{"ok": true, "note": "hi"}'))
+    assert parsed.ok is True
+    assert parsed.note == "hi"
+    assert usage["stop_reason"] == "stop"
+    assert usage["output_tokens"] == 5
+
+
+def test_openai_compatible_empty_on_length_names_max_tokens(monkeypatch):
+    # The original verify failure: reasoning ate the budget, content == "".
+    with pytest.raises(RuntimeError, match=r"empty output.*max_tokens=2048"):
+        _call(monkeypatch, _completion("", finish_reason="length"))
+
+
+def test_openai_compatible_empty_on_stop_is_clear(monkeypatch):
+    with pytest.raises(RuntimeError, match=r"empty output.*finish_reason='stop'"):
+        _call(monkeypatch, _completion("", finish_reason="stop"))

@@ -417,7 +417,24 @@ def _call_openai_compatible(
     resp.raise_for_status()
     data = resp.json()
 
-    content = data["choices"][0]["message"]["content"] or ""
+    choice = data["choices"][0]
+    content = choice["message"]["content"] or ""
+    # Empty content is the reasoning-model trap: kimi-k2.x bill thinking against
+    # max_tokens, so too small a budget exhausts the limit during the reasoning
+    # phase (finish_reason="length") and content comes back "". Fail loud here —
+    # otherwise it surfaces downstream as a cryptic "Invalid JSON: EOF".
+    if not content.strip():
+        finish = choice.get("finish_reason")
+        if finish == "length":
+            raise RuntimeError(
+                f"model returned empty output ({purpose}): hit max_tokens={max_tokens} "
+                "before emitting content — reasoning models bill thinking against "
+                "max_tokens, so raise the budget."
+            )
+        raise RuntimeError(
+            f"model returned empty output ({purpose}): finish_reason={finish!r}, "
+            "no content in the response."
+        )
     try:
         parsed = output_format.model_validate_json(_extract_json(content))
     except ValidationError as e:
@@ -429,7 +446,7 @@ def _call_openai_compatible(
     return parsed, {
         "input_tokens": u.get("prompt_tokens"),
         "output_tokens": u.get("completion_tokens"),
-        "stop_reason": data["choices"][0].get("finish_reason"),
+        "stop_reason": choice.get("finish_reason"),
     }
 
 
