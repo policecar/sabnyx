@@ -84,7 +84,11 @@ def verify_cmd(role: str, all_roles: bool) -> None:
                 role=r,  # type: ignore[arg-type]
                 actor=ACTOR,
                 purpose="verify",
-                max_tokens=200,
+                # Reasoning models (e.g. kimi-k2.x) bill thinking against
+                # max_tokens; 200 is exhausted mid-reasoning, yielding empty
+                # content. 2048 leaves room for the thinking phase + a tiny
+                # HealthProbe answer. Cost is trivial — verify is a one-shot.
+                max_tokens=2048,
             )
         except Exception as e:  # noqa: BLE001 — verify reports every failure mode
             console.print(f"[red]{r}: FAILED[/red] — {type(e).__name__}: {e}")
