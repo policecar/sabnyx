@@ -99,9 +99,16 @@ direction only: vault → halbor.
   vector phase). `SABNYX_RETRIEVER` switch via `config.retriever_name()`
   (default `grep`; unknown → fail-fast). Call sites: `ask` passes the
   question, `reweave` passes the target page, `scan` passes no query (full
-  dump), ingest untouched (`description_index`). Vector index still deferred
-  (YAGNI — 3 atlas files, ~120-file budget headroom). 144 Python tests
+  dump), ingest untouched (`description_index`). 144 Python tests
   (9 new); 135 pre-existing stayed byte-for-byte green.
+- **Vector retriever (opt-in, post-milestone)**: `VectorRetriever` registered
+  as `SABNYX_RETRIEVER=vector` — static embeddings (model2vec
+  `potion-retrieval-32M`, torch-free, ~30MB, CPU) rank pages by cosine, then
+  render through the same `context.excerpts` block as grep (only the order
+  changes). Optional `[vector]` extra, lazy-loaded; **default stays grep**.
+  Built ahead of the "grep demonstrably hurts" trigger by explicit request;
+  the opt-in default keeps the YAGNI posture intact. 148 Python tests
+  (4 new, model2vec stubbed); validated against the live model.
 - **Phase 5 — halbor v0 (the face), in progress**: sibling repo
   `/Users/p/src/_px/halbor`, branch `feat/projection-core` @ `7e4ff40` (off
   its `main`). Projection core shipped: `halbor project` reads the vault as a
