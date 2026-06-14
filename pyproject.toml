@@ -14,6 +14,14 @@ dependencies = [
     "anthropic>=0.109.1",
 ]
 
+[project.optional-dependencies]
+# Opt-in semantic retrieval (SABNYX_RETRIEVER=vector). Static embeddings —
+# torch-free, ~30MB, CPU. Install with `uv sync --extra vector`.
+vector = [
+    "model2vec>=0.3",
+    "numpy>=1.26",
+]
+
 [project.scripts]
 sabnyx = "sabnyx.cli:main"
 
@@ -22,6 +30,7 @@ dev-dependencies = [
     "ruff>=0.6",
     "ty>=0.0.1a1",
     "pytest>=8.0",
+    "numpy>=1.26",  # for the vector-retriever cosine tests (model2vec stubbed)
 ]
 
 [tool.ruff]
