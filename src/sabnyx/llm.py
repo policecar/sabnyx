@@ -161,6 +161,25 @@ def contract_text() -> str:
 T = TypeVar("T", bound=BaseModel)
 
 
+class StructuredOutputError(RuntimeError):
+    """A model's output could not be validated against the requested schema,
+    even after repair attempts. Carries the raw text so a caller can attempt a
+    best-effort salvage (e.g. drop an optional field) rather than lose the whole
+    response. Subclasses RuntimeError, so existing `except RuntimeError` callers
+    keep working."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_content: str | None = None,
+        output_format: type | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.raw_content = raw_content
+        self.output_format = output_format
+
+
 def parse_structured(
     *,
     task_system: str,
@@ -377,6 +396,25 @@ def openai_body(
     }
 
 
+# One corrective re-ask after the first schema-validation failure. Models
+# (especially smaller ones) softly violate constraints embedded in the schema —
+# a single repair turn with the error fed back recovers the vast majority, and
+# preserves the schema contract instead of relaxing it.
+_MAX_REPAIR_ATTEMPTS = 1
+
+
+def _repair_instruction(error: ValidationError) -> str:
+    """The corrective follow-up turn for a re-ask after validation failed."""
+    return (
+        "Your previous response failed schema validation:\n"
+        f"{error}\n\n"
+        "Return ONLY a corrected single JSON object that satisfies the schema. "
+        "Respect every field constraint — especially string length limits "
+        "(e.g. a `description` must not exceed its documented max_length). "
+        "No prose, no markdown fences."
+    )
+
+
 def _call_openai_compatible(
     *,
     prov: str,
@@ -390,7 +428,11 @@ def _call_openai_compatible(
     """OpenRouter / any OpenAI-compatible chat-completions endpoint, via
     httpx (already a transitive dep). Structured output requested through
     response_format json_schema where supported, pydantic-validated here
-    regardless — the schema is enforced on our side either way."""
+    regardless — the schema is enforced on our side either way.
+
+    On a validation failure the model is re-asked once with the error fed back
+    (``_MAX_REPAIR_ATTEMPTS``); only if the repair also fails do we raise a
+    ``StructuredOutputError`` carrying the raw text for best-effort salvage."""
     import httpx
 
     base_url = openai_base_url(prov)
@@ -408,45 +450,65 @@ def _call_openai_compatible(
         headers["HTTP-Referer"] = "https://github.com/policecar/sabnyx"
         headers["X-Title"] = "sabnyx"
 
-    resp = httpx.post(f"{base_url}/chat/completions", json=body, headers=headers, timeout=300)
-    if resp.status_code == 400 and "response_format" in resp.text:
-        # model doesn't support json_schema response_format; the schema is
-        # already in the prompt, so retry without the parameter
-        body.pop("response_format")
-        resp = httpx.post(f"{base_url}/chat/completions", json=body, headers=headers, timeout=300)
-    resp.raise_for_status()
-    data = resp.json()
+    def _post(b: dict) -> dict:
+        r = httpx.post(f"{base_url}/chat/completions", json=b, headers=headers, timeout=300)
+        if r.status_code == 400 and "response_format" in r.text:
+            # model doesn't support json_schema response_format; the schema is
+            # already in the prompt, so retry without the parameter
+            b.pop("response_format", None)
+            r = httpx.post(f"{base_url}/chat/completions", json=b, headers=headers, timeout=300)
+        r.raise_for_status()
+        return r.json()
 
-    choice = data["choices"][0]
-    content = choice["message"]["content"] or ""
-    # Empty content is the reasoning-model trap: kimi-k2.x bill thinking against
-    # max_tokens, so too small a budget exhausts the limit during the reasoning
-    # phase (finish_reason="length") and content comes back "". Fail loud here —
-    # otherwise it surfaces downstream as a cryptic "Invalid JSON: EOF".
-    if not content.strip():
-        finish = choice.get("finish_reason")
-        if finish == "length":
-            raise RuntimeError(
-                f"model returned empty output ({purpose}): hit max_tokens={max_tokens} "
-                "before emitting content — reasoning models bill thinking against "
-                "max_tokens, so raise the budget."
+    for attempt in range(_MAX_REPAIR_ATTEMPTS + 1):
+        data = _post(body)
+        choice = data["choices"][0]
+        content = choice["message"]["content"] or ""
+        # Empty content is the reasoning-model trap: kimi-k2.x bill thinking
+        # against max_tokens, so too small a budget exhausts the limit during the
+        # reasoning phase (finish_reason="length") and content comes back "". A
+        # re-ask can't fix a budget problem, so fail loud immediately.
+        if not content.strip():
+            finish = choice.get("finish_reason")
+            if finish == "length":
+                raise StructuredOutputError(
+                    f"model returned empty output ({purpose}): hit max_tokens={max_tokens} "
+                    "before emitting content — reasoning models bill thinking against "
+                    "max_tokens, so raise the budget.",
+                    output_format=output_format,
+                )
+            raise StructuredOutputError(
+                f"model returned empty output ({purpose}): finish_reason={finish!r}, "
+                "no content in the response.",
+                output_format=output_format,
             )
-        raise RuntimeError(
-            f"model returned empty output ({purpose}): finish_reason={finish!r}, "
-            "no content in the response."
-        )
-    try:
-        parsed = output_format.model_validate_json(_extract_json(content))
-    except ValidationError as e:
-        raise RuntimeError(
-            f"model output failed {output_format.__name__} validation ({purpose}): {e}"
-        ) from e
+        try:
+            parsed = output_format.model_validate_json(_extract_json(content))
+            break
+        except ValidationError as e:
+            if attempt >= _MAX_REPAIR_ATTEMPTS:
+                raise StructuredOutputError(
+                    f"model output failed {output_format.__name__} validation ({purpose}) "
+                    f"after {attempt + 1} attempt(s): {e}",
+                    raw_content=content,
+                    output_format=output_format,
+                ) from e
+            # feed the validation error back and re-ask once; keep the contract
+            body = {
+                **body,
+                "messages": [
+                    *body["messages"],
+                    {"role": "assistant", "content": content},
+                    {"role": "user", "content": _repair_instruction(e)},
+                ],
+            }
 
     u = data.get("usage", {})
     return parsed, {
         "input_tokens": u.get("prompt_tokens"),
         "output_tokens": u.get("completion_tokens"),
         "stop_reason": choice.get("finish_reason"),
+        "repair_attempts": attempt,
     }
 
 
