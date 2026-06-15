@@ -135,3 +135,62 @@ def test_openai_compatible_empty_on_length_names_max_tokens(monkeypatch):
 def test_openai_compatible_empty_on_stop_is_clear(monkeypatch):
     with pytest.raises(RuntimeError, match=r"empty output.*finish_reason='stop'"):
         _call(monkeypatch, _completion("", finish_reason="stop"))
+
+
+# -- the repair re-ask path ----------------------------------------------------------
+
+
+def _seq_call(monkeypatch, payloads: list[dict], *, max_tokens: int = 2048):
+    """Drive _call_openai_compatible with a sequence of httpx responses, one per
+    POST, so the repair re-ask sees a different reply than the first call."""
+    import httpx
+
+    monkeypatch.delenv("SABNYX_LLM_API_KEY", raising=False)
+    monkeypatch.setenv("MOONSHOT_API_KEY", "sk-kimi")
+    state = {"n": 0}
+
+    def fake_post(*a, **k):
+        i = min(state["n"], len(payloads) - 1)
+        state["n"] += 1
+        return _FakeResp(payloads[i])
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    result = llm._call_openai_compatible(
+        prov="moonshot",
+        model="kimi-k2.5",
+        task_system="t",
+        user="u",
+        output_format=HealthProbe,
+        max_tokens=max_tokens,
+        purpose="ask",
+    )
+    return result, state
+
+
+# a valid JSON object whose `note` violates HealthProbe's max_length=200
+_TOO_LONG = '{"ok": true, "note": "' + ("x" * 250) + '"}'
+
+
+def test_openai_compatible_repairs_after_one_failure(monkeypatch):
+    (parsed, usage), state = _seq_call(
+        monkeypatch,
+        [_completion(_TOO_LONG), _completion('{"ok": true, "note": "fixed"}')],
+    )
+    assert parsed.note == "fixed"
+    assert usage["repair_attempts"] == 1
+    assert state["n"] == 2  # original call + one repair re-ask
+
+
+def test_openai_compatible_repair_exhausted_raises_structured_error(monkeypatch):
+    with pytest.raises(llm.StructuredOutputError) as ei:
+        _seq_call(monkeypatch, [_completion(_TOO_LONG), _completion(_TOO_LONG)])
+    err = ei.value
+    assert err.output_format is HealthProbe
+    assert err.raw_content is not None
+    assert "xxxx" in err.raw_content  # carries the bad output for salvage
+    assert "after 2 attempt(s)" in str(err)
+
+
+def test_structured_output_error_is_a_runtime_error():
+    # callers that catch RuntimeError keep working
+    assert issubclass(llm.StructuredOutputError, RuntimeError)
