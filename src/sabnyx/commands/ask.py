@@ -67,6 +67,12 @@ def ask_cmd(question: str, role: str | None, capture_flag: bool | None, yes: boo
         cites = escape(", ".join(f"[[{s}]]" for s in answer.cited))
         console.print(f"\n[dim]cited: {cites}[/dim]")
 
+    if result.capture_dropped:
+        console.print(
+            "\n[yellow]note:[/yellow] [dim]a capture proposal was dropped — it didn't "
+            "satisfy the intake schema (e.g. description over 200 chars).[/dim]"
+        )
+
     # -- capture: the answer becomes a page ------------------------------------------
     if answer.capture is None or capture_flag is False:
         return

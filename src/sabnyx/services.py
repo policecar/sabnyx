@@ -16,10 +16,12 @@ route progress to a terminal or a string buffer.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date as date_cls
 from pathlib import Path
 
+from pydantic import ValidationError
 from rich.console import Console
 
 from . import context, ledger, llm, paths, retrieval, sources, writers
@@ -356,8 +358,9 @@ Rules, in addition to the SPEC and ROUTING contract above:
   must add something no existing file's description already covers. Simple
   lookups, restatements of one file, and negative results get capture = null.
 - A capture follows intake conventions: type is usually `thought` (synthesis,
-  decision) or `note`; description 30-200 chars, distinct from the title,
-  dense; body terse, specific, with [[wikilinks]] to the files it builds on.
+  decision) or `note`; description is one dense sentence of STRICTLY 30-200
+  characters (never exceed 200), distinct from the title; body terse, specific,
+  with [[wikilinks]] to the files it builds on.
 - Answer voice: terse but not curt; specific over abstract; no filler."""
 
 
@@ -474,6 +477,28 @@ def apply_ingest(
 class AskResult:
     answer: AskAnswer
     role: str
+    capture_dropped: bool = False  # a malformed optional capture was discarded
+
+
+def _salvage_ask_answer(error: llm.StructuredOutputError) -> AskAnswer:
+    """Best-effort floor: the answer is the deliverable, so never lose it to a
+    malformed *optional* capture. Re-parse the raw output with `capture` nulled;
+    re-raise if the answer itself can't be recovered."""
+    raw = error.raw_content
+    if raw is None or error.output_format is not AskAnswer:
+        raise error
+    try:
+        data = json.loads(llm._extract_json(raw))
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise error from exc
+    if not isinstance(data, dict):
+        raise error
+    data["capture"] = None  # drop the only part that failed; keep the answer
+    try:
+        return AskAnswer.model_validate(data)
+    except ValidationError:
+        # the answer too is unsalvageable — surface the original, not this retry
+        raise error from None
 
 
 def _clean_citations(cited: list[str], answer_text: str) -> list[str]:
@@ -509,14 +534,21 @@ def answer_question(
         f"## Question\n{question}"
     )
     purpose = f"ask:{slugify(question)[:60]}"
-    answer = llm.parse_structured(
-        task_system=ASK_TASK_SYSTEM,
-        user=user,
-        output_format=AskAnswer,
-        role=role,  # type: ignore[arg-type]
-        actor=actor,
-        purpose=purpose,
-    )
+    capture_dropped = False
+    try:
+        answer = llm.parse_structured(
+            task_system=ASK_TASK_SYSTEM,
+            user=user,
+            output_format=AskAnswer,
+            role=role,  # type: ignore[arg-type]
+            actor=actor,
+            purpose=purpose,
+        )
+    except llm.StructuredOutputError as e:
+        # The repair re-ask at the LLM boundary already failed; fall back to
+        # salvaging the answer without its optional capture.
+        answer = _salvage_ask_answer(e)
+        capture_dropped = True
     answer.cited = _clean_citations(answer.cited, answer.answer)
     ledger.append_event(
         plane="projection",
@@ -529,7 +561,7 @@ def answer_question(
             "capture_proposed": answer.capture is not None,
         },
     )
-    return AskResult(answer=answer, role=role)
+    return AskResult(answer=answer, role=role, capture_dropped=capture_dropped)
 
 
 def capture_answer(

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
 from click.testing import CliRunner
 
 from sabnyx import ledger
@@ -103,3 +106,65 @@ def test_ask_routes_by_message(tmp_vault, monkeypatch):
     assert calls[0]["role"] == "fast"
     _, calls = _run_ask(monkeypatch, ["what time?", "--role", "standard", "--no-capture"])
     assert calls[0]["role"] == "standard"
+
+
+# -- best-effort capture: a malformed optional capture never sinks the answer --------
+
+_ANSWER_WITH_BAD_CAPTURE = json.dumps(
+    {
+        "answer": "Markdown is the surface. [[markdown-is-the-new-html]]",
+        "cited": ["markdown-is-the-new-html"],
+        "capture": {
+            "type": "thought",
+            "title": "Agents prefer markdown",
+            "description": "x" * 250,  # over ProposedIntake's max_length=200
+            "tags": [],
+            "body": "Builds on [[markdown-is-the-new-html]].",
+        },
+    }
+)
+
+
+def _raise_structured_error(raw):
+    def boom(**kwargs):
+        from sabnyx import llm
+
+        raise llm.StructuredOutputError(
+            "AskAnswer validation failed", raw_content=raw, output_format=AskAnswer
+        )
+
+    return boom
+
+
+def test_answer_question_salvages_when_only_capture_invalid(tmp_vault, monkeypatch):
+    from sabnyx import services
+
+    monkeypatch.setattr(
+        services.llm, "parse_structured", _raise_structured_error(_ANSWER_WITH_BAD_CAPTURE)
+    )
+    result = services.answer_question(question="what surface should agents get?")
+    assert result.capture_dropped is True
+    assert result.answer.capture is None
+    assert "Markdown is the surface" in result.answer.answer
+    assert "markdown-is-the-new-html" in result.answer.cited
+
+
+def test_answer_question_reraises_when_answer_unsalvageable(tmp_vault, monkeypatch):
+    from sabnyx import services
+
+    raw = json.dumps({"cited": [], "capture": None})  # missing the required `answer`
+    monkeypatch.setattr(services.llm, "parse_structured", _raise_structured_error(raw))
+    with pytest.raises(services.llm.StructuredOutputError):
+        services.answer_question(question="q?")
+
+
+def test_ask_cli_shows_notice_when_capture_dropped(tmp_vault, monkeypatch):
+    from sabnyx.commands import ask as ask_mod
+
+    monkeypatch.setattr(
+        ask_mod.llm, "parse_structured", _raise_structured_error(_ANSWER_WITH_BAD_CAPTURE)
+    )
+    result = CliRunner().invoke(ask_mod.ask_cmd, ["what surface should agents get?"])
+    assert result.exit_code == 0, result.output
+    assert "Markdown is the surface" in result.output
+    assert "capture proposal was dropped" in result.output
