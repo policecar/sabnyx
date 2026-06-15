@@ -71,7 +71,7 @@ def _pending_targets() -> list[Path]:
     for subj in proposed:
         if subj in done:
             continue
-        p = paths.ROOT / subj
+        p = paths.DATA_ROOT / subj
         if p.is_file():
             out.append(p)
     return out
@@ -149,14 +149,14 @@ def _apply_links(
         new_body = set_marker_block(body, "related", lines, heading="Related")
         fm.write(path, meta, new_body)
 
-        rel = str(path.relative_to(paths.ROOT))
+        rel = str(path.relative_to(paths.DATA_ROOT))
         modified.append(rel)
         ledger.append_event(
             kind="atlas.reweaved",
             actor=ACTOR,
             subject=rel,
             payload={
-                "target": str(target.relative_to(paths.ROOT)),
+                "target": str(target.relative_to(paths.DATA_ROOT)),
                 "added_links": new_links,
                 "priority": add.priority,
                 "reason": add.reason,
@@ -203,7 +203,7 @@ def reweave_cmd(target: Path | None, role: str, yes: bool, dry_run: bool) -> Non
     index = context.slug_index(paths.ATLAS)
 
     for tgt in targets:
-        rel = str(tgt.relative_to(paths.ROOT))
+        rel = str(tgt.relative_to(paths.DATA_ROOT))
         console.print(f"\n[bold]reweave[/bold] {rel}  (role: {role}, model: {llm.model_for(role)})")
 
         changeset = llm.parse_structured(

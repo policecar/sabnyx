@@ -57,7 +57,7 @@ def promote_file(
     Raises RuntimeError on validation failure (destination is rolled back).
     """
     from . import fm
-    from .paths import ATLAS_TYPE_DIRS, KNOWLEDGE_LOG, ROOT
+    from .paths import ATLAS_TYPE_DIRS, DATA_ROOT, KNOWLEDGE_LOG
 
     meta, body, _kind = fm.load(source)
 
@@ -70,7 +70,7 @@ def promote_file(
         "description": meta["description"],
         "tags": meta.get("tags", []),
         "status": "final",
-        "promoted_from": str(source.relative_to(ROOT)),
+        "promoted_from": str(source.relative_to(DATA_ROOT)),
         "promoted_date": today,
         "last_verified": last_verified or today,
         "proof": None,
@@ -110,16 +110,16 @@ def promote_file(
         )
     with KNOWLEDGE_LOG.open("a", encoding="utf-8") as f:
         f.write(
-            f"- {today} promote: `{source.relative_to(ROOT)}` -> "
-            f"`{dest.relative_to(ROOT)}` ({atlas_type})\n"
+            f"- {today} promote: `{source.relative_to(DATA_ROOT)}` -> "
+            f"`{dest.relative_to(DATA_ROOT)}` ({atlas_type})\n"
         )
 
     ledger.append_event(
         kind="atlas.promoted",
         actor=actor,
-        subject=str(dest.relative_to(ROOT)),
+        subject=str(dest.relative_to(DATA_ROOT)),
         payload={
-            "from": str(source.relative_to(ROOT)),
+            "from": str(source.relative_to(DATA_ROOT)),
             "as": atlas_type,
             "description": meta["description"],
             "source_url": meta.get("source_url"),
@@ -131,7 +131,7 @@ def promote_file(
         plane="intent",
         kind="reweave.proposed",
         actor=actor,
-        subject=str(dest.relative_to(ROOT)),
+        subject=str(dest.relative_to(DATA_ROOT)),
         payload={
             "description": meta["description"],
             "tags": meta.get("tags", []),

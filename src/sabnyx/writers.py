@@ -34,7 +34,7 @@ def write_intake(
     slug = slugify(pi.title)
     path = paths.INTAKE / f"{slug}.md"
     if path.exists():
-        console.print(f"  [yellow]skip (exists)[/yellow] {path.relative_to(paths.ROOT)}")
+        console.print(f"  [yellow]skip (exists)[/yellow] {path.relative_to(paths.DATA_ROOT)}")
         return None
 
     meta: dict = {
@@ -57,7 +57,7 @@ def write_intake(
         path.unlink()
         return None
 
-    rel = str(path.relative_to(paths.ROOT))
+    rel = str(path.relative_to(paths.DATA_ROOT))
     ledger.append_event(
         kind="intake.created",
         actor=actor,
@@ -91,7 +91,7 @@ def write_observation(ob: ProposedObservation, *, actor: str, console: Console) 
     slug = slugify(ob.title)
     path = paths.OBSERVATIONS / f"{today}-{ob.category}-{slug}.md"
     if path.exists():
-        console.print(f"  [yellow]skip (exists)[/yellow] {path.relative_to(paths.ROOT)}")
+        console.print(f"  [yellow]skip (exists)[/yellow] {path.relative_to(paths.DATA_ROOT)}")
         return None
 
     meta = {
@@ -110,7 +110,7 @@ def write_observation(ob: ProposedObservation, *, actor: str, console: Console) 
         path.unlink()
         return None
 
-    rel = str(path.relative_to(paths.ROOT))
+    rel = str(path.relative_to(paths.DATA_ROOT))
     ledger.append_event(
         kind="observation.created",
         actor=actor,
