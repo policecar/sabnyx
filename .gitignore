@@ -10,6 +10,12 @@ __pycache__/
 # Git worktrees live here (in-repo, contained, never tracked)
 .worktrees/
 
+# Local agent tooling + scratch — never tracked
+.claude/
+.context/
+.test-status
+tmp/
+
 # Envs
 .venv/
 venv/
