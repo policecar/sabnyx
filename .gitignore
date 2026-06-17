@@ -48,3 +48,7 @@ moonshot
 
 # Rust build output
 /opsctl/target/
+
+/vault/
+/ops/events.jsonl
+/ops/knowledge-log.md
