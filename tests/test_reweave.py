@@ -70,7 +70,7 @@ def test_pending_targets_consumed_by_completion(tmp_vault):
     target = _make_atlas_file(
         tmp_vault["ATLAS_CONCEPTS"], "alpha", "a concept about alpha things, long enough to pass"
     )
-    rel = str(target.relative_to(tmp_vault["ROOT"]))
+    rel = str(target.relative_to(tmp_vault["DATA_ROOT"]))
     _propose_reweave(rel)
     assert [str(p) for p in rw._pending_targets()] == [str(target)]
 
@@ -139,7 +139,7 @@ def test_reweave_pending_applies_guarded_changeset(tmp_vault, monkeypatch):
         "a concept about gamma things, long enough to pass too",
         body="prose already links [[beta]] here.\n",
     )
-    rel = str(target.relative_to(tmp_vault["ROOT"]))
+    rel = str(target.relative_to(tmp_vault["DATA_ROOT"]))
     _propose_reweave(rel)
 
     result, calls = _run_reweave(monkeypatch, ["--yes"])
@@ -180,7 +180,7 @@ def test_reweave_dry_run_writes_nothing(tmp_vault, monkeypatch):
     target = _make_atlas_file(concepts, "alpha", "a concept about alpha things, long enough yes")
     _make_atlas_file(concepts, "beta", "a concept about beta things, also long enough to pass")
     _make_atlas_file(concepts, "gamma", "a concept about gamma things, long enough to pass too")
-    _propose_reweave(str(target.relative_to(tmp_vault["ROOT"])))
+    _propose_reweave(str(target.relative_to(tmp_vault["DATA_ROOT"])))
 
     result, calls = _run_reweave(monkeypatch, ["--dry-run"])
     assert result.exit_code == 0, result.output

@@ -9,7 +9,7 @@ import click
 from rich.console import Console
 
 from .. import fm
-from ..paths import INTAKE, ROOT, ensure_tree
+from ..paths import DATA_ROOT, INTAKE, ensure_tree
 from ..services import promote_file
 
 
@@ -53,7 +53,7 @@ def promote_cmd(source: Path, atlas_type: str, last_verified: str | None) -> Non
     dest = dest_dir / source.name
     if dest.exists():
         console.print(
-            f"[yellow]target exists: {dest.relative_to(ROOT)}[/yellow]\n"
+            f"[yellow]target exists: {dest.relative_to(DATA_ROOT)}[/yellow]\n"
             f"Consider reweaving into the existing file instead of promoting."
         )
         sys.exit(1)
@@ -64,5 +64,5 @@ def promote_cmd(source: Path, atlas_type: str, last_verified: str | None) -> Non
         console.print(f"[red]{e}[/red]")
         sys.exit(3)
 
-    console.print(f"[green]promoted[/green] {result.relative_to(ROOT)}")
+    console.print(f"[green]promoted[/green] {result.relative_to(DATA_ROOT)}")
     console.print("[dim]reweave.proposed appended to ledger[/dim]")
