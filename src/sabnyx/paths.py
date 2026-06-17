@@ -1,7 +1,29 @@
-"""Vault paths resolved from the repo root."""
+"""Vault and ops paths resolved from either the data root or the code repo root.
+
+Two roots exist:
+
+  ROOT      -- the sabnyx *code* repository root (detected via SPEC.md, never
+               changes at runtime).  Config files (.env, moonshot), SPEC.md,
+               ROUTING.md, and ops/scripts/ live here and MUST always resolve
+               from ROOT.
+
+  DATA_ROOT -- the *data* repository root: where vault/ and ops/events.jsonl /
+               ops/knowledge-log.md actually live.  Defaults to ROOT so that
+               existing single-repo setups are 100% unchanged.  Override with
+               the SABNYX_DATA_DIR env var to point at a separate private repo
+               without touching any other code.
+
+@decision DEC-001: Separate DATA_ROOT from ROOT via SABNYX_DATA_DIR env var
+@rationale: Allows vault + ledger to live in a separate private git repo while
+  keeping the code repo clean.  Defaulting to ROOT preserves existing behavior
+  exactly.  A pure helper (resolve_data_root) keeps the resolution logic
+  testable without import-time side effects or module-reload hacks.
+"""
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -18,8 +40,25 @@ def repo_root() -> Path:
     raise RuntimeError("could not locate sabnyx repo root (no SPEC.md found)")
 
 
+def resolve_data_root(env: Mapping[str, str], root: Path) -> Path:
+    """Return the data root given an environment mapping and a code root.
+
+    If ``SABNYX_DATA_DIR`` is set and non-empty in *env*, expand and resolve
+    it. Otherwise return *root* unchanged.
+
+    This is a pure function (no side effects beyond path resolution) so that
+    tests can call it directly without reloading the module.
+    """
+    raw = env.get("SABNYX_DATA_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return root
+
+
 ROOT: Path = repo_root()
-VAULT: Path = ROOT / "vault"
+DATA_ROOT: Path = resolve_data_root(os.environ, ROOT)
+
+VAULT: Path = DATA_ROOT / "vault"
 INTAKE: Path = VAULT / "intake"
 OBSERVATIONS: Path = INTAKE / ".observations"
 ATLAS: Path = VAULT / "atlas"
@@ -34,7 +73,7 @@ DOMAINS: Path = VAULT / "domains"
 REVIEW: Path = VAULT / "_review"
 SOURCES: Path = VAULT / "sources"  # raw immutable artifacts; no frontmatter schema
 
-OPS: Path = ROOT / "ops"
+OPS: Path = DATA_ROOT / "ops"
 EVENTS_JSONL: Path = OPS / "events.jsonl"
 KNOWLEDGE_LOG: Path = OPS / "knowledge-log.md"
 

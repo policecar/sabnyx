@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .. import fm
-from ..paths import ATLAS, INTAKE, OBSERVATIONS, ROOT, SOURCES, VAULT
+from ..paths import ATLAS, DATA_ROOT, INTAKE, OBSERVATIONS, ROOT, SOURCES, VAULT
 from ..util import walk_vault_md
 
 
@@ -103,7 +103,7 @@ def lint_cmd(files: tuple[Path, ...], staged: bool) -> None:
         table.add_column("File", style="bold")
         table.add_column("Gate / error")
         for path, errs in failures:
-            table.add_row(str(path.relative_to(ROOT)), "\n".join(f"- {e}" for e in errs))
+            table.add_row(str(path.relative_to(DATA_ROOT)), "\n".join(f"- {e}" for e in errs))
         console.print(table)
         console.print(f"[red]{len(failures)} file(s) failed lint[/red]")
         sys.exit(1)

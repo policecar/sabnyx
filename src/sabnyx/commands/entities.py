@@ -88,7 +88,7 @@ def _broken_link_counts() -> dict[str, list[str]]:
             _meta, body, _kind = fm.load(p)
         except fm.FrontmatterError:
             continue
-        rel = str(p.relative_to(paths.ROOT))
+        rel = str(p.relative_to(paths.DATA_ROOT))
         # canonicalize + dedup targets within this file
         targets = {slugify(t) for t in extract_wikilinks(body) if t.strip()}
         for key in targets:

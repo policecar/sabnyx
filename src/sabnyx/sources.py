@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 from . import ledger
-from .paths import ROOT, SOURCES, ensure_tree
+from .paths import DATA_ROOT, SOURCES, ensure_tree
 from .schemas import ExtractionDepth
 from .util import slugify
 
@@ -69,7 +69,7 @@ def capture(
 
     path = SOURCES / f"{slugify(slug)}{suffix}"
     if path.exists():
-        raise FileExistsError(f"source already captured: {path.relative_to(ROOT)}")
+        raise FileExistsError(f"source already captured: {path.relative_to(DATA_ROOT)}")
 
     header = ""
     if source_url:
@@ -79,7 +79,7 @@ def capture(
     ledger.append_event(
         kind="source.captured",
         actor=actor,
-        subject=str(path.relative_to(ROOT)),
+        subject=str(path.relative_to(DATA_ROOT)),
         payload={
             "source_url": source_url,
             "chars": len(text),
