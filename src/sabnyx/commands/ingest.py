@@ -26,7 +26,7 @@ import click
 from rich.console import Console
 
 from .. import llm, services, sources
-from ..paths import ROOT, ensure_tree
+from ..paths import DATA_ROOT, ensure_tree
 from ..services import ACTOR_INGEST as ACTOR
 from ..util import slugify
 
@@ -90,7 +90,7 @@ def ingest_cmd(
         except FileExistsError as e:
             console.print(f"[red]{e}[/red]")
             sys.exit(1)
-        src_rel = str(src_path.relative_to(ROOT))
+        src_rel = str(src_path.relative_to(DATA_ROOT))
     else:
         src_rel = f"vault/sources/{slugify(src_title)}.md (dry run, not written)"
 
