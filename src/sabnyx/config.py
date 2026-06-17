@@ -1,14 +1,13 @@
 """Local credential loading for the operator's machine.
 
-The operator keeps provider config in dotenv-style files at the repo root —
-``.env`` and/or ``moonshot`` (the latter is exactly how the Kimi/Moonshot key
-was handed over: ``MOONSHOT_API_KEY=sk-...``). Both are gitignored.
+The operator keeps provider config and secrets (including ``MOONSHOT_API_KEY``)
+in a gitignored ``.env`` file at the repo root.
 
-``load_local_env()`` reads them into the process environment but never
-overrides a variable that is already set, so a real environment variable (or
-CI secret) always wins over an on-disk file. This is what lets ``sabnyx``
-run zero-config for a single user without a secrets manager, while staying
-safe to run in an environment that injects its own credentials.
+``load_local_env()`` reads it into the process environment but never overrides
+a variable that is already set, so a real environment variable (or CI secret)
+always wins over an on-disk file. This is what lets ``sabnyx`` run zero-config
+for a single user without a secrets manager, while staying safe to run in an
+environment that injects its own credentials.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ import os
 from pathlib import Path
 
 from .paths import ROOT
+from ._dotenv import LOCAL_ENV_FILES, parse_dotenv  # re-exported for callers
 
 # Default trusted source agents for deterministic auto-promote.
 _DEFAULT_TRUSTED_SOURCES = {"sabnyx-ingest"}
@@ -46,33 +46,6 @@ def trusted_sources() -> set[str]:
     if not raw:
         return set(_DEFAULT_TRUSTED_SOURCES)
     return {s.strip() for s in raw.split(",") if s.strip()}
-
-
-# Files checked, in order. Later files do not override earlier ones, and
-# nothing overrides a variable already present in the environment.
-LOCAL_ENV_FILES = (".env", "moonshot")
-
-
-def parse_dotenv(text: str) -> dict[str, str]:
-    """Parse KEY=VALUE lines. Ignores blanks, ``#`` comments, and a leading
-    ``export``. Strips matching single/double quotes around the value."""
-    out: dict[str, str] = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :]
-        key, sep, value = line.partition("=")
-        if not sep:
-            continue
-        key = key.strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-            value = value[1:-1]
-        if key:
-            out[key] = value
-    return out
 
 
 def load_local_env(root: Path | None = None) -> list[str]:

@@ -35,12 +35,11 @@ uv sync                          # install Python deps
 ```
 
 Configure a model provider. The simplest path is Kimi/Moonshot — drop a
-gitignored file named `moonshot` (or `.env`) at the repo root:
+gitignored `.env` file at the repo root:
 
 ```sh
 # .env  (auto-loaded; real env vars always win)
 SABNYX_LLM_PROVIDER=moonshot
-# moonshot   (the key, exactly as handed over)
 MOONSHOT_API_KEY=sk-...
 ```
 
@@ -155,7 +154,7 @@ src/sabnyx/            the Python package
   services.py          shared orchestration (ingest, ask, promote, triage)
   commands/            new, ingest, ask, tend, triage, promote, reweave,
                        scan, lint, health, serve, verify
-  config.py            local .env / moonshot autoload, trusted-source allowlist
+  config.py            local .env autoload, trusted-source allowlist
 
 opsctl/                the Rust control plane (ledger, query, project, supervise)
 recipes/               cron/launchd-ready scripts (heartbeat.sh)

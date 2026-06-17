@@ -229,7 +229,7 @@ sabnyx/src/sabnyx/
   services.py    shared orchestration: ingest, ask, promote, triage
   retrieval.py   the finder seam: GrepRetriever / VectorRetriever
   commands/      one file per CLI verb (ask, ingest, tend, verify, …)
-  config.py      .env / moonshot autoload, trusted sources
+  config.py      .env autoload, trusted sources
 opsctl/          the Rust clock: ledger, query, project, supervise
 
 halbor/src/halbor/
