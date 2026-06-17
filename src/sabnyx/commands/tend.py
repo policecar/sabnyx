@@ -69,7 +69,7 @@ def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
         from .. import llm
         from ..schemas import ReweaveChangeset
 
-        rel = str(tgt.relative_to(ATLAS.parent.parent))  # relative to ROOT
+        rel = str(tgt.relative_to(ATLAS.parent.parent))  # relative to DATA_ROOT (ATLAS = DATA_ROOT/vault/atlas)
         console.print(f"  [bold]reweave[/bold] {rel}")
 
         if dry_run:

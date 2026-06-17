@@ -29,7 +29,7 @@ from rich.console import Console
 
 from .. import ledger, services
 from ..adapters import telegram
-from ..paths import ROOT, ensure_tree
+from ..paths import DATA_ROOT, ensure_tree
 from ..schemas import NormalizedEnvelope
 
 ACTOR = "sabnyx-telegram"
@@ -122,7 +122,7 @@ def _ingest(text: str, *, title: str, source_kind: str, source_url: str | None) 
         src_path = sources.capture(text=text, slug=title, actor=ACTOR, source_url=source_url)
     except FileExistsError:
         return f"already captured something titled '{title}'."
-    src_rel = str(src_path.relative_to(ROOT))
+    src_rel = str(src_path.relative_to(DATA_ROOT))
 
     proposal = services.build_ingest_proposal(
         text=text,

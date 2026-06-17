@@ -14,7 +14,7 @@ import click
 from rich.console import Console
 
 from .. import fm, ledger
-from ..paths import INTAKE, OBSERVATIONS, REVIEW, ROOT, ensure_tree
+from ..paths import DATA_ROOT, INTAKE, OBSERVATIONS, REVIEW, ensure_tree
 
 
 def _age_days(created_iso: str | datetime) -> int:
@@ -78,13 +78,13 @@ def triage_cmd() -> None:
             try:
                 meta, _body, kind = fm.load(p)
             except fm.FrontmatterError as e:
-                lines.append(f"- [INVALID] {p.relative_to(ROOT)}: {e.errors}")
+                lines.append(f"- [INVALID] {p.relative_to(DATA_ROOT)}: {e.errors}")
                 continue
             age = _age_days(meta.get("created", ledger.now()))
             desc = meta.get("description", "")
             rec = _recommend(meta, kind)
             lines.append(
-                f"- `{p.relative_to(ROOT)}` ({meta.get('type')}, age {age}d)  -> {rec}\n  > {desc}"
+                f"- `{p.relative_to(DATA_ROOT)}` ({meta.get('type')}, age {age}d)  -> {rec}\n  > {desc}"
             )
         lines.append("")
 
@@ -95,10 +95,10 @@ def triage_cmd() -> None:
             try:
                 meta, _body, _kind = fm.load(p)
             except fm.FrontmatterError as e:
-                lines.append(f"- [INVALID] {p.relative_to(ROOT)}: {e.errors}")
+                lines.append(f"- [INVALID] {p.relative_to(DATA_ROOT)}: {e.errors}")
                 continue
             lines.append(
-                f"- `{p.relative_to(ROOT)}` "
+                f"- `{p.relative_to(DATA_ROOT)}` "
                 f"(category: {meta.get('category')}, status: {meta.get('status')})"
             )
         lines.append("")
@@ -109,11 +109,11 @@ def triage_cmd() -> None:
     ledger.append_event(
         kind="triage.proposed",
         actor="sabnyx-cli",
-        subject=str(out.relative_to(ROOT)),
+        subject=str(out.relative_to(DATA_ROOT)),
         payload={
             "intake_count": len(intake),
             "observation_count": len(obs),
         },
     )
-    console.print(f"[green]wrote[/green] {out.relative_to(ROOT)}")
+    console.print(f"[green]wrote[/green] {out.relative_to(DATA_ROOT)}")
     console.print(f"intake: [bold]{len(intake)}[/bold]   observations: [bold]{len(obs)}[/bold]")
