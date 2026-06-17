@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .. import fm, ledger
-from ..paths import ATLAS, INTAKE, OBSERVATIONS, ROOT, VAULT
+from ..paths import ATLAS, DATA_ROOT, INTAKE, OBSERVATIONS, VAULT
 from ..util import extract_wikilinks, walk_vault_md
 
 # Gate 5: jibot flags time-sensitive content whose last_verified is absent
@@ -139,7 +139,7 @@ def health_cmd(quick: bool) -> None:
     if broken_links:
         console.print("\n[yellow]broken wikilinks:[/yellow]")
         for path, target in broken_links[:20]:
-            console.print(f"  {path.relative_to(ROOT)}  -> [[{target}]]")
+            console.print(f"  {path.relative_to(DATA_ROOT)}  -> [[{target}]]")
         if len(broken_links) > 20:
             console.print(f"  ... and {len(broken_links) - 20} more")
 
@@ -147,21 +147,21 @@ def health_cmd(quick: bool) -> None:
         console.print("\n[yellow]stale atlas (Gate 5, verify or refresh):[/yellow]")
         for path, age in stale_atlas[:20]:
             label = "never verified" if age is None else f"{age}d"
-            console.print(f"  {path.relative_to(ROOT)}  ({label})")
+            console.print(f"  {path.relative_to(DATA_ROOT)}  ({label})")
         if len(stale_atlas) > 20:
             console.print(f"  ... and {len(stale_atlas) - 20} more")
 
     if untracked:
         console.print("\n[yellow]untracked provenance (Gate 3):[/yellow]")
         for path in untracked[:20]:
-            console.print(f"  {path.relative_to(ROOT)}")
+            console.print(f"  {path.relative_to(DATA_ROOT)}")
         if len(untracked) > 20:
             console.print(f"  ... and {len(untracked) - 20} more")
 
     if schema_drift:
         console.print("\n[red]schema drift:[/red]")
         for path, errs in schema_drift[:10]:
-            console.print(f"  {path.relative_to(ROOT)}: {errs}")
+            console.print(f"  {path.relative_to(DATA_ROOT)}: {errs}")
 
     # Ledger event for the audit
     ledger.append_event(

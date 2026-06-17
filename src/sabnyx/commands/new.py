@@ -8,7 +8,7 @@ from datetime import date as date_cls
 import click
 
 from .. import fm, ledger
-from ..paths import INTAKE, OBSERVATIONS, ROOT, ensure_tree
+from ..paths import DATA_ROOT, INTAKE, OBSERVATIONS, ensure_tree
 from ..util import slugify
 
 
@@ -104,7 +104,7 @@ def new_cmd(
     ledger.append_event(
         kind=f"{'observation' if type_ == 'observation' else 'intake'}.created",
         actor="sabnyx-cli",
-        subject=str(path.relative_to(ROOT)),
+        subject=str(path.relative_to(DATA_ROOT)),
         payload={
             "type": meta["type"],
             "description": description if type_ != "observation" else None,
