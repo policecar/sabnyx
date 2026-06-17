@@ -1,14 +1,13 @@
 """Local credential loading for the operator's machine.
 
-The operator keeps provider config in dotenv-style files at the repo root —
-``.env`` and/or ``moonshot`` (the latter is exactly how the Kimi/Moonshot key
-was handed over: ``MOONSHOT_API_KEY=sk-...``). Both are gitignored.
+The operator keeps provider config and secrets (including ``MOONSHOT_API_KEY``)
+in a gitignored ``.env`` file at the repo root.
 
-``load_local_env()`` reads them into the process environment but never
-overrides a variable that is already set, so a real environment variable (or
-CI secret) always wins over an on-disk file. This is what lets ``sabnyx``
-run zero-config for a single user without a secrets manager, while staying
-safe to run in an environment that injects its own credentials.
+``load_local_env()`` reads it into the process environment but never overrides
+a variable that is already set, so a real environment variable (or CI secret)
+always wins over an on-disk file. This is what lets ``sabnyx`` run zero-config
+for a single user without a secrets manager, while staying safe to run in an
+environment that injects its own credentials.
 """
 
 from __future__ import annotations

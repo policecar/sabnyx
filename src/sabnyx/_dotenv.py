@@ -11,7 +11,7 @@ from __future__ import annotations
 
 # Files consulted in order.  Later files do not override earlier ones, and
 # nothing overrides a variable already present in os.environ.
-LOCAL_ENV_FILES: tuple[str, ...] = (".env", "moonshot")
+LOCAL_ENV_FILES: tuple[str, ...] = (".env",)
 
 
 def parse_dotenv(text: str) -> dict[str, str]:

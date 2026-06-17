@@ -39,22 +39,22 @@ Green here means the code is sound; no network or keys involved.
 
 ### Provider prerequisites
 
-- **sabnyx** — the gitignored `moonshot` file at the repo root holds
-  `MOONSHOT_API_KEY`. The provider **defaults to `anthropic`**, so to exercise
-  Kimi you must set the provider explicitly:
+- **sabnyx** — put `MOONSHOT_API_KEY` in the gitignored `.env` file at the repo
+  root. The provider **defaults to `anthropic`**, so to exercise Kimi you must
+  set the provider explicitly:
 
   ```sh
-  export SABNYX_LLM_PROVIDER=moonshot     # key auto-loads from ./moonshot
+  export SABNYX_LLM_PROVIDER=moonshot     # key auto-loads from ./.env
   ```
 
   (Or set `ANTHROPIC_API_KEY` and leave the default.)
 
-- **halbor** — no key file by default. Copy sabnyx's; halbor then
-  **auto-selects** Kimi (it picks `moonshot` when a Moonshot key is present and
-  no Anthropic key):
+- **halbor** — no key file by default. Add the key to halbor's `.env`; halbor
+  then **auto-selects** Kimi (it picks `moonshot` when a Moonshot key is present
+  and no Anthropic key):
 
   ```sh
-  cp ../sabnyx/moonshot ../halbor/moonshot
+  echo "MOONSHOT_API_KEY=$(grep MOONSHOT_API_KEY ../sabnyx/.env | cut -d= -f2-)" >> ../halbor/.env
   ```
 
 ### sabnyx — cheapest → read-only → dry mutations
@@ -103,7 +103,7 @@ torch-free, CPU). Override with `SABNYX_EMBED_MODEL` / `HALBOR_EMBED_MODEL`.
 ## Suggested order
 
 1. **Layer 1** — prove green, free.
-2. Copy the `moonshot` key into halbor.
+2. Copy `MOONSHOT_API_KEY` from sabnyx's `.env` into halbor's `.env`.
 3. **Layer 2** — start with `sabnyx verify` (cheapest live call), then the
    read-only/dry commands, then halbor `project` → `ask`.
 4. **Layer 3** — only if you want to compare retrieval quality.

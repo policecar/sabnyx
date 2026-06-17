@@ -3,9 +3,8 @@
 Two roots exist:
 
   ROOT      -- the sabnyx *code* repository root (detected via SPEC.md, never
-               changes at runtime).  Config files (.env, moonshot), SPEC.md,
-               ROUTING.md, and ops/scripts/ live here and MUST always resolve
-               from ROOT.
+               changes at runtime).  Config files (.env), SPEC.md, ROUTING.md,
+               and ops/scripts/ live here and MUST always resolve from ROOT.
 
   DATA_ROOT -- the *data* repository root: where vault/ and ops/events.jsonl /
                ops/knowledge-log.md actually live.  Defaults to ROOT so that
@@ -19,14 +18,14 @@ Two roots exist:
   exactly.  A pure helper (resolve_data_root) keeps the resolution logic
   testable without import-time side effects or module-reload hacks.
 
-@decision DEC-002: effective_data_dir consults .env/moonshot at import time
+@decision DEC-002: effective_data_dir consults .env at import time
 @rationale: config.load_local_env() is called at CLI runtime, after paths.py is
   already imported and DATA_ROOT is frozen.  To honour SABNYX_DATA_DIR set in
-  .env without requiring a real env var, effective_data_dir reads dotenv files
-  directly at import time.  Precedence: real env var > .env > moonshot > ROOT.
-  This mirrors the setdefault philosophy in load_local_env() so a real env var
-  always wins.  _dotenv is imported here (not config) to avoid a circular
-  import (config imports paths for ROOT).
+  .env without requiring a real env var, effective_data_dir reads .env directly
+  at import time.  Precedence: real env var > .env > ROOT.  This mirrors the
+  setdefault philosophy in load_local_env() so a real env var always wins.
+  _dotenv is imported here (not config) to avoid a circular import (config
+  imports paths for ROOT).
 """
 
 from __future__ import annotations
@@ -72,8 +71,7 @@ def effective_data_dir(env: Mapping[str, str], root: Path) -> Path:
     Resolution order (first non-empty value wins):
       1. ``SABNYX_DATA_DIR`` from *env* (a real environment variable).
       2. ``SABNYX_DATA_DIR`` from ``root/.env``.
-      3. ``SABNYX_DATA_DIR`` from ``root/moonshot``.
-      4. *root* (default, same as ``resolve_data_root`` with no env var set).
+      3. *root* (default, same as ``resolve_data_root`` with no env var set).
 
     This is called at module import time so that DATA_ROOT is correct even
     before ``config.load_local_env()`` runs at CLI startup.  Real env vars

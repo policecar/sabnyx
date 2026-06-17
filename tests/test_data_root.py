@@ -192,20 +192,23 @@ def test_effective_dotenv_used_when_env_absent(tmp_path: Path) -> None:
     assert result == data_dir.resolve()
 
 
-def test_effective_moonshot_fallback_used(tmp_path: Path) -> None:
-    """When env and .env are absent/empty, moonshot file is the fallback."""
+def test_effective_moonshot_file_is_ignored(tmp_path: Path) -> None:
+    """The legacy 'moonshot' file is no longer consulted — only .env is read."""
     data_dir = tmp_path / "moonshot-data"
     data_dir.mkdir()
 
     moonshot = tmp_path / "moonshot"
     moonshot.write_text(f"SABNYX_DATA_DIR={data_dir}\n", encoding="utf-8")
 
+    # With no env var and no .env, the moonshot file must be ignored → root returned.
     result = effective_data_dir({}, tmp_path)
-    assert result == data_dir.resolve()
+    assert result == tmp_path, (
+        "moonshot file should be ignored; effective_data_dir must fall through to root"
+    )
 
 
-def test_effective_dotenv_beats_moonshot(tmp_path: Path) -> None:
-    """.env is consulted before moonshot (higher precedence)."""
+def test_effective_dotenv_used_without_moonshot(tmp_path: Path) -> None:
+    """.env is the sole dotenv source; moonshot file is not consulted."""
     dotenv_dir = tmp_path / "dotenv-data"
     dotenv_dir.mkdir()
     moonshot_dir = tmp_path / "moonshot-data"
@@ -214,6 +217,7 @@ def test_effective_dotenv_beats_moonshot(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text(
         f"SABNYX_DATA_DIR={dotenv_dir}\n", encoding="utf-8"
     )
+    # Write a moonshot file with a different value — it must be ignored.
     (tmp_path / "moonshot").write_text(
         f"SABNYX_DATA_DIR={moonshot_dir}\n", encoding="utf-8"
     )
@@ -243,18 +247,13 @@ def test_effective_empty_env_var_falls_through(tmp_path: Path) -> None:
         )
 
 
-def test_effective_empty_file_value_falls_through(tmp_path: Path) -> None:
-    """An empty/whitespace value in .env falls through to the next source."""
-    data_dir = tmp_path / "moonshot-data"
-    data_dir.mkdir()
-
+def test_effective_empty_file_value_falls_through_to_root(tmp_path: Path) -> None:
+    """An empty/whitespace value in .env falls through to root (no moonshot fallback)."""
     (tmp_path / ".env").write_text("SABNYX_DATA_DIR=\n", encoding="utf-8")
-    (tmp_path / "moonshot").write_text(
-        f"SABNYX_DATA_DIR={data_dir}\n", encoding="utf-8"
-    )
 
+    # No moonshot file; empty .env value must fall all the way through to root.
     result = effective_data_dir({}, tmp_path)
-    assert result == data_dir.resolve()
+    assert result == tmp_path
 
 
 def test_effective_tilde_expansion(tmp_path: Path) -> None:
