@@ -37,6 +37,7 @@ def tmp_vault(tmp_path, monkeypatch):
     atlas_projects = vault / "atlas" / "projects"
     mapping = {
         "ROOT": root,
+        "DATA_ROOT": root,
         "VAULT": vault,
         "INTAKE": vault / "intake",
         "OBSERVATIONS": vault / "intake" / ".observations",
