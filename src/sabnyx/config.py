@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 
 from .paths import ROOT
+from ._dotenv import LOCAL_ENV_FILES, parse_dotenv  # re-exported for callers
 
 # Default trusted source agents for deterministic auto-promote.
 _DEFAULT_TRUSTED_SOURCES = {"sabnyx-ingest"}
@@ -46,33 +47,6 @@ def trusted_sources() -> set[str]:
     if not raw:
         return set(_DEFAULT_TRUSTED_SOURCES)
     return {s.strip() for s in raw.split(",") if s.strip()}
-
-
-# Files checked, in order. Later files do not override earlier ones, and
-# nothing overrides a variable already present in the environment.
-LOCAL_ENV_FILES = (".env", "moonshot")
-
-
-def parse_dotenv(text: str) -> dict[str, str]:
-    """Parse KEY=VALUE lines. Ignores blanks, ``#`` comments, and a leading
-    ``export``. Strips matching single/double quotes around the value."""
-    out: dict[str, str] = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :]
-        key, sep, value = line.partition("=")
-        if not sep:
-            continue
-        key = key.strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-            value = value[1:-1]
-        if key:
-            out[key] = value
-    return out
 
 
 def load_local_env(root: Path | None = None) -> list[str]:
