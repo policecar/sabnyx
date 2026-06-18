@@ -133,6 +133,7 @@ grep -o '"kind":"[^"]*"' "$SABNYX_DATA_DIR"/ops/events.jsonl | sort | uniq -c
 | PTT does nothing, typing works | `CreationVoiceHandler` absent/renamed on your firmware — the one unverified API |
 | `GET /` is 404 | launched without `--static`, or the static path is wrong relative to cwd |
 | R1 won't install / rejects the scan | QR must encode the JSON payload (`{title,url,description,…}`), not a bare URL — use the fixed `install.html` or the SDK `qr` tool |
+| Responses lag many seconds | LLM provider latency (Moonshot measured ~35s round-trip) — run the ingress with `SABNYX_LLM_PROVIDER=anthropic` so the `fast` role uses Haiku; see DEPLOYMENT.md → "Rabbit R1 ingress" |
 
 Smartest order: **Stage 1 curl → Stage 2A tunnel → desktop-browser the tunnel URL
 → then the device.**
