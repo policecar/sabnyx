@@ -92,7 +92,12 @@ terminator with `limit_req`, and `SABNYX_R1_KEYS` in `~/sabnyx/.env`.
 
 ## Stage 3 — install on the R1 and test voice
 
-1. Open `https://<your-origin>/install.html` → scan the QR with the R1.
+1. Open `https://<your-origin>/install.html` on a screen. On the R1: **creations
+   card → Create tab → "add via QR code"** → scan it with the R1's camera. The
+   creation installs as a card at the bottom of the stack. (The QR encodes the
+   JSON payload the R1 installer expects — `{title,url,description,…}`, per the
+   official SDK QR creator. A bare URL won't install; `install.html` builds the
+   right payload.)
 2. First run prompts for a key → paste one of your `SABNYX_R1_KEYS` (stored in
    `creationStorage.secure`).
 3. Header shows `CAPTURE` + a live `intake N · atlas N` — if that loads, `/status`
@@ -127,6 +132,7 @@ grep -o '"kind":"[^"]*"' "$SABNYX_DATA_DIR"/ops/events.jsonl | sort | uniq -c
 | 401 everywhere | the key isn't in `SABNYX_R1_KEYS`, or the curl `$K` ≠ the server's key |
 | PTT does nothing, typing works | `CreationVoiceHandler` absent/renamed on your firmware — the one unverified API |
 | `GET /` is 404 | launched without `--static`, or the static path is wrong relative to cwd |
+| R1 won't install / rejects the scan | QR must encode the JSON payload (`{title,url,description,…}`), not a bare URL — use the fixed `install.html` or the SDK `qr` tool |
 
 Smartest order: **Stage 1 curl → Stage 2A tunnel → desktop-browser the tunnel URL
 → then the device.**

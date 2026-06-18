@@ -80,9 +80,17 @@ Bad/missing key → `401`. Empty/oversized/invalid body → `400`/`413`.
    }
    ```
 
-4. **Install on the R1**: open `https://<your-origin>/install.html`, scan the QR.
-   First run asks for one of your `SABNYX_R1_KEYS`; it's stored in
+4. **Install on the R1**: open `https://<your-origin>/install.html` on any screen,
+   then on the R1 go to the **creations card → Create → "add via QR code"** and
+   scan it with the R1's camera. The creation installs as a card at the bottom of
+   the stack. First run asks for one of your `SABNYX_R1_KEYS`; it's stored in
    `creationStorage.secure` (hardware-encrypted).
+
+   > The QR encodes the JSON payload the R1 installer expects —
+   > `{title, url, description, iconUrl, themeColor}`, matching the official SDK
+   > QR creator (`creations-sdk/qr`). A bare-URL QR won't install. `install.html`
+   > builds the correct payload; the SDK tool is the reference if you need to
+   > tweak fields.
 
 > **Security.** The static files are public *reads* and contain no secrets;
 > vault *writes* require the bearer key, which lives only on your device — so

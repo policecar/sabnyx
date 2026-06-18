@@ -49,12 +49,24 @@
 
     <script>
       // The Creation lives next to this page. Adjust if you host index.html
-      // elsewhere. (Same approach as the SDK's gemma-chat install.html.)
+      // elsewhere.
       var creationUrl = new URL("index.html", window.location.href).href;
+
+      // The R1's "add via QR code" installer expects a JSON payload, NOT a bare
+      // URL — matching the official SDK QR creator (creations-sdk/qr): the QR
+      // encodes JSON.stringify({title, url, description, iconUrl, themeColor}).
+      var payload = JSON.stringify({
+        title: "sabnyx",
+        url: creationUrl,
+        description: "Voice capture & ask, into your sabnyx vault",
+        iconUrl: "",
+        themeColor: "#ff6a3d",
+      });
+
       document.getElementById("url").textContent = creationUrl;
       document.getElementById("qr").src =
-        "https://api.qrserver.com/v1/create-qr-code/?size=200x200&bgcolor=0e0e10&color=ffffff&data=" +
-        encodeURIComponent(creationUrl);
+        "https://api.qrserver.com/v1/create-qr-code/?size=260x260&bgcolor=0e0e10&color=ffffff&data=" +
+        encodeURIComponent(payload);
     </script>
   </body>
 </html>
