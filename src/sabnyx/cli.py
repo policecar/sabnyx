@@ -15,6 +15,7 @@ from .commands.promote import promote_cmd
 from .commands.reweave import reweave_cmd
 from .commands.scan import scan_cmd
 from .commands.serve import serve_cmd
+from .commands.serve_http import serve_http_cmd
 from .commands.tend import tend_cmd
 from .commands.triage import triage_cmd
 from .commands.verify import verify_cmd
@@ -44,6 +45,7 @@ main.add_command(scan_cmd)
 main.add_command(entities_cmd)
 main.add_command(health_cmd)
 main.add_command(serve_cmd)
+main.add_command(serve_http_cmd)
 main.add_command(verify_cmd)
 
 

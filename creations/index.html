@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=240, height=282, initial-scale=1" />
+    <title>sabnyx</title>
+    <style>
+      :root {
+        --bg: #0e0e10;
+        --fg: #e8e8ea;
+        --dim: #8a8a90;
+        --accent: #ff6a3d;
+        --ok: #5fd08a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 240px;
+        height: 282px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 13px/1.35 -apple-system, system-ui, sans-serif;
+        overflow: hidden;
+      }
+      #app {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        padding: 8px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      #mode {
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        color: var(--accent);
+      }
+      #mode.ask {
+        color: var(--ok);
+      }
+      #status {
+        font-size: 11px;
+        color: var(--dim);
+      }
+      #log {
+        flex: 1;
+        margin: 8px 0;
+        padding: 6px;
+        background: #16161a;
+        border-radius: 6px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        font-size: 12px;
+      }
+      #ptt {
+        text-align: center;
+        font-size: 11px;
+        color: var(--dim);
+      }
+      #ptt.listening {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .fallback {
+        display: flex;
+        gap: 4px;
+        margin-top: 6px;
+      }
+      .fallback input {
+        flex: 1;
+        min-width: 0;
+        background: #16161a;
+        border: 1px solid #2a2a30;
+        color: var(--fg);
+        border-radius: 6px;
+        padding: 4px 6px;
+        font-size: 12px;
+      }
+      .fallback button,
+      #setup button {
+        background: var(--accent);
+        color: #0e0e10;
+        border: 0;
+        border-radius: 6px;
+        padding: 4px 8px;
+        font-weight: 700;
+      }
+      #setup {
+        display: none;
+        flex-direction: column;
+        gap: 6px;
+        height: 100%;
+        justify-content: center;
+      }
+      #setup input {
+        background: #16161a;
+        border: 1px solid #2a2a30;
+        color: var(--fg);
+        border-radius: 6px;
+        padding: 6px;
+      }
+      .hint {
+        font-size: 10px;
+        color: var(--dim);
+      }
+    </style>
+  </head>
+  <body>
+    <!-- First-run: paste the per-operator key (stored in creationStorage.secure) -->
+    <div id="setup">
+      <div>sabnyx setup</div>
+      <input id="keyInput" type="password" placeholder="paste API key" />
+      <button id="saveKey">save key</button>
+      <div class="hint">Stored encrypted on device. Get the key from your sabnyx operator.</div>
+    </div>
+
+    <div id="app" style="display: none">
+      <div class="row">
+        <span id="mode">CAPTURE</span>
+        <span id="status">…</span>
+      </div>
+      <div id="log" class="hint">
+        Hold PTT to speak. Side button switches CAPTURE ⇄ ASK.
+      </div>
+      <div id="ptt">▸ hold PTT to talk</div>
+      <div class="fallback">
+        <input id="textIn" placeholder="or type…" />
+        <button id="send">go</button>
+      </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/speak.js"></script>
+    <script src="js/voice.js"></script>
+    <script>
+      (function () {
+        var api = window.sabnyxApi;
+        var setup = document.getElementById("setup");
+        var app = document.getElementById("app");
+        var modeEl = document.getElementById("mode");
+        var statusEl = document.getElementById("status");
+        var logEl = document.getElementById("log");
+        var pttEl = document.getElementById("ptt");
+        var mode = "capture"; // "capture" | "ask"
+
+        function log(msg, cls) {
+          logEl.textContent = msg;
+          logEl.className = cls || "";
+        }
+        function setStatus(s) {
+          statusEl.textContent = s;
+        }
+        function renderMode() {
+          modeEl.textContent = mode === "ask" ? "ASK" : "CAPTURE";
+          modeEl.className = mode === "ask" ? "ask" : "";
+        }
+
+        async function refreshStatus() {
+          try {
+            var s = await api.status();
+            setStatus("intake " + s.intake + " · atlas " + s.atlas);
+          } catch (e) {
+            setStatus("offline?");
+          }
+        }
+
+        async function submit(text) {
+          if (!text) return;
+          log("…", "hint");
+          try {
+            var res = mode === "ask" ? await api.ask(text) : await api.ingest(text);
+            var reply = res.text || "(no response)";
+            log(reply);
+            window.sabnyxSpeak(reply);
+            refreshStatus();
+          } catch (e) {
+            log("error: " + e.message);
+          }
+        }
+
+        // Side button (single click): toggle CAPTURE ⇄ ASK.
+        window.addEventListener("sideClick", function () {
+          mode = mode === "ask" ? "capture" : "ask";
+          renderMode();
+        });
+
+        // PTT-hold voice -> rabbit cloud STT -> transcript -> submit.
+        window.sabnyxWireVoice(
+          function (transcript) {
+            log("“" + transcript + "”", "hint");
+            submit(transcript);
+          },
+          function (state) {
+            pttEl.className = state === "listening" ? "listening" : "";
+            pttEl.textContent =
+              state === "listening" ? "● listening…" : "▸ hold PTT to talk";
+          },
+        );
+
+        // Typed fallback (desktop / no bridge).
+        document.getElementById("send").addEventListener("click", function () {
+          var input = document.getElementById("textIn");
+          submit(input.value.trim());
+          input.value = "";
+        });
+
+        // First-run key flow.
+        document.getElementById("saveKey").addEventListener("click", async function () {
+          var k = document.getElementById("keyInput").value.trim();
+          if (!k) return;
+          await api.setKey(k);
+          start();
+        });
+
+        async function start() {
+          var key = await api.getKey();
+          if (!key) {
+            setup.style.display = "flex";
+            app.style.display = "none";
+            return;
+          }
+          setup.style.display = "none";
+          app.style.display = "flex";
+          renderMode();
+          refreshStatus();
+        }
+
+        start();
+      })();
+    </script>
+  </body>
+</html>
