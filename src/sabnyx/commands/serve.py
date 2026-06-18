@@ -12,6 +12,7 @@ ledger as wire.rejected and ignored — no reply, so the bot is not a spam
 target.
 
 Message routing (predictable, no LLM):
+    /start | /help                             -> greeting (no capture)
     /ask <q>  | /q <q> | text ending in '?'   -> ask
     /status | /health                          -> health summary
     a bare http(s):// URL                      -> ingest the URL
@@ -34,13 +35,26 @@ from ..schemas import NormalizedEnvelope
 
 ACTOR = "sabnyx-telegram"
 _URL_RE = re.compile(r"^https?://\S+$")
+# Matches /start or /help with an optional @botname suffix and/or a trailing argument.
+# Examples: /start, /help, /start@your-bot, /start somedeeplink, /help@your-bot
+_GREET_RE = re.compile(r"^/(start|help)(@\S+)?(\s.*)?$", re.IGNORECASE)
 _QUIET = Console(file=io.StringIO())  # writers want a console; swallow their output
+
+_GREETING = (
+    "👋 sabnyx — your vault over Telegram.\n"
+    "• send a URL or text to capture it\n"
+    "• /ask <question> — answer grounded in your vault\n"
+    "• /status — vault health\n"
+    "(/start and /help just show this.)"
+)
 
 
 def classify(text: str) -> tuple[str, str]:
     """Map a message to (action, argument). Pure; no side effects."""
     t = text.strip()
     low = t.lower()
+    if _GREET_RE.match(t):
+        return "greet", ""
     if low.startswith(("/ask", "/q ")) or low == "/q":
         return "ask", t.split(None, 1)[1].strip() if len(t.split(None, 1)) > 1 else ""
     if low.startswith(("/status", "/health")):
@@ -74,6 +88,9 @@ def handle(env: NormalizedEnvelope) -> str:
         subject=f"telegram:{env.source_id}",
         payload={"action": action, "actor": env.actor_raw, "kind": env.kind},
     )
+
+    if action == "greet":
+        return _GREETING
 
     if action == "status":
         return _status()
