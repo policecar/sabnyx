@@ -25,6 +25,99 @@ def test_classify():
     assert serve.classify("a stray thought")[0] == "ingest_text"
 
 
+def test_classify_greet():
+    """/start and /help (and variants) route to 'greet', not ingest."""
+    from sabnyx.commands import serve
+
+    # Bare commands
+    assert serve.classify("/start") == ("greet", "")
+    assert serve.classify("/help") == ("greet", "")
+    # Case-insensitive
+    assert serve.classify("/START") == ("greet", "")
+    assert serve.classify("/HELP") == ("greet", "")
+    # Telegram @botname suffix
+    assert serve.classify("/start@sabnyxbot") == ("greet", "")
+    assert serve.classify("/help@sabnyxbot") == ("greet", "")
+    # Deep-link payload after /start
+    assert serve.classify("/start somedeeplink") == ("greet", "")
+    assert serve.classify("/start@sabnyxbot somedeeplink") == ("greet", "")
+
+
+def test_greet_does_not_capture(tmp_vault, monkeypatch):
+    """/start returns greeting text and writes no source/intake files."""
+    from sabnyx.commands import serve
+
+    sent: list[tuple] = []
+    monkeypatch.setattr(telegram, "send_message", lambda chat, text: sent.append((chat, text)))
+
+    serve._dispatch_batch([_update(1, "/start")], {"555"})
+
+    # Greeting reply sent
+    assert len(sent) == 1
+    assert "sabnyx" in sent[0][1]
+    # No source file written
+    assert not list(tmp_vault["SOURCES"].rglob("*.md"))
+    # No intake file written
+    assert not list(tmp_vault["INTAKE"].glob("*.md"))
+
+
+def test_help_does_not_capture(tmp_vault, monkeypatch):
+    """/help behaves identically to /start — greeting, no capture."""
+    from sabnyx.commands import serve
+
+    sent: list[tuple] = []
+    monkeypatch.setattr(telegram, "send_message", lambda chat, text: sent.append((chat, text)))
+
+    serve._dispatch_batch([_update(2, "/help")], {"555"})
+
+    assert len(sent) == 1
+    assert "sabnyx" in sent[0][1]
+    assert not list(tmp_vault["SOURCES"].rglob("*.md"))
+    assert not list(tmp_vault["INTAKE"].glob("*.md"))
+
+
+def test_start_botname_suffix_does_not_capture(tmp_vault, monkeypatch):
+    """/start@sabnyxbot routes to greeting, not capture."""
+    from sabnyx.commands import serve
+
+    sent: list[tuple] = []
+    monkeypatch.setattr(telegram, "send_message", lambda chat, text: sent.append((chat, text)))
+
+    serve._dispatch_batch([_update(3, "/start@sabnyxbot")], {"555"})
+
+    assert len(sent) == 1
+    assert "sabnyx" in sent[0][1]
+    assert not list(tmp_vault["SOURCES"].rglob("*.md"))
+
+
+def test_start_deeplink_does_not_capture(tmp_vault, monkeypatch):
+    """/start <payload> routes to greeting, not capture."""
+    from sabnyx.commands import serve
+
+    sent: list[tuple] = []
+    monkeypatch.setattr(telegram, "send_message", lambda chat, text: sent.append((chat, text)))
+
+    serve._dispatch_batch([_update(4, "/start somedeeplink")], {"555"})
+
+    assert len(sent) == 1
+    assert "sabnyx" in sent[0][1]
+    assert not list(tmp_vault["SOURCES"].rglob("*.md"))
+
+
+def test_plain_text_still_captures(tmp_vault, monkeypatch):
+    """Normal text still triggers the capture path (guard against over-matching)."""
+    from sabnyx.commands import serve
+
+    _fake_llm(monkeypatch)
+    sent: list[tuple] = []
+    monkeypatch.setattr(telegram, "send_message", lambda chat, text: sent.append((chat, text)))
+
+    serve._dispatch_batch([_update(5, "remember buy milk")], {"555"})
+
+    assert (tmp_vault["INTAKE"] / "buy-milk-reminder.md").exists()
+    assert "filed 1" in sent[0][1]
+
+
 # -- adapter normalization ----------------------------------------------------------------
 
 
