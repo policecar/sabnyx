@@ -106,3 +106,4 @@ request/response path end to end.
 | `js/api.js`    | Backend client: key storage + `fetch` to the contract above. |
 | `js/voice.js`  | PTT → rabbit cloud STT → transcript.                          |
 | `js/speak.js`  | Reply TTS via the R1 bridge (`useLLM:false`).                |
+| `TESTING.md`   | End-to-end test guide (curl → tunnel → device).              |
