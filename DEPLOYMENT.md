@@ -194,6 +194,74 @@ systemctl --user list-timers --no-pager | grep sabnyx
 
 ---
 
+## Rabbit R1 ingress (optional)
+
+Drives the vault by voice from a Rabbit R1 Creation over HTTP — additive to the
+Telegram setup above, sharing the same `.env`, vault, and LLM. The device/client
+side (the Creation, install QR, voice flow) is in `creations/README.md`. Two
+differences from the Telegram service:
+
+- **It needs an *inbound* TLS endpoint.** Telegram is outbound-only; the R1
+  `fetch()`es *in*, so nginx terminates TLS on 443 and proxies to
+  `127.0.0.1:8787`. Auth is a bearer-key allowlist (`SABNYX_R1_KEYS`); the server
+  refuses to run open.
+- **One process serves the Creation *and* the API** via `--static creations`, so
+  the page and API share an origin (no CORS) and one unit covers both.
+
+### 1. Key — on the server
+```bash
+printf 'SABNYX_R1_KEYS=%s\n' "$(openssl rand -hex 24)" >> ~/sabnyx/.env   # one per device
+```
+
+### 2. `~/.config/systemd/user/sabnyx-serve-http.service`
+```ini
+[Unit]
+Description=sabnyx Rabbit R1 HTTP ingress
+
+[Service]
+Type=simple
+WorkingDirectory=%h/sabnyx
+EnvironmentFile=%h/sabnyx/.env
+ExecStart=%h/.local/bin/uv run sabnyx serve-http --static creations --host 127.0.0.1 --port 8787
+Restart=always
+RestartSec=5
+# same namespace-free hardening as serve
+NoNewPrivileges=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryMax=2G
+TasksMax=256
+
+[Install]
+WantedBy=default.target
+```
+
+### 3. nginx TLS terminator (opens 443)
+```nginx
+limit_req_zone $binary_remote_addr zone=r1:10m rate=10r/s;   # in the http{} block
+server {
+    listen 443 ssl;                       # + your certbot ssl_certificate lines
+    server_name sabnyx.example.net;
+    location / {
+        limit_req zone=r1 burst=20 nodelay;   # blunt brute-force / floods
+        proxy_pass http://127.0.0.1:8787;
+    }
+}
+```
+
+### 4. Enable + smoke
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now sabnyx-serve-http.service
+K=$(grep '^SABNYX_R1_KEYS=' ~/sabnyx/.env | cut -d= -f2 | cut -d, -f1)
+curl -s https://sabnyx.example.net/status -H "Authorization: Bearer $K"   # {"intake":..,"atlas":..}
+curl -s https://sabnyx.example.net/status                                  # 401 (no key)
+```
+Then open `https://sabnyx.example.net/install.html` and scan the QR on the R1.
+
+---
+
 ## Daily operation
 
 - **Capture / ask** from the phone via `@your-bot` (trusted senders only).
@@ -225,6 +293,7 @@ systemctl --user list-timers | grep sabnyx           # next tend run
 | `MOONSHOT_API_KEY` / `ANTHROPIC_API_KEY` | LLM provider key | **yes** |
 | `SABNYX_TELEGRAM_TOKEN` | bot token from BotFather | **yes** |
 | `SABNYX_TELEGRAM_ALLOW` | comma-separated trusted numeric user IDs | no |
+| `SABNYX_R1_KEYS` | comma-separated bearer keys for the R1 ingress (`serve-http`) | **yes** |
 | `SABNYX_RETRIEVER` | `grep` (default) \| `vector` | no |
 
 ---
@@ -243,9 +312,14 @@ systemctl --user list-timers | grep sabnyx           # next tend run
   commit fails with "Please tell me who you are."
 - **No inline `# comments`** after a value in `.env` — both systemd and the loader
   keep the rest of the line literally.
-- **EOL OS**: no security updates. Acceptable here because the
-  attack surface is outbound-only (Telegram long-poll, git, LLM API). Reprovision
-  to a supported release when convenient.
+- **EOL OS**: no security updates. Acceptable for the *Telegram*
+  setup because its attack surface is outbound-only (long-poll, git, LLM API).
+  Reprovision to a supported release when convenient.
+- **The R1 ingress is the one *inbound* surface** — enabling `serve-http` opens
+  nginx:443 → `127.0.0.1:8787`, unlike everything else here. The bearer
+  allowlist + refuse-open + nginx `limit_req` are the guard: use
+  `openssl rand`-grade keys, one per device, and rotate on leak. On an EOL OS,
+  weigh this added exposure before enabling it.
 - **Backup**: the DATA hub (`~/git/sabnyx-vault.git`) lives on the same server — a
   single point of failure. Your laptop clone is a full-history backup, but only as
   fresh as your last `git -C ~/src/sabnyx-vault pull`. Pull regularly (or add a
