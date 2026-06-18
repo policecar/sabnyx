@@ -197,8 +197,8 @@ systemctl --user list-timers --no-pager | grep sabnyx
 ## Rabbit R1 ingress (optional)
 
 Drives the vault by voice from a Rabbit R1 Creation over HTTP — additive to the
-Telegram setup above, sharing the same `.env`, vault, and LLM. The device/client
-side (the Creation, install QR, voice flow) is in `creations/README.md`. Two
+Telegram setup above, sharing the same `.env` and vault. The device/client side
+(the Creation, install QR, voice flow) is in `creations/README.md`. Three
 differences from the Telegram service:
 
 - **It needs an *inbound* TLS endpoint.** Telegram is outbound-only; the R1
@@ -207,10 +207,17 @@ differences from the Telegram service:
   refuses to run open.
 - **One process serves the Creation *and* the API** via `--static creations`, so
   the page and API share an origin (no CORS) and one unit covers both.
+- **Low-latency LLM (Anthropic/Haiku).** Voice can't wait, and Moonshot
+  round-trips measured ~35s. The unit pins *this service* to
+  `SABNYX_LLM_PROVIDER=anthropic` (the `fast` role → `claude-haiku-4-5`, or
+  whatever `SABNYX_MODEL_FAST` points at); Telegram/tend keep their `.env`
+  provider. Requires `ANTHROPIC_API_KEY` in `.env`.
 
-### 1. Key — on the server
+### 1. Keys — on the server
 ```bash
 printf 'SABNYX_R1_KEYS=%s\n' "$(openssl rand -hex 24)" >> ~/sabnyx/.env   # one per device
+# Anthropic key for the low-latency voice path (see the LLM note above):
+read -rsp 'ANTHROPIC_API_KEY: ' K && printf 'ANTHROPIC_API_KEY=%s\n' "$K" >> ~/sabnyx/.env && unset K; echo
 ```
 
 ### 2. `~/.config/systemd/user/sabnyx-serve-http.service`
@@ -222,6 +229,9 @@ Description=sabnyx Rabbit R1 HTTP ingress
 Type=simple
 WorkingDirectory=%h/sabnyx
 EnvironmentFile=%h/sabnyx/.env
+# Haiku for low-latency voice — overrides the .env provider for THIS service only.
+# Order matters: Environment= comes after EnvironmentFile= so it wins.
+Environment=SABNYX_LLM_PROVIDER=anthropic
 ExecStart=%h/.local/bin/uv run sabnyx serve-http --static creations --host 127.0.0.1 --port 8787
 Restart=always
 RestartSec=5
