@@ -11,8 +11,11 @@
 //   POST /ask    {text} -> {text, cited:[...]}
 //   GET  /status        -> {intake, atlas, observations}
 
-// EDIT THIS: your deployed ingress, behind nginx + TLS. No trailing slash.
-const BASE_URL = "https://sabnyx.example.net";
+// Same origin by default — correct when the server runs with
+// `serve-http --static creations` (recommended): the page and the API share one
+// origin, so this stays "". Set a full "https://host" (no trailing slash) ONLY
+// if you host the Creation separately from the API (then the server needs CORS).
+const BASE_URL = "";
 
 const KEY_NAME = "sabnyx_api_key";
 

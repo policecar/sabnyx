@@ -185,3 +185,71 @@ def test_serve_http_refuses_open(tmp_vault, monkeypatch):
     assert result.exit_code == 2
     # normalize whitespace: rich may wrap the warning across a line break
     assert "Refusing to run open" in " ".join(result.output.split())
+
+
+# -- static serving (--static) -------------------------------------------------
+
+
+def _make_creations(root):
+    (root / "js").mkdir(parents=True)
+    (root / "index.html").write_text("<html>sabnyx</html>")
+    (root / "install.html").write_text("install")
+    (root / "js" / "api.js").write_text("// api")
+    return root
+
+
+def test_resolve_static_maps_files(tmp_path):
+    from sabnyx.commands import serve_http
+
+    root = _make_creations(tmp_path / "creations")
+    assert serve_http.resolve_static("/", root) == (root / "index.html").resolve()
+    assert serve_http.resolve_static("/index.html", root) == (root / "index.html").resolve()
+    assert serve_http.resolve_static("/install.html", root) == (root / "install.html").resolve()
+    assert serve_http.resolve_static("/js/api.js", root) == (root / "js" / "api.js").resolve()
+    # query string is stripped
+    assert serve_http.resolve_static("/js/api.js?v=2", root) == (root / "js" / "api.js").resolve()
+
+
+def test_resolve_static_rejects_missing_and_traversal(tmp_path):
+    from sabnyx.commands import serve_http
+
+    root = _make_creations(tmp_path / "creations")
+    secret = tmp_path / "secret"  # sibling of root, outside it
+    secret.write_text("TOPSECRET")
+
+    assert serve_http.resolve_static("/nope.html", root) is None  # missing
+    assert serve_http.resolve_static("/../secret", root) is None  # traversal, even though it exists
+    assert serve_http.resolve_static("/js/../../secret", root) is None
+    assert serve_http.resolve_static("/js", root) is None  # a directory, not a file
+
+
+def test_static_public_while_api_gated_over_socket(tmp_vault):
+    """End to end over a real socket: static is served unauthenticated, the API
+    still requires the bearer key, and traversal can't escape the root."""
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from sabnyx.commands import serve_http
+
+    root = _make_creations(tmp_vault["DATA_ROOT"] / "creations")
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), serve_http._make_handler({"k1"}, root.resolve()))
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+
+        def get(path, auth=None):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request("GET", path, headers=({"Authorization": auth} if auth else {}))
+            r = c.getresponse()
+            body = r.read()
+            c.close()
+            return r.status, body
+
+        assert get("/") == (200, b"<html>sabnyx</html>")  # static public, no key
+        assert get("/status")[0] == 401  # API gated
+        assert get("/status", "Bearer k1")[0] == 200  # API with key
+        assert get("/../../etc/passwd")[0] != 200  # traversal blocked
+    finally:
+        srv.shutdown()
+        srv.server_close()

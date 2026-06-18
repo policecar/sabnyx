@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import io
 import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import mimetypes
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -156,8 +158,32 @@ def route(
     return 404, {"error": "not found"}
 
 
-def _make_handler(trusted: set[str]) -> type[BaseHTTPRequestHandler]:
-    """Build a BaseHTTPRequestHandler bound to `trusted`. Thin shim over route()."""
+def resolve_static(url_path: str, root: Path) -> Path | None:
+    """Map a URL path to a file under `root`, or None.
+
+    Returns None for a missing file, a directory, or any path that escapes
+    `root` (e.g. ``/../etc/passwd``) — the path-traversal guard. Pure beyond
+    the final ``is_file()`` check."""
+    rel = url_path.split("?", 1)[0].lstrip("/") or "index.html"
+    if rel.endswith("/"):
+        rel += "index.html"
+    root = root.resolve()
+    candidate = (root / rel).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None  # escaped the static root
+    return candidate if candidate.is_file() else None
+
+
+def _make_handler(
+    trusted: set[str], static_root: Path | None = None
+) -> type[BaseHTTPRequestHandler]:
+    """Build a request handler bound to `trusted` (+ optional static root).
+
+    API routes are bearer-gated via route(); when `static_root` is set, other
+    GETs serve files from it WITHOUT auth — the page must load before the user
+    has a key, and the static files hold no secrets."""
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "sabnyx-r1/0.1"
@@ -170,11 +196,30 @@ def _make_handler(trusted: set[str]) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
+        def _file(self, path: Path) -> None:
+            body = path.read_bytes()
+            ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self) -> None:  # noqa: N802 — stdlib dispatch name
-            status, payload = route(
-                "GET", self.path, b"", self.headers.get("Authorization"), trusted
-            )
-            self._respond(status, payload)
+            path = self.path.split("?", 1)[0].rstrip("/") or "/"
+            if path == "/status":  # API route — bearer-gated
+                status, payload = route(
+                    "GET", self.path, b"", self.headers.get("Authorization"), trusted
+                )
+                self._respond(status, payload)
+                return
+            if static_root is not None:  # public static assets (no secrets)
+                f = resolve_static(self.path, static_root)
+                if f is not None:
+                    self._file(f)
+                    return
+            self._respond(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802 — stdlib dispatch name
             length = int(self.headers.get("Content-Length", 0) or 0)
@@ -196,8 +241,19 @@ def _make_handler(trusted: set[str]) -> type[BaseHTTPRequestHandler]:
 @click.command("serve-http")
 @click.option("--host", default="127.0.0.1", help="Bind address (put nginx/TLS in front).")
 @click.option("--port", default=8787, help="Bind port.")
-def serve_http_cmd(host: str, port: int) -> None:
-    """Run the Rabbit R1 HTTP ingress: authed, JSON in/out, over services.py."""
+@click.option(
+    "--static",
+    "static_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Also serve a static dir (e.g. creations/) on the same origin — no CORS.",
+)
+def serve_http_cmd(host: str, port: int, static_dir: Path | None) -> None:
+    """Run the Rabbit R1 HTTP ingress: authed, JSON in/out, over services.py.
+
+    With --static, one process also serves the Creation's files, so the page and
+    the API share one origin (CORS can't arise) and one unit covers both. API
+    routes stay bearer-gated; static assets are public."""
     console = Console()
 
     trusted = r1.keys()
@@ -211,9 +267,11 @@ def serve_http_cmd(host: str, port: int) -> None:
     from ..paths import ensure_tree
 
     ensure_tree()
-    httpd = HTTPServer((host, port), _make_handler(trusted))
+    static_root = static_dir.resolve() if static_dir else None
+    httpd = ThreadingHTTPServer((host, port), _make_handler(trusted, static_root))
+    where = f" + static {static_root}" if static_root else ""
     console.print(
-        f"[green]serving R1 ingress[/green] on http://{host}:{port} "
+        f"[green]serving R1 ingress[/green] on http://{host}:{port}{where} "
         f"(trusted keys: {len(trusted)}). ctrl-c to stop."
     )
     try:

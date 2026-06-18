@@ -41,31 +41,61 @@ Bad/missing key → `401`. Empty/oversized/invalid body → `400`/`413`.
 
 ## Setup
 
-1. **Run the server** (on a host with TLS, e.g. behind nginx + Let's Encrypt):
+1. **Generate a strong key.** This is the only thing between the public endpoint
+   and your vault — make it unguessable, one per device so you can revoke
+   individually:
 
    ```bash
-   export SABNYX_R1_KEYS="$(openssl rand -hex 24)"   # one or more, comma-separated
-   sabnyx serve-http --host 127.0.0.1 --port 8787    # refuses to run if KEYS empty
+   export SABNYX_R1_KEYS="$(openssl rand -hex 24)"   # 192-bit; comma-separate for more
    ```
 
-   Reverse-proxy `https://your-domain/` → `127.0.0.1:8787`.
+2. **Run the server, serving this directory too.** One process, one origin — the
+   page and the API share an origin, so CORS can't arise and one systemd unit
+   covers both. `BASE_URL` in `js/api.js` is already `""` (relative), so it
+   points at the same origin with no edit:
 
-2. **Point the client at it**: edit `BASE_URL` in `js/api.js` to your HTTPS
-   origin (no trailing slash).
+   ```bash
+   sabnyx serve-http --static creations --host 127.0.0.1 --port 8787
+   # refuses to start if SABNYX_R1_KEYS is empty
+   ```
 
-3. **Host the static files**: deploy this `creations/` directory to any static
-   host (GitHub Pages, Netlify, or your own server — "plain HTML, no build
-   step"). `index.html` is the Creation; `install.html` shows the QR.
+3. **Put TLS in front** (the R1 needs HTTPS). Either a tunnel — no open ports:
 
-4. **Install on the R1**: open `install.html`, scan the QR with your R1. On first
-   run the Creation asks for one of your `SABNYX_R1_KEYS`; it's stored in
+   ```bash
+   cloudflared tunnel --url http://localhost:8787
+   ```
+
+   …or a one-line nginx terminator on your domain (opens 443), with a rate limit
+   to blunt brute-force / floods:
+
+   ```nginx
+   limit_req_zone $binary_remote_addr zone=r1:10m rate=10r/s;   # in the http{} block
+   server {
+       listen 443 ssl;                       # + your certbot ssl_certificate lines
+       server_name sabnyx.example.net;
+       location / {
+           limit_req zone=r1 burst=20 nodelay;
+           proxy_pass http://127.0.0.1:8787;
+       }
+   }
+   ```
+
+4. **Install on the R1**: open `https://<your-origin>/install.html`, scan the QR.
+   First run asks for one of your `SABNYX_R1_KEYS`; it's stored in
    `creationStorage.secure` (hardware-encrypted).
+
+> **Security.** The static files are public *reads* and contain no secrets;
+> vault *writes* require the bearer key, which lives only on your device — so
+> scanning the QR alone can't write anything. Treat the key like any secret
+> (`.env`, `chmod 600`, rotate if leaked). Only ever install from *your own*
+> `install.html`.
 
 ## Local testing (no device)
 
-Open `index.html` in a browser. With no R1 bridge present it uses the typed
-input, `localStorage` for the key, and `SpeechSynthesis` for replies — enough to
-exercise the full request/response path against a running `sabnyx serve-http`.
+Run `sabnyx serve-http --static creations` and open `http://localhost:8787/` in a
+desktop browser. With no R1 bridge present it uses the typed input, `localStorage`
+for the key, and `SpeechSynthesis` for replies — enough to exercise the full
+request/response path end to end.
 
 ## Files
 
