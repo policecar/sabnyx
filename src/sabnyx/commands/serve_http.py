@@ -1,0 +1,224 @@
+"""`sabnyx serve-http` — drive the vault from the Rabbit R1 over HTTP.
+
+A small stdlib `http.server` ingress: the R1 Creation POSTs a voice transcript
+(plain text) with a bearer key; we route it through the same services.py write
+path the CLI and Telegram use, and return JSON the Creation speaks back.
+
+Purely additive — no Whisper (rabbit transcribes on-device), no vault changes,
+the Telegram loop untouched. Auth mirrors serve's trusted-sender model: a
+bearer-key allowlist, and like serve we refuse to run open (empty allowlist).
+
+Routes are explicit — the path IS the action, no LLM routing needed:
+    POST /ingest  {text}  -> capture text into intake/ -> {text, filed:[...]}
+    POST /ask     {text}  -> grounded answer            -> {text, cited:[...]}
+    GET  /status          -> vault pulse                -> {intake, atlas, observations}
+
+`route()` is a pure dispatcher (auth -> route -> act -> JSON) with no sockets,
+so the HTTP handler and the tests both call it. Every request maps to a
+NormalizedEnvelope(source="web") for ledger provenance.
+
+@decision DEC-01: route() is socketless and the handler is a thin shim
+@rationale: mirrors serve.py's testable _dispatch_batch — all behavior (auth,
+  routing, errors) is unit-tested without binding a port; the BaseHTTPRequestHandler
+  only translates bytes<->route() and is left untested (stdlib boundary).
+"""
+
+from __future__ import annotations
+
+import io
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import click
+from rich.console import Console
+
+from .. import ledger, services
+from ..adapters import r1
+
+ACTOR = "sabnyx-r1"
+_QUIET = Console(file=io.StringIO())  # writers want a console; swallow their output
+_MAX_BODY = 64 * 1024  # generous for a voice transcript; reject anything larger
+
+
+def _title_from(text: str, n: int = 8) -> str:
+    """A short title from the first few words of a captured transcript."""
+    words = text.split()
+    return " ".join(words[:n]) if words else "untitled"
+
+
+def _status() -> dict:
+    """A terse vault pulse, computed without the full health command."""
+    from ..paths import ATLAS, INTAKE, OBSERVATIONS
+
+    return {
+        "intake": len(list(INTAKE.glob("*.md"))),
+        "atlas": sum(1 for _ in ATLAS.rglob("*.md")),
+        "observations": len(list(OBSERVATIONS.glob("*.md"))),
+    }
+
+
+def _ingest(text: str) -> dict:
+    """Capture a transcript into intake/ via the shared services write path."""
+    from .. import sources
+    from ..paths import DATA_ROOT
+
+    title = _title_from(text)
+    try:
+        src_path = sources.capture(text=text, slug=title, actor=ACTOR, source_url=None)
+    except FileExistsError:
+        return {"text": f"already captured something titled '{title}'.", "filed": []}
+    src_rel = str(src_path.relative_to(DATA_ROOT))
+
+    proposal = services.build_ingest_proposal(
+        text=text, title=title, source_kind="manual", source_url=None, src_rel=src_rel, actor=ACTOR
+    )
+    written = services.apply_ingest(
+        proposal,
+        title=title,
+        source_kind="manual",
+        source_url=None,
+        src_rel=src_rel,
+        console=_QUIET,
+        actor=ACTOR,
+    )
+    return {"text": proposal.changeset.summary, "filed": written}
+
+
+def _ask(text: str) -> dict:
+    """Answer a question grounded in the vault; auto-capture durable insight."""
+    result = services.answer_question(question=text, actor=ACTOR)
+    out: dict = {"text": result.answer.answer, "cited": result.answer.cited}
+    if result.answer.capture is not None:
+        rel = services.capture_answer(
+            result.answer.capture, question=text, console=_QUIET, actor=ACTOR
+        )
+        if rel:
+            out["captured"] = rel
+    return out
+
+
+def route(
+    method: str, path: str, body: bytes, authorization: str | None, trusted: set[str]
+) -> tuple[int, dict]:
+    """Pure request dispatcher: auth, route, act. Returns (status, json_body).
+
+    No sockets — the HTTP handler and the tests both call this. A failing action
+    is reported as a 500 JSON body and ledgered, never raised, so one bad request
+    can't take the server down."""
+    if not r1.check_bearer(authorization, trusted):
+        return 401, {"error": "unauthorized"}
+
+    path = path.split("?", 1)[0].rstrip("/") or "/"
+
+    if method == "GET" and path == "/status":
+        env = r1.envelope_for_request("/status")
+        ledger.append_event(
+            plane="event",
+            kind="wire.received",
+            actor=ACTOR,
+            subject=f"r1:{env.source_id}",
+            payload={"action": "status"},
+        )
+        return 200, _status()
+
+    if method == "POST" and path in ("/ingest", "/ask"):
+        try:
+            data = json.loads(body.decode("utf-8")) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return 400, {"error": "invalid JSON body"}
+        if not isinstance(data, dict):
+            return 400, {"error": "body must be a JSON object"}
+        text = (data.get("text") or "").strip()
+        if not text:
+            return 400, {"error": "missing 'text'"}
+
+        action = "ask" if path == "/ask" else "ingest"
+        env = r1.envelope_for_request(text)
+        ledger.append_event(
+            plane="event",
+            kind="wire.received",
+            actor=ACTOR,
+            subject=f"r1:{env.source_id}",
+            payload={"action": action},
+        )
+        try:
+            return 200, (_ask(text) if action == "ask" else _ingest(text))
+        except Exception as e:  # noqa: BLE001 — report failure as JSON, never crash the loop
+            ledger.append_event(
+                plane="event",
+                kind="wire.errored",
+                actor=ACTOR,
+                subject=f"r1:{env.source_id}",
+                payload={"error": str(e)},
+            )
+            return 500, {"error": f"failed: {e}"}
+
+    return 404, {"error": "not found"}
+
+
+def _make_handler(trusted: set[str]) -> type[BaseHTTPRequestHandler]:
+    """Build a BaseHTTPRequestHandler bound to `trusted`. Thin shim over route()."""
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "sabnyx-r1/0.1"
+
+        def _respond(self, status: int, payload: dict) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:  # noqa: N802 — stdlib dispatch name
+            status, payload = route(
+                "GET", self.path, b"", self.headers.get("Authorization"), trusted
+            )
+            self._respond(status, payload)
+
+        def do_POST(self) -> None:  # noqa: N802 — stdlib dispatch name
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if length > _MAX_BODY:
+                self._respond(413, {"error": "body too large"})
+                return
+            body = self.rfile.read(length) if length else b""
+            status, payload = route(
+                "POST", self.path, body, self.headers.get("Authorization"), trusted
+            )
+            self._respond(status, payload)
+
+        def log_message(self, *args) -> None:  # silence default stderr access log
+            pass
+
+    return Handler
+
+
+@click.command("serve-http")
+@click.option("--host", default="127.0.0.1", help="Bind address (put nginx/TLS in front).")
+@click.option("--port", default=8787, help="Bind port.")
+def serve_http_cmd(host: str, port: int) -> None:
+    """Run the Rabbit R1 HTTP ingress: authed, JSON in/out, over services.py."""
+    console = Console()
+
+    trusted = r1.keys()
+    if not trusted:
+        console.print(
+            "[yellow]warning:[/yellow] SABNYX_R1_KEYS is empty — every caller "
+            "would be trusted. Refusing to run open."
+        )
+        raise SystemExit(2)
+
+    from ..paths import ensure_tree
+
+    ensure_tree()
+    httpd = HTTPServer((host, port), _make_handler(trusted))
+    console.print(
+        f"[green]serving R1 ingress[/green] on http://{host}:{port} "
+        f"(trusted keys: {len(trusted)}). ctrl-c to stop."
+    )
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[dim]stopped.[/dim]")
+    finally:
+        httpd.server_close()
