@@ -13,10 +13,18 @@
 
 function wireVoice(onTranscript, onState) {
   let listening = false;
+  let watchdog = null;
 
   function setListening(v) {
     listening = v;
     if (onState) onState(v ? "listening" : "idle");
+  }
+
+  function clearWatchdog() {
+    if (watchdog !== null) {
+      clearTimeout(watchdog);
+      watchdog = null;
+    }
   }
 
   window.addEventListener("longPressStart", () => {
@@ -32,6 +40,14 @@ function wireVoice(onTranscript, onState) {
     if (typeof CreationVoiceHandler !== "undefined") {
       CreationVoiceHandler.postMessage("stop");
     }
+    // Watchdog: the transcript normally arrives via sttEnded, which clears
+    // `listening`. If the cloud STT never responds (network drop / bridge hang),
+    // reset after a timeout so a stuck flag can't lock PTT until a page reload.
+    clearWatchdog();
+    watchdog = setTimeout(() => {
+      watchdog = null;
+      if (listening) setListening(false);
+    }, 8000);
   });
 
   // Chain onto any existing onPluginMessage (speak.js / others may share it).
@@ -46,6 +62,7 @@ function wireVoice(onTranscript, onState) {
       }
     }
     if (d && d.type === "sttEnded") {
+      clearWatchdog();
       setListening(false);
       const t = (d.transcript || "").trim();
       if (t) onTranscript(t);

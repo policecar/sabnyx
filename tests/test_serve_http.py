@@ -163,6 +163,32 @@ def test_route_bad_json_is_400(tmp_vault):
     assert status == 400
 
 
+def test_route_non_string_text_is_400(tmp_vault):
+    from sabnyx.commands import serve_http
+
+    # a JSON number/list/object for `text` must not reach `.strip()` and crash
+    status, body = serve_http.route("POST", "/ingest", b'{"text": 123}', AUTH, TRUSTED)
+    assert status == 400
+    assert "string" in body["error"]
+
+
+def test_route_action_failure_returns_generic_error(tmp_vault, monkeypatch):
+    """A failing action returns a generic 500 (no exception text leaked), while
+    the real detail is ledgered for operators."""
+    from sabnyx.commands import serve_http
+
+    def boom(_text):
+        raise RuntimeError("/home/p/sabnyx-vault leaked secret path")
+
+    monkeypatch.setattr(serve_http, "_ask", boom)
+    status, body = serve_http.route("POST", "/ask", b'{"text":"hi"}', AUTH, TRUSTED)
+    assert status == 500
+    assert body == {"error": "internal error"}  # nothing from the exception text
+    errs = [e for e in ledger.replay() if e.kind == "wire.errored"]
+    assert errs  # the failure is ledgered
+    assert "leaked secret path" in errs[-1].payload["error"]  # detail kept internally
+
+
 def test_route_unknown_path_is_404(tmp_vault):
     from sabnyx.commands import serve_http
 
@@ -250,6 +276,43 @@ def test_static_public_while_api_gated_over_socket(tmp_vault):
         assert get("/status")[0] == 401  # API gated
         assert get("/status", "Bearer k1")[0] == 200  # API with key
         assert get("/../../etc/passwd")[0] != 200  # traversal blocked
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_post_content_length_guards_over_socket(tmp_vault):
+    """do_POST validates Content-Length: a negative value must not bypass the cap
+    into an unbounded read, a non-numeric value must not crash, and an oversized
+    value is 413 — all answered without reading a body or hanging."""
+    import socket
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from sabnyx.commands import serve_http
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), serve_http._make_handler({"k1"}, None))
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+
+        def status_line(content_length: str) -> bytes:
+            c = socket.create_connection(("127.0.0.1", port), timeout=5)
+            req = (
+                "POST /ingest HTTP/1.1\r\n"
+                "Host: localhost\r\n"
+                "Authorization: Bearer k1\r\n"
+                f"Content-Length: {content_length}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode()
+            c.sendall(req)  # no body sent; the guard must answer before reading one
+            first = c.recv(256).split(b"\r\n", 1)[0]
+            c.close()
+            return first
+
+        assert b"400" in status_line("-1")  # negative: no unbounded read(-1)
+        assert b"400" in status_line("abc")  # non-numeric: no uncaught ValueError
+        assert b"413" in status_line(str(serve_http._MAX_BODY + 1))  # oversized
     finally:
         srv.shutdown()
         srv.server_close()

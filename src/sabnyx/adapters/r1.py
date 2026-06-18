@@ -48,7 +48,14 @@ def check_bearer(authorization: str | None, trusted: set[str]) -> bool:
     token = parts[1].strip()
     if not token:
         return False
-    return any(hmac.compare_digest(token, k) for k in trusted)
+    # Check every key without short-circuiting: `any(...)` would return on the
+    # first match, so a valid token would run fewer comparisons than an invalid
+    # one — a small timing tell on which token is valid. Fold instead.
+    matched = False
+    for k in trusted:
+        if hmac.compare_digest(token, k):
+            matched = True
+    return matched
 
 
 def envelope_for_request(text: str, *, request_id: str | None = None) -> NormalizedEnvelope:
