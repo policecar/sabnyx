@@ -115,3 +115,21 @@ request/response path end to end.
 | `js/voice.js`  | PTT → rabbit cloud STT → transcript.                          |
 | `js/speak.js`  | Reply TTS via the R1 bridge (`useLLM:false`).                |
 | `TESTING.md`   | End-to-end test guide (curl → tunnel → device).              |
+
+## TODO
+
+- **Response latency / UX** (deferred, not yet designed). The slow part is the
+  LLM round-trip — a few seconds even on Haiku, ~35s on Moonshot — and on a
+  listen-not-look device a silent multi-second wait reads as "broken." We should
+  improve the perceived (and actual) response experience. Candidate directions,
+  not mutually exclusive, none chosen yet:
+  - an **interim ack** (spoken "got it, one sec…", an earcon, or a visual pulse)
+    the instant the transcript lands, before the fetch;
+  - surface the answer as **on-screen text** instead of / alongside speaking it
+    (skips TTS, shows up sooner);
+  - **shorten the spoken output** (terser, 1–2 sentence answers) to cut both
+    generation time and speech length;
+  - **stream** partial output if the bridge allows it;
+  - a **faster model/provider** for the voice path (Haiku already helps).
+
+  Client-side code site: `index.html` → `submit()`.
