@@ -139,17 +139,12 @@ EnvironmentFile=%h/sabnyx/.env
 ExecStart=%h/.local/bin/uv run sabnyx serve
 Restart=always
 RestartSec=5
-# hardening (systemd 241-safe; protects /usr,/etc while leaving $HOME writable for uv)
+# hardening — namespace-free set (works even where unprivileged user namespaces
+# are disabled, the Debian default). Seccomp/cgroup based; needs no mount ns.
 NoNewPrivileges=yes
-ProtectSystem=full
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
 LockPersonality=yes
-PrivateTmp=yes
-PrivateDevices=yes
 MemoryMax=2G
 TasksMax=256
 
@@ -166,17 +161,11 @@ Description=sabnyx tend (sync + heartbeat)
 Type=oneshot
 EnvironmentFile=%h/sabnyx/.env
 ExecStart=%h/sabnyx-sync-tend.sh
-# hardening (same set as serve)
+# hardening (same namespace-free set as serve)
 NoNewPrivileges=yes
-ProtectSystem=full
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
 LockPersonality=yes
-PrivateTmp=yes
-PrivateDevices=yes
 MemoryMax=2G
 TasksMax=256
 ```
@@ -265,10 +254,14 @@ systemctl --user list-timers | grep sabnyx           # next tend run
   sync is bidirectional (laptop edits + server tend both commit to the hub), so the
   branches legitimately diverge; `--ff-only` would wedge the loop. The ledger's
   union-merge driver resolves the only file that concurrently appends.
-- **systemd hardening** is trimmed to what systemd 241 supports. Newer directives
-  (`ProtectHostname` 242, `RestrictSUIDSGID` 242, `ProtectKernelLogs` 244,
-  `ProtectClock` 245) are omitted — they'd be silently ignored on older systemd. Stricter
-  opt-in (test that `uv run` still works): add `ProtectSystem=strict` +
-  `ProtectHome=read-only` + `ReadWritePaths=%h/sabnyx %h/sabnyx-vault %h/git
-  %h/.cache/uv %h/.local/share/uv`. (`MemoryMax` may be a no-op under an older release's
-  cgroup v1 — harmless.)
+- **systemd hardening is namespace-free by necessity.** Mount-namespace directives
+  (`ProtectSystem`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernel*`,
+  `ProtectControlGroups`) require **unprivileged user namespaces**, which Debian
+  disables by default (`kernel.unprivileged_userns_clone=0`). On a *user* service
+  they make it die at sandbox setup (`status=226/NAMESPACE`). So we ship only the
+  seccomp/cgroup directives, which need no namespaces. Fuller mount-ns set is opt-in
+  ONLY if you `sudo sysctl -w kernel.unprivileged_userns_clone=1` (has its own
+  privesc tradeoff) or run these as system units. (`MemoryMax` may also be a no-op
+  under cgroup v1 — harmless.) Also note several newer directives
+  (`ProtectHostname` 242, `RestrictSUIDSGID` 242, `ProtectClock` 245) don't exist on
+  systemd 241 and would be ignored.
