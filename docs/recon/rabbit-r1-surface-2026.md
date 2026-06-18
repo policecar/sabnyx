@@ -5,6 +5,14 @@ commit Sep 2025 — "sneak-peek"). Primary evidence is the
 `plugin-demo/` reference implementation plus
 `reference/creation-triggers.md`.
 
+**Verified 2026-06-18** against live source (the official `plugin-demo`
+plus the community `andr3w-hilton/rabbit-r1-creations-public` Creations,
+notably `gemma-chat`). Corrections from that pass are marked **[CORRECTED
+2026-06-18]** / **[RESOLVED 2026-06-18]** inline. Short version: rabbit
+transcribes voice for us — the Creation POSTs **text**, not audio, so the
+server needs **no Whisper** — and `fetch()` to our own backend is proven
+by working code.
+
 ## What a Creation actually is
 
 A static HTML/CSS/JS web app deployed via rabbit.tech/creations. Runs
@@ -25,6 +33,11 @@ The Creation has two channels:
        normalized + raw m/s²), configurable frequency 10-100 Hz
      - `TouchEventHandler` — simulate taps (accessibility/automation)
      - `closeWebView.postMessage("")` — exit
+     - `CreationVoiceHandler.postMessage("start"|"stop")` — start/stop
+       rabbit-side speech capture; the transcript returns through
+       `window.onPluginMessage` as `{type:"sttEnded", transcript}`.
+       **[CORRECTED 2026-06-18]** Undocumented in the official reference
+       but proven working in the `gemma-chat` Creation.
      - Hardware event listeners:
        - `sideClick` (PTT button single click)
        - `longPressStart` / `longPressEnd` (PTT held)
@@ -45,20 +58,29 @@ the R1 is a pocket capture device that fetches into it.
 
 ## Speech + vision
 
-**ASR**: PTT inside a Creation fires `sideClick` only — rabbit's
-native assistant does NOT transcribe for us. We capture mic via
-`getUserMedia` and ship raw audio to our server for Whisper.
+**ASR** **[CORRECTED 2026-06-18]**: the original claim here was wrong.
+PTT-*hold* (`longPressStart`/`longPressEnd`), not `sideClick`, drives
+voice, and rabbit DOES transcribe for us: `CreationVoiceHandler` starts/
+stops capture and the transcript arrives via `onPluginMessage`
+(`{type:"sttEnded", transcript}`). So the Creation POSTs **text** and the
+server needs **no Whisper**. `sideClick` (single click) is therefore free
+for other UI. The official reference still lists `getUserMedia` mic access
+as a documented fallback if we ever want raw audio, but the bridge path is
+simpler and proven.
 
 **Camera**: same. `getUserMedia({video:true})`, grab a frame, POST
 as base64 or multipart to our server for vision.
 
-**TTS back to the user**: three options, in order of preference:
-  1. Pre-generate TTS on the server (Kokoro / OpenAI TTS / ElevenLabs),
-     return a URL, play via `<audio>`. Most control, zero LLM cost.
-  2. `PluginMessageHandler.postMessage({message: "say exactly: <X>",
-     useLLM: true, wantsR1Response: true})` — cheap but goes through
-     their LLM and may not say exactly what we asked.
-  3. Browser `SpeechSynthesis` — may or may not work in their WebView.
+**TTS back to the user** **[CORRECTED 2026-06-18]**: simplest path first.
+  1. `PluginMessageHandler.postMessage({message: <X>, useLLM: false,
+     wantsR1Response: true})` — speaks our text **exactly** on the R1
+     speaker (`useLLM:false` bypasses their LLM). Zero cost, proven in
+     `gemma-chat`. This is now the default.
+  2. Browser `SpeechSynthesis` — `gemma-chat` uses it as the fallback
+     when the bridge is absent.
+  3. Pre-generate TTS on the server (Kokoro / OpenAI TTS / ElevenLabs),
+     return a URL, play via `<audio>`. Most control, but unnecessary now
+     that on-device exact speech is confirmed.
 
 ## Auth + identity
 
@@ -109,27 +131,31 @@ Architecture:
 
     [R1 PTT held]                            [R1 speaker]
         |                                         ^
-        v                                         |
-    Creation WebView                              |
-     getUserMedia(audio)                          |
+        v                                         | PluginMessageHandler
+    Creation WebView                              | (useLLM:false → exact)
+     CreationVoiceHandler start/stop              |
+     onPluginMessage sttEnded -> transcript       |
         |                                         |
         | POST https://sabnyx.example.net/ingest   |
         | Authorization: Bearer <key>             |
+        | {text: transcript}                      |
         v                                         |
-    sabnyx ingress (FastAPI, root server)         |
-     whisper ASR --> NormalizedEnvelope           |
-     dispatch -> sabnyx.commands.new/search/...   |
-     write to ~/vault/..., git push               |
-     TTS the reply audio                          |
-     return {text, audio_url}                     |
+    sabnyx ingress (HTTP adapter, additive)       |
+     transcript is already text — no Whisper      |
+     -> NormalizedEnvelope(source="web")          |
+     -> serve.handle(): services.answer_question /  |
+                        build_ingest_proposal      |
+     write to vault, git push                      |
+     return {text, cited}                          |
         |                                         |
-        +--> Creation receives JSON --> <audio> --+
+        +--> Creation receives JSON --> speak() ---+
 
 Staging:
 
-  1. Ingress on example.net (FastAPI + whisper-cpp or openai whisper +
-     piper/kokoro TTS). nginx reverse-proxy, Let's Encrypt cert.
-     Writes to a clone of the vault, git push on mutations.
+  1. Ingress on example.net (a small HTTP adapter over services.py — no
+     Whisper, no server TTS; rabbit transcribes and the R1 speaks).
+     nginx reverse-proxy, Let's Encrypt cert. Writes to the vault, git
+     push on mutations. **[CORRECTED 2026-06-18: ASR/TTS are on-device.]**
   2. Minimal Creation (single index.html, one PTT-triggered flow).
      Deploy via rabbit.tech/creations.
   3. First envelope kind: content.submit (voice → intake/thought).
@@ -137,14 +163,21 @@ Staging:
 
 ## Unknowns still to verify
 
-  - Does the R1 Chromium WebView grant mic/camera permission on
-    first request, or does it need a special manifest entry? Test
-    with a minimal Creation.
+  - **[RESOLVED 2026-06-18]** `fetch()` to our own backend works —
+    proven by `gemma-chat`: `fetch(PROXY_URL, {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: ...})`.
+  - **[RESOLVED 2026-06-18]** Voice no longer needs `getUserMedia`
+    permissions: the `CreationVoiceHandler` + `onPluginMessage`/`sttEnded`
+    bridge does capture and ASR. (If we ever fall back to `getUserMedia`,
+    its mic-permission prompt behavior remains untested.)
   - Latency round-trip expectations (R1 is on LTE/wifi). Likely
-    2-4s end-to-end including ASR.
+    2-4s end-to-end (ASR runs on rabbit's side).
   - Does rabbit's Creation review process block "talks to arbitrary
     server" apps? Probably not (they explicitly promote standard
     web tech) but worth checking TOS before going public.
+  - Is `CreationVoiceHandler` stable? It is undocumented in the official
+    reference; pin to the proven `gemma-chat` usage and keep
+    `getUserMedia` as a documented fallback.
 
 ## Sources
 
@@ -154,3 +187,8 @@ Staging:
     (working reference implementations)
   - rabbit.tech/creations (live page, not re-read for this report
     but listed as the official deployment surface)
+  - github.com/andr3w-hilton/rabbit-r1-creations-public (community
+    Creations, MIT) — `gemma-chat/index.html` + `gemma-chat/web-server.py`
+    are the working evidence for `fetch()`-to-own-backend, the
+    `CreationVoiceHandler`/`sttEnded` voice flow, and on-device
+    `useLLM:false` TTS. Verified against live source 2026-06-18.
