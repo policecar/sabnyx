@@ -28,7 +28,7 @@ from __future__ import annotations
 import io
 import json
 import mimetypes
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import click
@@ -38,52 +38,39 @@ from .. import ledger, services
 from ..adapters import r1
 
 ACTOR = "sabnyx-r1"
-_QUIET = Console(file=io.StringIO())  # writers want a console; swallow their output
 _MAX_BODY = 64 * 1024  # generous for a voice transcript; reject anything larger
 
 
-def _title_from(text: str, n: int = 8) -> str:
-    """A short title from the first few words of a captured transcript."""
-    words = text.split()
-    return " ".join(words[:n]) if words else "untitled"
+def _quiet() -> Console:
+    """A throwaway console whose output is discarded.
+
+    Built per request, not shared at module scope: the writers want a console
+    but we don't want their output. A fresh StringIO each call avoids unbounded
+    growth over the server's lifetime and keeps requests from sharing state.
+    """
+    return Console(file=io.StringIO())
 
 
 def _status() -> dict:
-    """A terse vault pulse, computed without the full health command."""
-    from ..paths import ATLAS, INTAKE, OBSERVATIONS
-
-    return {
-        "intake": len(list(INTAKE.glob("*.md"))),
-        "atlas": sum(1 for _ in ATLAS.rglob("*.md")),
-        "observations": len(list(OBSERVATIONS.glob("*.md"))),
-    }
+    """A terse vault pulse for the R1 status line."""
+    return services.vault_pulse()
 
 
 def _ingest(text: str) -> dict:
     """Capture a transcript into intake/ via the shared services write path."""
-    from .. import sources
-    from ..paths import DATA_ROOT
-
-    title = _title_from(text)
+    title = services.title_from(text)
     try:
-        src_path = sources.capture(text=text, slug=title, actor=ACTOR, source_url=None)
+        head, written = services.ingest_text(
+            text=text,
+            title=title,
+            source_kind="manual",
+            source_url=None,
+            console=_quiet(),
+            actor=ACTOR,
+        )
     except FileExistsError:
         return {"text": f"already captured something titled '{title}'.", "filed": []}
-    src_rel = str(src_path.relative_to(DATA_ROOT))
-
-    proposal = services.build_ingest_proposal(
-        text=text, title=title, source_kind="manual", source_url=None, src_rel=src_rel, actor=ACTOR
-    )
-    written = services.apply_ingest(
-        proposal,
-        title=title,
-        source_kind="manual",
-        source_url=None,
-        src_rel=src_rel,
-        console=_QUIET,
-        actor=ACTOR,
-    )
-    return {"text": proposal.changeset.summary, "filed": written}
+    return {"text": head, "filed": written}
 
 
 def _ask(text: str) -> dict:
@@ -92,7 +79,7 @@ def _ask(text: str) -> dict:
     out: dict = {"text": result.answer.answer, "cited": result.answer.cited}
     if result.answer.capture is not None:
         rel = services.capture_answer(
-            result.answer.capture, question=text, console=_QUIET, actor=ACTOR
+            result.answer.capture, question=text, console=_quiet(), actor=ACTOR
         )
         if rel:
             out["captured"] = rel
@@ -130,7 +117,10 @@ def route(
             return 400, {"error": "invalid JSON body"}
         if not isinstance(data, dict):
             return 400, {"error": "body must be a JSON object"}
-        text = (data.get("text") or "").strip()
+        raw = data.get("text")
+        if raw is not None and not isinstance(raw, str):
+            return 400, {"error": "'text' must be a string"}
+        text = (raw or "").strip()
         if not text:
             return 400, {"error": "missing 'text'"}
 
@@ -146,6 +136,8 @@ def route(
         try:
             return 200, (_ask(text) if action == "ask" else _ingest(text))
         except Exception as e:  # noqa: BLE001 — report failure as JSON, never crash the loop
+            # Detail goes to the ledger only; the client gets a generic message
+            # so exception text (paths, provider errors) never leaks over the wire.
             ledger.append_event(
                 plane="event",
                 kind="wire.errored",
@@ -153,7 +145,7 @@ def route(
                 subject=f"r1:{env.source_id}",
                 payload={"error": str(e)},
             )
-            return 500, {"error": f"failed: {e}"}
+            return 500, {"error": "internal error"}
 
     return 404, {"error": "not found"}
 
@@ -222,7 +214,18 @@ def _make_handler(
             self._respond(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802 — stdlib dispatch name
-            length = int(self.headers.get("Content-Length", 0) or 0)
+            # Validate Content-Length before reading: a negative value would
+            # otherwise skip the cap (-1 > _MAX_BODY is False) and turn into
+            # rfile.read(-1) — an unbounded read until EOF; a non-numeric value
+            # would raise an uncaught ValueError.
+            try:
+                length = int(self.headers.get("Content-Length", "0") or "0")
+            except ValueError:
+                self._respond(400, {"error": "invalid Content-Length"})
+                return
+            if length < 0:
+                self._respond(400, {"error": "invalid Content-Length"})
+                return
             if length > _MAX_BODY:
                 self._respond(413, {"error": "body too large"})
                 return
@@ -268,7 +271,10 @@ def serve_http_cmd(host: str, port: int, static_dir: Path | None) -> None:
 
     ensure_tree()
     static_root = static_dir.resolve() if static_dir else None
-    httpd = ThreadingHTTPServer((host, port), _make_handler(trusted, static_root))
+    # Single-threaded: vault writes (sources.capture, the ledger append, git)
+    # are not concurrency-safe, and a voice device may retry mid-request. One
+    # request at a time trades a little latency for no write races.
+    httpd = HTTPServer((host, port), _make_handler(trusted, static_root))
     where = f" + static {static_root}" if static_root else ""
     console.print(
         f"[green]serving R1 ingress[/green] on http://{host}:{port}{where} "

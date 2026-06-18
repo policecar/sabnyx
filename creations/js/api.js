@@ -56,6 +56,11 @@ async function clearKey() {
 
 async function call(method, path, body) {
   const key = await getKey();
+  if (!key) {
+    // No key stored (cleared, or the secure store came back empty). Fail with a
+    // clear message instead of sending "Bearer " and surfacing a bare 401.
+    throw new Error("no API key — reopen setup and paste your key");
+  }
   const opts = { method, headers: { Authorization: "Bearer " + key } };
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";

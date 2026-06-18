@@ -253,6 +253,7 @@ limit_req_zone $binary_remote_addr zone=r1:10m rate=10r/s;   # in the http{} blo
 server {
     listen 443 ssl;                       # + your certbot ssl_certificate lines
     server_name sabnyx.example.net;
+    client_max_body_size 64k;             # match serve-http's _MAX_BODY; reject big bodies at the edge
     location / {
         limit_req zone=r1 burst=20 nodelay;   # blunt brute-force / floods
         proxy_pass http://127.0.0.1:8787;
