@@ -124,7 +124,7 @@ cd "$HOME/sabnyx"       && uv run sabnyx tend --yes
 cd "$HOME/sabnyx-vault" && git add -A
 git diff --cached --quiet || { git commit -m "tend $(date -u +%FT%TZ)"; git push origin main; }
 EOF
-chmod +x ~/sabnyx-sync-tend.sh
+chmod 700 ~/sabnyx-sync-tend.sh
 ```
 
 `~/.config/systemd/user/sabnyx-serve.service`:
@@ -139,6 +139,19 @@ EnvironmentFile=%h/sabnyx/.env
 ExecStart=%h/.local/bin/uv run sabnyx serve
 Restart=always
 RestartSec=5
+# hardening (systemd 241-safe; protects /usr,/etc while leaving $HOME writable for uv)
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+PrivateTmp=yes
+PrivateDevices=yes
+MemoryMax=2G
+TasksMax=256
 
 [Install]
 WantedBy=default.target
@@ -153,6 +166,19 @@ Description=sabnyx tend (sync + heartbeat)
 Type=oneshot
 EnvironmentFile=%h/sabnyx/.env
 ExecStart=%h/sabnyx-sync-tend.sh
+# hardening (same set as serve)
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+PrivateTmp=yes
+PrivateDevices=yes
+MemoryMax=2G
+TasksMax=256
 ```
 
 `~/.config/systemd/user/sabnyx-tend.timer`:
@@ -231,3 +257,18 @@ systemctl --user list-timers | grep sabnyx           # next tend run
 - **EOL OS**: no security updates. Acceptable here because the
   attack surface is outbound-only (Telegram long-poll, git, LLM API). Reprovision
   to a supported release when convenient.
+- **Backup**: the DATA hub (`~/git/sabnyx-vault.git`) lives on the same server — a
+  single point of failure. Your laptop clone is a full-history backup, but only as
+  fresh as your last `git -C ~/src/_px/sabnyx-vault pull`. Pull regularly (or add a
+  private off-site mirror remote) so a server loss doesn't take the vault with it.
+- **Keep `git pull --rebase --autostash`** in the tend loop — NOT `--ff-only`. The
+  sync is bidirectional (laptop edits + server tend both commit to the hub), so the
+  branches legitimately diverge; `--ff-only` would wedge the loop. The ledger's
+  union-merge driver resolves the only file that concurrently appends.
+- **systemd hardening** is trimmed to what systemd 241 supports. Newer directives
+  (`ProtectHostname` 242, `RestrictSUIDSGID` 242, `ProtectKernelLogs` 244,
+  `ProtectClock` 245) are omitted — they'd be silently ignored on older systemd. Stricter
+  opt-in (test that `uv run` still works): add `ProtectSystem=strict` +
+  `ProtectHome=read-only` + `ReadWritePaths=%h/sabnyx %h/sabnyx-vault %h/git
+  %h/.cache/uv %h/.local/share/uv`. (`MemoryMax` may be a no-op under an older release's
+  cgroup v1 — harmless.)
