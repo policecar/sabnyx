@@ -180,23 +180,32 @@ def _make_handler(
     class Handler(BaseHTTPRequestHandler):
         server_version = "sabnyx-r1/0.1"
 
+        def _send(self, status: int, ctype: str, body: bytes, extra: dict | None = None) -> None:
+            """Write one response, tolerating a client that hung up mid-send.
+
+            When nginx closes the upstream on its proxy timeout (or the device
+            disconnects), the socket write raises BrokenPipeError/
+            ConnectionResetError. That request already failed at the proxy — it's
+            expected, not a bug, so swallow it instead of letting the stdlib dump
+            a traceback per occurrence. Close the connection and move on."""
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                for k, v in (extra or {}).items():
+                    self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+
         def _respond(self, status: int, payload: dict) -> None:
-            body = json.dumps(payload).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._send(status, "application/json", json.dumps(payload).encode("utf-8"))
 
         def _file(self, path: Path) -> None:
             body = path.read_bytes()
             ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            self.wfile.write(body)
+            self._send(200, ctype, body, {"Cache-Control": "no-cache"})
 
         def _reject_te(self) -> bool:
             """Reject any request that frames its body with Transfer-Encoding.
