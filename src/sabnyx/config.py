@@ -40,6 +40,14 @@ def trusted_sources() -> set[str]:
     Reads ``SABNYX_TRUSTED_SOURCES`` (comma-separated) from the environment.
     If the variable is absent or empty, returns the default ``{"sabnyx-ingest"}``.
 
+    Trust here means "provenance the operator has vetted", NOT "a channel that
+    wrote the file". Only operator-supplied local input (``sabnyx-ingest``)
+    is trusted by default. Remotely fetched or third-party content is stamped
+    with distinct, non-trusted actors (``sabnyx-ingest-web`` for URL ingestion,
+    ``sabnyx-telegram``, ``sabnyx-r1``) so prompt-injected content cannot
+    auto-promote unattended into the authoritative atlas tier. Add an actor here
+    only if you genuinely trust everything that channel produces.
+
     Pure and side-effect-free beyond reading ``os.environ``.
     """
     raw = os.environ.get("SABNYX_TRUSTED_SOURCES", "").strip()

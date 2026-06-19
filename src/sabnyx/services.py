@@ -28,7 +28,15 @@ from . import context, ledger, llm, paths, retrieval, sources, writers
 from .schemas import AskAnswer, IngestChangeset, ProposedIntake, TriageBatch
 from .util import extract_wikilinks, slugify
 
-ACTOR_INGEST = "sabnyx-ingest"
+# Channel/provenance actors. The `source_agent` stamped on an intake file IS its
+# provenance-trust level for unattended auto-promotion (see config.trusted_sources
+# and auto_promote_decision's Gate 6). Only operator-vetted provenance belongs in
+# the trusted set: ACTOR_INGEST is for content the operator hands in directly
+# (local file / stdin). Content fetched from a remote/untrusted origin must use a
+# DISTINCT, non-trusted actor so a prompt-injected `bookmark`/`paper` intake can't
+# auto-promote into the authoritative atlas tier unattended.
+ACTOR_INGEST = "sabnyx-ingest"  # trusted: operator-supplied local source
+ACTOR_INGEST_WEB = "sabnyx-ingest-web"  # NOT trusted: remotely fetched URL content
 ACTOR_ASK = "sabnyx-ask"
 ACTOR_TEND = "sabnyx-tend"
 
