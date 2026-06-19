@@ -27,6 +27,7 @@ from rich.console import Console
 
 from .. import llm, services, sources
 from ..paths import DATA_ROOT, ensure_tree
+from ..schemas import ModelRole
 from ..util import slugify
 
 
@@ -48,7 +49,7 @@ def ingest_cmd(
     url: str | None,
     use_stdin: bool,
     title: str | None,
-    role: str | None,
+    role: ModelRole | None,
     yes: bool,
     dry_run: bool,
 ) -> None:
@@ -109,7 +110,7 @@ def ingest_cmd(
     )
     console.print(
         f"captured [bold]{src_rel}[/bold]  "
-        f"(depth: {proposal.depth}, role: {proposal.role}, model: {llm.model_for(proposal.role)})"  # type: ignore[arg-type]
+        f"(depth: {proposal.depth}, role: {proposal.role}, model: {llm.model_for(proposal.role)})"
     )
 
     changeset = proposal.changeset

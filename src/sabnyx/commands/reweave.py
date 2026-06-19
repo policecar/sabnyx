@@ -247,7 +247,7 @@ def reweave_one(
 )
 @click.option("--yes", "-y", is_flag=True, help="Apply without the approval prompt.")
 @click.option("--dry-run", is_flag=True, help="Show the proposed changeset; write nothing.")
-def reweave_cmd(target: Path | None, role: str, yes: bool, dry_run: bool) -> None:
+def reweave_cmd(target: Path | None, role: ModelRole, yes: bool, dry_run: bool) -> None:
     """Backward enrichment: link a promoted file into the existing graph.
 
     With no TARGET, consumes every pending reweave.proposed intent from

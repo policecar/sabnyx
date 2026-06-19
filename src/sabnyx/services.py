@@ -25,7 +25,7 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from . import context, ledger, llm, paths, retrieval, sources, writers
-from .schemas import AskAnswer, IngestChangeset, ProposedIntake, TriageBatch
+from .schemas import AskAnswer, IngestChangeset, ModelRole, ProposedIntake, TriageBatch
 from .util import extract_wikilinks, slugify
 
 # Channel/provenance actors. The `source_agent` stamped on an intake file IS its
@@ -338,7 +338,7 @@ Rules:
 Return a TriageBatch with one TriageItem per input file."""
 
 
-def triage_batch(files: list[Path], *, role: str = "standard") -> TriageBatch:
+def triage_batch(files: list[Path], *, role: ModelRole = "standard") -> TriageBatch:
     """Run a batched LLM triage pass over `files`.
 
     Assembles a description of each file's metadata, calls parse_structured
@@ -376,7 +376,7 @@ def triage_batch(files: list[Path], *, role: str = "standard") -> TriageBatch:
         task_system=TRIAGE_TASK_SYSTEM,
         user=user,
         output_format=TriageBatch,
-        role=role,  # type: ignore[arg-type]
+        role=role,
         actor=ACTOR_TEND,
         purpose="triage:batch",
     )
@@ -443,7 +443,7 @@ Rules, in addition to the SPEC and ROUTING contract above:
 class IngestProposal:
     changeset: IngestChangeset
     depth: str
-    role: str
+    role: ModelRole
 
 
 def build_ingest_proposal(
@@ -453,7 +453,7 @@ def build_ingest_proposal(
     source_kind: str,
     source_url: str | None,
     src_rel: str,
-    role_override: str | None = None,
+    role_override: ModelRole | None = None,
     actor: str = ACTOR_INGEST,
 ) -> IngestProposal:
     """Classify depth, assemble vault context, run the extraction call,
@@ -473,7 +473,7 @@ def build_ingest_proposal(
         task_system=INGEST_TASK_SYSTEM,
         user=user,
         output_format=IngestChangeset,
-        role=role,  # type: ignore[arg-type]
+        role=role,
         actor=actor,
         purpose=f"ingest:{slugify(title)}",
     )
@@ -586,7 +586,7 @@ def ingest_text(
 @dataclass
 class AskResult:
     answer: AskAnswer
-    role: str
+    role: ModelRole
     capture_dropped: bool = False  # a malformed optional capture was discarded
 
 
@@ -631,7 +631,7 @@ def _clean_citations(cited: list[str], answer_text: str) -> list[str]:
 
 
 def answer_question(
-    *, question: str, role_override: str | None = None, actor: str = ACTOR_ASK
+    *, question: str, role_override: ModelRole | None = None, actor: str = ACTOR_ASK
 ) -> AskResult:
     """Assemble context, answer the question grounded in the vault, ledger
     the projection. Writes nothing (capture is a separate step)."""
@@ -650,7 +650,7 @@ def answer_question(
             task_system=ASK_TASK_SYSTEM,
             user=user,
             output_format=AskAnswer,
-            role=role,  # type: ignore[arg-type]
+            role=role,
             actor=actor,
             purpose=purpose,
         )
