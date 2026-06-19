@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from sabnyx.paths import (
     DATA_ROOT,
     EVENTS_JSONL,
@@ -73,36 +71,48 @@ def test_resolve_data_root_absolute_path(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Default-behavior tests: DATA_ROOT == ROOT when env var is not set
+# Default-behavior tests: module constants stay consistent with the resolver
+#
+# DATA_ROOT is computed at import time by effective_data_dir(os.environ, ROOT),
+# which consults BOTH the real env var AND the repo-root .env file (DEC-002).
+# These tests therefore derive their expectations from the same resolver rather
+# than inspecting os.environ alone — an os.environ-only guard is blind to a
+# SABNYX_DATA_DIR override coming from .env and produces false failures on any
+# machine whose .env points the data root at a separate repo.
 # ---------------------------------------------------------------------------
 
 
-def test_default_data_root_equals_root() -> None:
-    """Without SABNYX_DATA_DIR in the environment, DATA_ROOT must equal ROOT."""
+def test_default_data_root_matches_resolver() -> None:
+    """DATA_ROOT must equal effective_data_dir(os.environ, ROOT).
+
+    When no override exists in env or .env, that resolver returns ROOT, so this
+    also confirms default behavior is unchanged.  When .env (or a real env var)
+    sets SABNYX_DATA_DIR, DATA_ROOT must track that override — not ROOT.
+    """
     import os
 
-    if "SABNYX_DATA_DIR" not in os.environ:
+    expected = effective_data_dir(os.environ, ROOT)
+    assert expected == DATA_ROOT
+    if expected == ROOT:
         assert DATA_ROOT == ROOT, (
-            "DATA_ROOT should default to ROOT when SABNYX_DATA_DIR is not set"
+            "DATA_ROOT should default to ROOT when SABNYX_DATA_DIR is set nowhere"
         )
-    else:
-        pytest.skip("SABNYX_DATA_DIR is set in this environment — default test skipped")
 
 
-def test_default_vault_under_root() -> None:
-    """VAULT must resolve under ROOT (or DATA_ROOT) in the default case."""
+def test_default_vault_under_data_root() -> None:
+    """VAULT must resolve under the effective data root (env or .env aware)."""
     import os
 
-    expected_base = ROOT if "SABNYX_DATA_DIR" not in os.environ else DATA_ROOT
-    assert VAULT == expected_base / "vault"
+    expected_base = effective_data_dir(os.environ, ROOT)
+    assert expected_base / "vault" == VAULT
 
 
-def test_default_ops_under_root() -> None:
-    """OPS must resolve under ROOT (or DATA_ROOT) in the default case."""
+def test_default_ops_under_data_root() -> None:
+    """OPS must resolve under the effective data root (env or .env aware)."""
     import os
 
-    expected_base = ROOT if "SABNYX_DATA_DIR" not in os.environ else DATA_ROOT
-    assert OPS == expected_base / "ops"
+    expected_base = effective_data_dir(os.environ, ROOT)
+    assert expected_base / "ops" == OPS
 
 
 def test_default_events_jsonl_under_ops() -> None:
