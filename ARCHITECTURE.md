@@ -223,7 +223,7 @@ Full command list + provider setup: `README.md`. Step-by-step testing recipe:
 ## Where to look in the code (a small map)
 
 ```
-sabnyx/src/sabnyx/
+src/sabnyx/
   llm.py         the single AI door — providers, roles, repair-retry, ledgering
   schemas.py     the frontmatter / structured-output contracts (incl. description)
   services.py    shared orchestration: ingest, ask, promote, triage
