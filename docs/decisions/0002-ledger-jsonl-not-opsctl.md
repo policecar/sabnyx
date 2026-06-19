@@ -33,6 +33,37 @@ attestation.
 - No built-in projections beyond what scripts compute on-demand.
   Fine.
 
+## The hash contract (Python ⇆ Rust)
+
+`opsctl` (Rust) reads and writes the same `ops/events.jsonl` as the Python
+side, so `content_hash` must be byte-identical across both. The contract that
+makes this hold:
+
+1. **Only `payload` is hashed.** Never `ts`, `kind`, `actor`, or any other
+   envelope field. So the two implementations need only agree on payload
+   canonicalization.
+2. **`ts` is an opaque RFC3339 string.** Both writers emit microsecond
+   precision with a `Z` suffix (pydantic on the Python side;
+   `to_rfc3339_opts(Micros, true)` on the Rust side). Because `ts` is excluded
+   from the hash, the zero-microsecond edge case (where the two could differ by
+   a trailing `.000000`) is harmless — `ts` is only ever compared
+   lexicographically. Do not fold `ts` into the hash without first making both
+   writers byte-identical.
+3. **Payloads contain no floats.** Python's `json.dumps` and Rust's
+   `serde_json` stringify floats differently at scientific-notation magnitudes
+   (`1e+20` vs `100000000000000000000.0`), and Python can emit the non-JSON
+   tokens `NaN`/`Infinity`. Rather than ship a shared float formatter, hashed
+   payloads must use strings or scaled integers for fractional quantities.
+   Python enforces this in `ledger._reject_floats`; opsctl's `task.*` payloads
+   are ints/strings.
+
+Canonicalization is otherwise `json.dumps(sort_keys=True,
+separators=(",",":"), ensure_ascii=True)` — sorted keys, no whitespace,
+non-ASCII escaped as `\uXXXX` (surrogate pairs for supplementary chars). The
+parity is tested both ways: `opsctl` shells out to the Python implementation
+(`test_compat_*`) and the Python suite pins the same hardcoded vectors
+(`tests/test_ledger.py`).
+
 ## Upgrade path (if needed)
 
   jsonl -> sqlite (same schema) -> opsctl (adopt directly)

@@ -144,4 +144,5 @@ def test_health_currency_and_materia_gates(tmp_vault):
     assert audit.payload["atlas"] == 4
     assert audit.payload["stale_atlas"] == 1  # only "stale"
     assert audit.payload["untracked_provenance"] == 1  # only "untracked"
-    assert audit.payload["cost_ratio"] == 0.0  # no intake files
+    # cost_ratio is a fixed-precision string (hashed payloads forbid floats).
+    assert audit.payload["cost_ratio"] == "0.000"  # no intake files

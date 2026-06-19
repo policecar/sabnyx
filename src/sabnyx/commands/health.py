@@ -173,7 +173,9 @@ def health_cmd(quick: bool) -> None:
             "files": len(idx),
             "intake": intake_count,
             "atlas": atlas_count,
-            "cost_ratio": round(cost_ratio, 3),
+            # A string, not a float: hashed ledger payloads forbid floats so the
+            # content_hash stays byte-compatible with opsctl (ADR-0002).
+            "cost_ratio": f"{cost_ratio:.3f}",
             "observations": pending_obs,
             "broken_links": len(broken_links),
             "orphans": len(orphans) if not quick else None,
