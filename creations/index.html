@@ -112,12 +112,13 @@
     </style>
   </head>
   <body>
-    <!-- First-run: paste the per-operator key (stored in creationStorage.secure) -->
+    <!-- First-run: paste the per-operator key (persisted; see js/api.js) -->
     <div id="setup">
       <div>sabnyx setup</div>
       <input id="keyInput" type="password" placeholder="paste API key" />
       <button id="saveKey">save key</button>
-      <div class="hint">Stored encrypted on device. Get the key from your sabnyx operator.</div>
+      <div class="hint">Stored on device. Get the key from your sabnyx operator.</div>
+      <div class="hint" id="storeInfo"></div>
     </div>
 
     <div id="app" style="display: none">
@@ -135,9 +136,9 @@
       </div>
     </div>
 
-    <script src="js/api.js"></script>
-    <script src="js/speak.js"></script>
-    <script src="js/voice.js"></script>
+    <script src="js/api.js?v=2"></script>
+    <script src="js/speak.js?v=2"></script>
+    <script src="js/voice.js?v=2"></script>
     <script>
       (function () {
         var api = window.sabnyxApi;
@@ -228,6 +229,9 @@
         async function start() {
           var key = await api.getKey();
           if (!key) {
+            // Surface what persistence is actually available — tells us whether
+            // the key was lost because creationStorage isn't injected here.
+            document.getElementById("storeInfo").textContent = api.storageInfo();
             setup.style.display = "flex";
             app.style.display = "none";
             return;
