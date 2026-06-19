@@ -206,6 +206,11 @@ pub fn append(events_path: &Path, event: &Event) -> io::Result<()> {
         .open(events_path)?;
 
     f.write_all(line.as_bytes())?;
+    // sync_all() fsyncs data + metadata so the append is durable to disk before
+    // we return — a true commit point even across a kernel panic / power loss,
+    // matching the Python appender's os.fsync(). (write_all alone only reaches
+    // the OS page cache, which a hard failure can still lose.)
+    f.sync_all()?;
     Ok(())
 }
 
