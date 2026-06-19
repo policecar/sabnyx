@@ -444,7 +444,7 @@ def openai_base_url(prov: str) -> str:
         _PROVIDER_DEFAULT_BASE_URL.get(prov, ""),
     ).rstrip("/")
     if not base_url:
-        raise ValueError("SABNYX_LLM_BASE_URL is required for provider=openai-compatible")
+        raise ValueError(f"SABNYX_LLM_BASE_URL is required for provider={prov!r}")
     return base_url
 
 
