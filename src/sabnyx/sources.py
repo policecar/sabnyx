@@ -9,7 +9,10 @@ HTML-comment syntax:  <!-- source-id:sabnyx-sources:<filename> -->
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -20,6 +23,14 @@ from .util import slugify
 
 # Cap pathological inputs; well under the 1M-token context either way.
 MAX_SOURCE_CHARS = 600_000
+
+# Hard byte cap on a fetched body: bound memory before we ever decode/truncate
+# (a server that lies about Content-Length, or simply serves something huge,
+# can't exhaust the single-threaded server).
+MAX_FETCH_BYTES = 8 * 1024 * 1024
+
+# Only these schemes are fetchable. No file://, ftp://, gopher://, data:, etc.
+_ALLOWED_SCHEMES = frozenset({"http", "https"})
 
 _ARXIV_HINTS = ("arxiv.org", "doi.org", ".pdf")
 
@@ -39,15 +50,79 @@ def classify_depth(text: str, source_url: str | None = None) -> ExtractionDepth:
     return "deep"
 
 
+def _is_blocked_ip(ip: str) -> bool:
+    """True for any address we refuse to connect to: loopback, RFC-1918
+    private, link-local (incl. cloud metadata 169.254.169.254), reserved,
+    multicast, or unspecified."""
+    addr = ipaddress.ip_address(ip)
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+        or addr.is_unspecified
+    )
+
+
+def _guard_url(url: str) -> None:
+    """Reject a URL that is not http(s) or that resolves to an internal/reserved
+    address — the SSRF guard. Raises ValueError on refusal.
+
+    Note: there is a residual TOCTOU/DNS-rebinding window between this check and
+    the actual connect (the resolver could return a different address). For a
+    single-user tool fetching operator-/sender-supplied URLs this is an
+    acceptable risk; closing it fully would require connecting to the validated
+    IP with a pinned Host header.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        raise ValueError(f"refusing non-http(s) URL scheme: {parsed.scheme or '(none)'!r}")
+    host = parsed.hostname
+    if not host:
+        raise ValueError(f"URL has no host: {url!r}")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        raise ValueError(f"could not resolve host {host!r}: {e}") from e
+    for info in infos:
+        ip = info[4][0]
+        if _is_blocked_ip(ip):
+            raise ValueError(
+                f"refusing to fetch internal/reserved address {ip} (host {host!r})"
+            )
+
+
+class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-run the SSRF guard on every redirect hop so an allow-listed URL can't
+    302 into an internal address."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        _guard_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch_url(url: str, timeout: int = 30) -> str:
     """Fetch a URL's raw body as text. No HTML parsing — the model reads
-    markup fine, and the raw artifact is the point."""
-    req = urllib.request.Request(url, headers={"User-Agent": "sabnyx/0.1 (+knowledge vault)"})
+    markup fine, and the raw artifact is the point.
+
+    Hardened against SSRF: http(s) only, internal/reserved addresses refused,
+    redirects re-validated per hop, and the body capped at MAX_FETCH_BYTES.
+    """
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        _guard_url(url)
+        opener = urllib.request.build_opener(_GuardedRedirectHandler())
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "sabnyx/0.1 (+knowledge vault)"}
+        )
+        with opener.open(req, timeout=timeout) as resp:  # noqa: S310 — scheme guarded above
             charset = resp.headers.get_content_charset() or "utf-8"
-            return resp.read().decode(charset, errors="replace")
-    except (urllib.error.URLError, TimeoutError) as e:
+            # read at most MAX_FETCH_BYTES: bounded memory even if the server
+            # lies about (or omits) Content-Length.
+            raw = resp.read(MAX_FETCH_BYTES)
+        return raw.decode(charset, errors="replace")
+    except (urllib.error.URLError, TimeoutError, ValueError, socket.gaierror) as e:
         raise RuntimeError(f"could not fetch {url}: {e}") from e
 
 
