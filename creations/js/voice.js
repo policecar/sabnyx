@@ -50,7 +50,7 @@ function wireVoice(onTranscript, onState) {
     }, 8000);
   });
 
-  // Chain onto any existing onPluginMessage (speak.js / others may share it).
+  // Chain onto any existing onPluginMessage (other bridge handlers may share it).
   const prev = window.onPluginMessage;
   window.onPluginMessage = (data) => {
     let d = data;
