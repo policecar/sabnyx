@@ -130,27 +130,18 @@ def promote_file(
         dest.unlink()
         raise RuntimeError(f"wrote invalid atlas file, rolled back: {e}") from e
 
-    # Remove the intake source
-    source.unlink()
-
-    # Provenance log (Gate 3 materia)
-    KNOWLEDGE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    if not KNOWLEDGE_LOG.exists():
-        KNOWLEDGE_LOG.write_text(
-            "# Knowledge log\n\nAppend-only provenance trail.\n\n", encoding="utf-8"
-        )
-    with KNOWLEDGE_LOG.open("a", encoding="utf-8") as f:
-        f.write(
-            f"- {today} promote: `{source.relative_to(DATA_ROOT)}` -> "
-            f"`{dest.relative_to(DATA_ROOT)}` ({atlas_type})\n"
-        )
-
+    # Ledger BEFORE unlinking the source: the append is the commit point. If the
+    # process dies after this, the promotion is recorded (and the reweave intent
+    # preserved) and the next tend's duplicate-slug gate refuses a re-promote —
+    # far better than the inverse (file moved, no ledger record, lost reweave).
+    src_rel = str(source.relative_to(DATA_ROOT))
+    dest_rel = str(dest.relative_to(DATA_ROOT))
     ledger.append_event(
         kind="atlas.promoted",
         actor=actor,
-        subject=str(dest.relative_to(DATA_ROOT)),
+        subject=dest_rel,
         payload={
-            "from": str(source.relative_to(DATA_ROOT)),
+            "from": src_rel,
             "as": atlas_type,
             "description": meta["description"],
             "source_url": meta.get("source_url"),
@@ -162,7 +153,7 @@ def promote_file(
         plane="intent",
         kind="reweave.proposed",
         actor=actor,
-        subject=str(dest.relative_to(DATA_ROOT)),
+        subject=dest_rel,
         payload={
             "description": meta["description"],
             "tags": meta.get("tags", []),
@@ -175,7 +166,57 @@ def promote_file(
         },
     )
 
+    # Remove the intake source (the move is now committed on the ledger).
+    source.unlink()
+
+    # Provenance log (Gate 3 materia)
+    KNOWLEDGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    if not KNOWLEDGE_LOG.exists():
+        KNOWLEDGE_LOG.write_text(
+            "# Knowledge log\n\nAppend-only provenance trail.\n\n", encoding="utf-8"
+        )
+    with KNOWLEDGE_LOG.open("a", encoding="utf-8") as f:
+        f.write(f"- {today} promote: `{src_rel}` -> `{dest_rel}` ({atlas_type})\n")
+
     return dest
+
+
+# -- reconciliation (ledger vs filesystem) -------------------------------------
+
+
+@dataclass
+class Reconciliation:
+    """Drift between the ledger's record of promotions and the actual atlas/.
+
+    The ledger is an append-only audit of *agent* actions, not an event-sourced
+    mirror of the vault — git is the source of truth, and a manual file edit
+    produces no event. This surfaces where the two disagree.
+    """
+
+    unledgered: list[str]  # atlas files with no atlas.promoted event (manual/pre-ledger)
+    orphaned: list[str]  # atlas.promoted subjects whose file is now missing
+
+    @property
+    def clean(self) -> bool:
+        return not self.unledgered and not self.orphaned
+
+
+def reconcile_atlas() -> Reconciliation:
+    """Diff `atlas.promoted` ledger subjects against the files under atlas/.
+
+    Read-only: replays the ledger and walks the filesystem, mutating nothing.
+    Both sides use DATA_ROOT-relative paths so the comparison is apples-to-apples.
+    """
+    promoted: set[str] = {e.subject for e in ledger.replay() if e.kind == "atlas.promoted"}
+    actual: set[str] = {
+        str(p.relative_to(paths.DATA_ROOT))
+        for p in paths.ATLAS.rglob("*.md")
+        if p.is_file()
+    }
+    return Reconciliation(
+        unledgered=sorted(actual - promoted),
+        orphaned=sorted(promoted - actual),
+    )
 
 
 # -- auto-promote gate (pure, no IO) -------------------------------------------
