@@ -29,7 +29,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .. import context, fm, ledger, llm
-from ..paths import ATLAS, INTAKE, ensure_tree
+from ..paths import ATLAS, DATA_ROOT, INTAKE, ensure_tree
 from ..services import (
     ACTOR_TEND,
     AutoPromoteDecision,
@@ -68,7 +68,7 @@ def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
     for tgt in targets:
         from ..schemas import ReweaveChangeset
 
-        rel = str(tgt.relative_to(ATLAS.parent.parent))  # relative to DATA_ROOT (ATLAS = DATA_ROOT/vault/atlas)
+        rel = str(tgt.relative_to(DATA_ROOT))
         console.print(f"  [bold]reweave[/bold] {rel}")
 
         if dry_run:
