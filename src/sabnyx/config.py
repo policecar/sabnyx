@@ -15,8 +15,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .paths import ROOT
 from ._dotenv import LOCAL_ENV_FILES, parse_dotenv  # re-exported for callers
+from .paths import ROOT
 
 # Default trusted source agents for deterministic auto-promote.
 _DEFAULT_TRUSTED_SOURCES = {"sabnyx-ingest"}
