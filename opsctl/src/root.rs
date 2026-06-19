@@ -70,7 +70,9 @@ fn resolve(raw: &str) -> PathBuf {
             None => PathBuf::from(raw),
         }
     } else if raw == "~" {
-        std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(raw))
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(raw))
     } else {
         PathBuf::from(raw)
     };
@@ -144,7 +146,10 @@ mod tests {
             parse_dotenv_value(text, "SABNYX_DATA_DIR"),
             Some("/quoted/path".to_string())
         );
-        assert_eq!(parse_dotenv_value(text, "OTHER"), Some("single".to_string()));
+        assert_eq!(
+            parse_dotenv_value(text, "OTHER"),
+            Some("single".to_string())
+        );
     }
 
     #[test]
@@ -172,7 +177,11 @@ mod tests {
     #[test]
     fn test_resolve_relative_is_absolutized() {
         let r = resolve("rel/dir");
-        assert!(r.is_absolute(), "relative path must be made absolute: {:?}", r);
+        assert!(
+            r.is_absolute(),
+            "relative path must be made absolute: {:?}",
+            r
+        );
         assert!(r.ends_with("rel/dir"));
     }
 }

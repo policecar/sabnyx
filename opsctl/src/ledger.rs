@@ -284,11 +284,10 @@ mod tests {
         let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         dir = dir.parent().unwrap().to_path_buf(); // opsctl/ -> repo root
 
-        let script = format!(
-            "import json,sys; from sabnyx.ledger import content_hash; print(content_hash(json.loads(sys.argv[1])), end='')"
-        );
+        let script =
+            "import json,sys; from sabnyx.ledger import content_hash; print(content_hash(json.loads(sys.argv[1])), end='')";
         let output = Command::new("uv")
-            .args(["run", "python", "-c", &script, json_str])
+            .args(["run", "python", "-c", script, json_str])
             .current_dir(&dir)
             .output()
             .ok()?;
@@ -358,7 +357,12 @@ mod tests {
         let e = new_event("event", "test", "opsctl", "subj", json!({}));
         assert!(e.ts.ends_with('Z'), "ts must use Z suffix, got {}", e.ts);
         // RFC3339 with microseconds: 'YYYY-MM-DDTHH:MM:SS.ffffffZ' (27 chars).
-        assert_eq!(e.ts.len(), 27, "ts must be microsecond precision, got {}", e.ts);
+        assert_eq!(
+            e.ts.len(),
+            27,
+            "ts must be microsecond precision, got {}",
+            e.ts
+        );
     }
 
     // ---------------------------------------------------------------------------
