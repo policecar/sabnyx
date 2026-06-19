@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-from datetime import UTC, date, datetime
 from pathlib import Path
 
 import click
@@ -12,7 +11,7 @@ from rich.table import Table
 
 from .. import fm, ledger
 from ..paths import ATLAS, DATA_ROOT, INTAKE, OBSERVATIONS, VAULT
-from ..util import extract_wikilinks, walk_vault_md
+from ..util import age_days, extract_wikilinks, walk_vault_md
 
 # Gate 5: jibot flags time-sensitive content whose last_verified is absent
 # or older than 180 days. references are the time-sensitive type at stage 0.
@@ -27,21 +26,6 @@ def _slug_index() -> dict[str, Path]:
             continue
         idx[p.stem.lower()] = p
     return idx
-
-
-def _age_days(ts: datetime | date | str | None) -> int | None:
-    if ts is None:
-        return None
-    if isinstance(ts, str):
-        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    # NB: datetime is a subclass of date, so test datetime FIRST.
-    if isinstance(ts, datetime):
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=UTC)
-    elif isinstance(ts, date):
-        # a bare YAML date (e.g. `last_verified: 2026-06-13`) -> midnight UTC
-        ts = datetime(ts.year, ts.month, ts.day, tzinfo=UTC)
-    return (datetime.now(UTC) - ts).days
 
 
 @click.command("health")
@@ -83,7 +67,7 @@ def health_cmd(quick: bool) -> None:
             meta, _body, _kind = fm.load(p)
         except fm.FrontmatterError:
             continue
-        age = _age_days(meta.get("created"))
+        age = age_days(meta.get("created"))
         if age is not None and age > 60:
             stale_intake.append((p, age))
 
@@ -102,7 +86,7 @@ def health_cmd(quick: bool) -> None:
             continue
         atlas_count += 1
 
-        age = _age_days(meta.get("last_verified"))
+        age = age_days(meta.get("last_verified"))
         if age is None or age > CURRENCY_DAYS:
             stale_atlas.append((p, age))
 
