@@ -83,7 +83,9 @@ enum Commands {
 }
 
 fn events_path() -> PathBuf {
-    root::require().join("ops").join("events.jsonl")
+    // Resolve the data root exactly like the Python side (SABNYX_DATA_DIR env /
+    // <code-root>/.env / code root) so both writers share one ledger file.
+    root::data_root().join("ops").join("events.jsonl")
 }
 
 fn main() -> anyhow::Result<()> {
