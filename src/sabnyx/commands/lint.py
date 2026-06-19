@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .. import fm
-from ..paths import ATLAS, DATA_ROOT, INTAKE, OBSERVATIONS, ROOT, SOURCES, VAULT
+from ..paths import DATA_ROOT, OBSERVATIONS, ROOT, SOURCES, VAULT
 from ..util import walk_vault_md
 
 
@@ -110,7 +110,3 @@ def lint_cmd(files: tuple[Path, ...], staged: bool) -> None:
 
     console.print(f"[green]lint OK[/green] ({len(targets)} file(s))")
     sys.exit(0)
-
-
-# Expose for CLI import even if targets are empty
-_ = (INTAKE, ATLAS)  # keep paths imported for discoverability
