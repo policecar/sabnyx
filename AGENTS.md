@@ -42,9 +42,9 @@ sandboxing (see docs/recon/nanoclaw-mirror.md).
 
 ## 3. Every mutation emits one ledger event
 
-Append to `ops/events.jsonl`. Use `ops/scripts/ledger.py` helpers:
+Append to `ops/events.jsonl`. Use `src/sabnyx/ledger.py` helpers:
 
-    from ops.scripts.ledger import append_event
+    from sabnyx.ledger import append_event
     append_event(
         plane="event",
         kind="intake.created",
