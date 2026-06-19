@@ -137,7 +137,6 @@
     </div>
 
     <script src="js/api.js?v=2"></script>
-    <script src="js/speak.js?v=2"></script>
     <script src="js/voice.js?v=2"></script>
     <script>
       (function () {
@@ -174,18 +173,17 @@
         async function submit(text) {
           if (!text) return;
           log("…", "hint");
+          // Replies are TEXT-ONLY: the answer is surfaced on-screen via log()
+          // and is never spoken. Input still accepts speech (PTT-hold → STT) or
+          // typing — only the response path changed.
           // TODO(latency): the LLM round-trip dominates response time (a few
           // seconds on Haiku, ~35s on Moonshot), and on a listen-not-look device
-          // a silent wait reads as "broken." Consider improving the response UX —
-          // e.g. an interim ack (spoken/earcon/visual) here before the fetch,
-          // surfacing the answer as on-screen TEXT instead of/alongside speech,
-          // shortening the spoken reply, streaming, or a faster model. Not yet
-          // decided — see README "TODO".
+          // a silent wait reads as "broken." Consider a visual interim ack here
+          // before the fetch, streaming the text in, or a faster model.
           try {
             var res = mode === "ask" ? await api.ask(text) : await api.ingest(text);
             var reply = res.text || "(no response)";
             log(reply);
-            window.sabnyxSpeak(reply);
             refreshStatus();
           } catch (e) {
             log("error: " + e.message);
