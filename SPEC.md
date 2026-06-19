@@ -96,7 +96,8 @@ script enforces this and the git pre-commit hook blocks violations.
     type: observation
     category: gap | contradiction | connection | friction | structural
     observed: 2026-04-22
-    source_agent: manual | sabnyx-cli | triage | reweave | health | sabnyx-entities
+    source_agent: manual | sabnyx-cli | <agent-name>   # e.g. sabnyx-ingest,
+                  # sabnyx-tend, sabnyx-scan, sabnyx-reweave, sabnyx-entities
     status: pending | promoted | archived
     involves: ["<file1.md>", "<file2.md>"]
     ---

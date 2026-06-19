@@ -70,8 +70,25 @@ uv run sabnyx health                      # orphans, broken links, currency, cos
 
 # channels & ops
 uv run sabnyx serve                       # Telegram interface (trusted senders)
+uv run sabnyx serve-http                  # HTTP ingress for the Rabbit R1 (bearer-key allowlist)
 uv run sabnyx verify                      # live LLM connectivity probe
 ```
+
+The **R1 client** (`sabnyx serve-http`) is a small stdlib HTTP ingress that lets a
+[Rabbit R1](https://www.rabbit.tech/) Creation drive the vault by voice. The R1
+transcribes on-device and POSTs the plain-text transcript with a bearer key;
+sabnyx routes it through the same `services.py` write path the CLI and Telegram
+use, and returns JSON the Creation speaks back. The routes are explicit — the
+path *is* the action, no LLM routing:
+
+```
+POST /ingest  {text}  → capture into intake/   → {text, filed:[...]}
+POST /ask     {text}  → grounded vault answer   → {text, cited:[...]}
+GET  /status          → vault pulse             → {intake, atlas, observations}
+```
+
+Like `serve`, auth is a bearer-key allowlist and it refuses to run open (empty
+allowlist). Every request is logged as a `web`-sourced event (actor `sabnyx-r1`).
 
 Every command that mutates the vault appends one event to `ops/events.jsonl`.
 
@@ -153,7 +170,7 @@ src/sabnyx/            the Python package
   llm.py               the single model boundary (providers, roles, ledgering)
   services.py          shared orchestration (ingest, ask, promote, triage)
   commands/            new, ingest, ask, tend, triage, promote, reweave,
-                       scan, lint, health, serve, verify
+                       scan, entities, lint, health, serve, serve-http, verify
   config.py            local .env autoload, trusted-source allowlist
 
 opsctl/                the Rust control plane (ledger, query, project, supervise)
