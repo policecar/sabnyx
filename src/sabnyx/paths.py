@@ -89,10 +89,10 @@ def effective_data_dir(env: Mapping[str, str], root: Path) -> Path:
         parsed = parse_dotenv(p.read_text(encoding="utf-8"))
         file_val = parsed.get("SABNYX_DATA_DIR", "").strip()
         if file_val:
-            # We already know env's SABNYX_DATA_DIR is absent/empty.
-            # Use the file value directly rather than merging (which would let
-            # the empty env entry shadow the file value).
-            return Path(file_val).expanduser().resolve()
+            # We already know env's SABNYX_DATA_DIR is absent/empty, so pass the
+            # file value directly rather than merging (which would let the empty
+            # env entry shadow it). resolve_data_root owns expand/resolve.
+            return resolve_data_root({"SABNYX_DATA_DIR": file_val}, root)
 
     return root
 
