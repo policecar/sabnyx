@@ -115,24 +115,14 @@ def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
 
 
 def _health_summary(console: Console) -> None:
-    """Print a concise health table (reuses health.py helpers)."""
+    """Print a concise health table (reuses health.py's link scan)."""
     from . import health as health_mod
 
     idx = health_mod._slug_index()
+    broken_links, _linked, _drift = health_mod.scan_wikilinks(idx)
     intake_count = len(list(INTAKE.glob("*.md")))
     atlas_count = sum(1 for p in ATLAS.rglob("*.md") if p.is_file())
     pending_obs = sum(1 for _ in (INTAKE / ".observations").glob("*.md"))
-    broken = 0
-    for path in idx.values():
-        try:
-            _meta, body, _kind = fm.load(path)
-        except fm.FrontmatterError:
-            continue
-        from ..util import extract_wikilinks
-
-        for target in extract_wikilinks(body):
-            if target.lower().strip() not in idx:
-                broken += 1
 
     t = Table(title="health summary")
     t.add_column("Check")
@@ -140,7 +130,7 @@ def _health_summary(console: Console) -> None:
     t.add_row("intake queue", str(intake_count))
     t.add_row("atlas files", str(atlas_count))
     t.add_row("pending observations", str(pending_obs))
-    t.add_row("broken wikilinks", str(broken))
+    t.add_row("broken wikilinks", str(len(broken_links)))
     t.add_row("ledger events", str(ledger.count()))
     console.print(t)
 

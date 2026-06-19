@@ -28,19 +28,19 @@ def _slug_index() -> dict[str, Path]:
     return idx
 
 
-@click.command("health")
-@click.option("--quick", is_flag=True, help="Skip the expensive checks.")
-def health_cmd(quick: bool) -> None:
-    """Report orphans, broken wikilinks, stale intake, ledger count."""
-    console = Console()
-    idx = _slug_index()
+def scan_wikilinks(
+    idx: dict[str, Path],
+) -> tuple[list[tuple[Path, str]], set[str], list[tuple[Path, str]]]:
+    """One pass over the index → (broken_links, linked_slugs, schema_drift).
 
+    broken_links: (file, raw target) per wikilink whose lowercased target is
+    not a known slug. linked_slugs: targets that resolved (for orphan
+    detection). schema_drift: (file, errors) for files that fail to parse.
+    Shared by `health` and `tend` so the scan lives in one place.
+    """
     broken_links: list[tuple[Path, str]] = []
-    orphans: list[Path] = []
-    stale_intake: list[tuple[Path, int]] = []
-    schema_drift: list[tuple[Path, str]] = []
-
     linked_slugs: set[str] = set()
+    schema_drift: list[tuple[Path, str]] = []
     for path in idx.values():
         try:
             _meta, body, _kind = fm.load(path)
@@ -53,6 +53,20 @@ def health_cmd(quick: bool) -> None:
                 linked_slugs.add(tslug)
             else:
                 broken_links.append((path, target))
+    return broken_links, linked_slugs, schema_drift
+
+
+@click.command("health")
+@click.option("--quick", is_flag=True, help="Skip the expensive checks.")
+def health_cmd(quick: bool) -> None:
+    """Report orphans, broken wikilinks, stale intake, ledger count."""
+    console = Console()
+    idx = _slug_index()
+
+    orphans: list[Path] = []
+    stale_intake: list[tuple[Path, int]] = []
+
+    broken_links, linked_slugs, schema_drift = scan_wikilinks(idx)
 
     if not quick:
         for slug, p in idx.items():
