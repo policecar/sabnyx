@@ -20,6 +20,20 @@ from ..paths import DATA_ROOT, OBSERVATIONS, ROOT, SOURCES, VAULT
 from ..util import walk_vault_md
 
 
+def _lintable(path: Path) -> bool:
+    """A schema-bearing vault .md file.
+
+    Excludes operational `_review` files and raw `sources/` (no schema applies).
+    Vault-membership scoping is applied separately by `--staged` (git reports
+    repo-wide changes); explicitly-passed files are linted wherever they live.
+    """
+    return (
+        path.suffix == ".md"
+        and "_review" not in path.parts
+        and SOURCES not in path.resolve().parents
+    )
+
+
 def _gate_4_containment(path: Path, meta: dict, kind: str) -> list[str]:
     """Gate 4: tier boundaries.
 
@@ -58,17 +72,10 @@ def lint_cmd(files: tuple[Path, ...], staged: bool) -> None:
         targets = []
         for rel in result.stdout.splitlines():
             p = ROOT / rel
-            if p.is_file() and p.suffix == ".md" and VAULT in p.parents:
-                # Skip operational files and raw sources (no schema applies)
-                if "_review" in p.parts or SOURCES in p.parents:
-                    continue
+            if p.is_file() and VAULT in p.parents and _lintable(p):
                 targets.append(p)
     elif files:
-        targets = [
-            f
-            for f in files
-            if f.suffix == ".md" and "_review" not in f.parts and SOURCES not in f.resolve().parents
-        ]
+        targets = [f for f in files if _lintable(f)]
     else:
         targets = walk_vault_md(VAULT)
 
