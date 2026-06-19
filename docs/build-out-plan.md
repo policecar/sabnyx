@@ -73,6 +73,20 @@ direction only: vault → halbor.
 - NanoClaw container fleet / multi-channel gateway
 - Payments (x402/USDC) — not even in jibot; ledger hashing covers integrity
 
+## Deferred ideas (noted, gated on a real trigger)
+
+- **Point-in-time vault reconstruction from the ledger.** *Problem:* the ledger
+  records agent *actions*, not file content, so replaying it cannot rebuild the
+  vault — git is the source of truth and a manual edit emits no event, so there
+  is no event → vault-state mapping. *Proposed solution (when needed):* anchor,
+  don't event-source — a post-commit hook appends a `git.committed` event linking
+  each commit SHA to the ledger high-water mark, so "vault at event N" =
+  `git checkout` that SHA; the ledger stays the shadow, git stays the store.
+  *Trigger:* turning on Lemma/ZK attestation (SPEC §9), recurring multi-machine
+  drift `reconcile` can't pinpoint, or an audit/UI surface that needs it. Until
+  then git history + `reconcile` suffice. (Full event-sourcing the vault stays a
+  non-goal: it reimplements git, worse, and breaks the plain-files contract.)
+
 ## Progress & resume (last updated 2026-06-13)
 
 **Done (committed on `feat/brain-buildout`):**
