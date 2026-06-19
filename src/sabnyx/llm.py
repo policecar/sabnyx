@@ -23,9 +23,13 @@ Configuration (env vars):
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import os
 import re
+import time
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import TypeVar
 
@@ -156,6 +160,95 @@ def contract_text() -> str:
     return "\n\n".join(parts)
 
 
+# -- cost + reliability guards -------------------------------------------------------
+# An always-on agent that holds an API key needs two things the boundary lacked:
+# a ceiling on how many calls one run may make (so a scheduled `tend --yes` loop
+# with a misbehaving prompt or a huge queue can't spin the provider unbounded),
+# and bounded retry on transient provider failures (so a single 429/5xx doesn't
+# abort the whole heartbeat mid-run).
+
+
+class LLMBudgetError(RuntimeError):
+    """Raised when a call would exceed the active per-run LLM call budget."""
+
+
+_DEFAULT_MAX_CALLS = 50
+
+
+def _default_max_calls() -> int:
+    """Per-run call ceiling from SABNYX_MAX_LLM_CALLS (<=0 = unlimited)."""
+    raw = os.environ.get("SABNYX_MAX_LLM_CALLS", "").strip()
+    if not raw:
+        return _DEFAULT_MAX_CALLS
+    try:
+        return int(raw)
+    except ValueError:
+        return _DEFAULT_MAX_CALLS
+
+
+@dataclass
+class _Budget:
+    max_calls: int
+    calls: int = 0
+
+
+_budget: contextvars.ContextVar[_Budget | None] = contextvars.ContextVar(
+    "sabnyx_llm_budget", default=None
+)
+
+
+@contextlib.contextmanager
+def call_budget(max_calls: int | None = None):
+    """Bound the number of LLM calls made within this context (fail-closed).
+
+    `max_calls <= 0` means unlimited; `None` uses SABNYX_MAX_LLM_CALLS (default
+    ``_DEFAULT_MAX_CALLS``). Wrap unattended, looping work (e.g. `tend`) so a
+    runaway queue or prompt can't call the provider without bound. Outside any
+    budget context there is no cap — one-shot CLI calls and the long-lived
+    `serve` daemon are unaffected.
+    """
+    limit = _default_max_calls() if max_calls is None else max_calls
+    token = _budget.set(_Budget(max_calls=limit))
+    try:
+        yield
+    finally:
+        _budget.reset(token)
+
+
+def _charge_budget(purpose: str) -> None:
+    """Count one call against the active budget; raise if it would exceed it."""
+    b = _budget.get()
+    if b is None or b.max_calls <= 0:
+        return
+    b.calls += 1
+    if b.calls > b.max_calls:
+        raise LLMBudgetError(
+            f"LLM call budget exceeded ({b.calls} > {b.max_calls} calls this run) "
+            f"at {purpose!r}; raise/unset SABNYX_MAX_LLM_CALLS or widen call_budget()."
+        )
+
+
+# Provider statuses worth retrying: rate limit, transient 5xx, Anthropic 529.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 529})
+_DEFAULT_RETRIES = 3
+
+
+def _max_retries() -> int:
+    """Transient-failure retry count from SABNYX_LLM_MAX_RETRIES (default 3)."""
+    raw = os.environ.get("SABNYX_LLM_MAX_RETRIES", "").strip()
+    if not raw:
+        return _DEFAULT_RETRIES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _DEFAULT_RETRIES
+
+
+def _backoff_seconds(attempt: int) -> float:
+    """Exponential backoff for a 0-based attempt index, capped at 30s."""
+    return min(2.0**attempt, 30.0)
+
+
 # -- the one public call site --------------------------------------------------------
 
 T = TypeVar("T", bound=BaseModel)
@@ -196,6 +289,9 @@ def parse_structured(
     """
     prov = provider()
     model = model_for(role, prov)
+    # Charge the run budget before doing (or ledgering) anything: a refused call
+    # is not an llm.requested.
+    _charge_budget(purpose)
     prompt_hash = ledger.content_hash({"task_system": task_system, "user": user})
 
     ledger.append_event(
@@ -296,16 +392,29 @@ def _call_anthropic(
     import anthropic
 
     client = anthropic.Anthropic()
-    response = client.messages.parse(
-        **anthropic_params(
-            model=model,
-            role=role,
-            task_system=task_system,
-            user=user,
-            output_format=output_format,
-            max_tokens=max_tokens,
-        )
+    params = anthropic_params(
+        model=model,
+        role=role,
+        task_system=task_system,
+        user=user,
+        output_format=output_format,
+        max_tokens=max_tokens,
     )
+    retries = _max_retries()
+    for attempt in range(retries + 1):
+        try:
+            response = client.messages.parse(**params)
+            break
+        except anthropic.APIStatusError as e:
+            # RateLimitError (429) and InternalServerError (5xx) subclass this.
+            if attempt >= retries or e.status_code not in _RETRYABLE_STATUS:
+                raise
+            time.sleep(_backoff_seconds(attempt))
+        except anthropic.APIConnectionError:
+            # Network blip / timeout (APITimeoutError subclasses this).
+            if attempt >= retries:
+                raise
+            time.sleep(_backoff_seconds(attempt))
 
     if response.stop_reason == "refusal":
         raise RuntimeError(f"model declined the request ({purpose})")
@@ -451,12 +560,23 @@ def _call_openai_compatible(
         headers["X-Title"] = "sabnyx"
 
     def _post(b: dict) -> dict:
-        r = httpx.post(f"{base_url}/chat/completions", json=b, headers=headers, timeout=300)
-        if r.status_code == 400 and "response_format" in r.text:
-            # model doesn't support json_schema response_format; the schema is
-            # already in the prompt, so retry without the parameter
-            b.pop("response_format", None)
+        retries = _max_retries()
+        r = None
+        for attempt in range(retries + 1):
             r = httpx.post(f"{base_url}/chat/completions", json=b, headers=headers, timeout=300)
+            if r.status_code == 400 and "response_format" in r.text:
+                # model doesn't support json_schema response_format; the schema is
+                # already in the prompt, so retry without the parameter
+                b.pop("response_format", None)
+                r = httpx.post(
+                    f"{base_url}/chat/completions", json=b, headers=headers, timeout=300
+                )
+            if r.status_code in _RETRYABLE_STATUS and attempt < retries:
+                # transient: rate limit / 5xx — back off and retry
+                time.sleep(_backoff_seconds(attempt))
+                continue
+            break
+        assert r is not None
         r.raise_for_status()
         return r.json()
 
