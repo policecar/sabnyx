@@ -118,20 +118,15 @@ fn main() -> anyhow::Result<()> {
         Commands::Supervise {
             label,
             every,
-            once,
+            // `--once` is accepted for explicit cron intent and conflicts with
+            // `--every` (enforced by clap); single-shot is already the default.
+            once: _,
             retries,
             command,
         } => {
-            if command.is_empty() {
-                eprintln!("opsctl supervise: command is required");
-                std::process::exit(1);
-            }
-
             if let Some(interval) = every {
                 supervise::run_loop(&path, &label, &command, retries, interval)?;
             } else {
-                // Default to --once behavior
-                let _ = once; // --once is just explicit; default is single-shot
                 let success = supervise::run_cycle(&path, &label, &command, retries)?;
                 if !success {
                     std::process::exit(1);
