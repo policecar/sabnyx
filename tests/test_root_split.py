@@ -20,12 +20,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from sabnyx import fm, ledger
 from sabnyx.schemas import IngestChangeset, ProposedIntake
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -63,7 +61,7 @@ def test_fixture_root_not_equal_data_root(tmp_vault) -> None:
     """The fixture must produce ROOT != DATA_ROOT, or no crash-class tests are meaningful."""
     from sabnyx import paths as paths_mod
 
-    assert paths_mod.ROOT != tmp_vault["DATA_ROOT"], (
+    assert tmp_vault["DATA_ROOT"] != paths_mod.ROOT, (
         "ROOT should be the real code repo, not the temp vault"
     )
     assert tmp_vault["ROOT"] == paths_mod.ROOT
