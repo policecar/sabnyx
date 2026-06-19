@@ -53,14 +53,16 @@ def classify(text: str) -> tuple[str, str]:
     """Map a message to (action, argument). Pure; no side effects."""
     t = text.strip()
     low = t.lower()
+    parts = t.split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
     if _GREET_RE.match(t):
         return "greet", ""
     if low.startswith(("/ask", "/q ")) or low == "/q":
-        return "ask", t.split(None, 1)[1].strip() if len(t.split(None, 1)) > 1 else ""
+        return "ask", arg
     if low.startswith(("/status", "/health")):
         return "status", ""
     if low.startswith(("/remember", "/capture")):
-        return "ingest_text", t.split(None, 1)[1].strip() if len(t.split(None, 1)) > 1 else ""
+        return "ingest_text", arg
     if _URL_RE.match(t):
         return "ingest_url", t
     if t.endswith("?"):
