@@ -149,7 +149,7 @@ def test_reweave_pending_applies_guarded_changeset(tmp_vault, monkeypatch):
 
     # beta gained the backward link
     _, beta_body, _ = fm.load(concepts / "beta.md")
-    assert "[[alpha]]" in util.get_marker_block(beta_body, "related")
+    assert "[[alpha]]" in (util.get_marker_block(beta_body, "related") or "")
     # target gained only the legit outbound link (self + unknown dropped)
     _, alpha_body, _ = fm.load(concepts / "alpha.md")
     assert util.get_marker_block(alpha_body, "related") == "- [[beta]]"

@@ -23,7 +23,7 @@ from rich.console import Console
 
 from .. import context, fm, ledger, llm, paths, retrieval, writers
 from ..paths import ensure_tree
-from ..schemas import ContradictionScan
+from ..schemas import ContradictionScan, ModelRole
 
 ACTOR = "sabnyx-scan"
 
@@ -71,7 +71,7 @@ def _pending_contradiction_pairs() -> set[frozenset[str]]:
 )
 @click.option("--yes", "-y", is_flag=True, help="Write findings without the approval prompt.")
 @click.option("--dry-run", is_flag=True, help="Show findings; write nothing.")
-def scan_cmd(role: str, yes: bool, dry_run: bool) -> None:
+def scan_cmd(role: ModelRole, yes: bool, dry_run: bool) -> None:
     """Scan the atlas for contradicting claims; file them as observations."""
     console = Console()
     ensure_tree()
@@ -83,7 +83,7 @@ def scan_cmd(role: str, yes: bool, dry_run: bool) -> None:
 
     console.print(
         f"scanning [bold]{len(index)}[/bold] atlas files  "
-        f"(role: {role}, model: {llm.model_for(role)})"  # type: ignore[arg-type]
+        f"(role: {role}, model: {llm.model_for(role)})"
     )
 
     result = llm.parse_structured(
@@ -92,7 +92,7 @@ def scan_cmd(role: str, yes: bool, dry_run: bool) -> None:
         # Contradiction scan wants the whole atlas, not a query-ranked slice.
         + retrieval.get_retriever().retrieve(None, index),
         output_format=ContradictionScan,
-        role=role,  # type: ignore[arg-type]
+        role=role,
         actor=ACTOR,
         purpose="scan:atlas-contradictions",
     )

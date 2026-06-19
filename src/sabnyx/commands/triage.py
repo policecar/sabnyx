@@ -7,7 +7,6 @@ separate explicit command.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 
 import click
@@ -15,16 +14,7 @@ from rich.console import Console
 
 from .. import fm, ledger
 from ..paths import DATA_ROOT, INTAKE, OBSERVATIONS, REVIEW, ensure_tree
-
-
-def _age_days(created_iso: str | datetime) -> int:
-    if isinstance(created_iso, str):
-        dt = datetime.fromisoformat(created_iso.replace("Z", "+00:00"))
-    else:
-        dt = created_iso
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return (datetime.now(UTC) - dt).days
+from ..util import age_days
 
 
 def _intake_files() -> list[Path]:
@@ -80,7 +70,7 @@ def triage_cmd() -> None:
             except fm.FrontmatterError as e:
                 lines.append(f"- [INVALID] {p.relative_to(DATA_ROOT)}: {e.errors}")
                 continue
-            age = _age_days(meta.get("created", ledger.now()))
+            age = age_days(meta.get("created", ledger.now()))
             desc = meta.get("description", "")
             rec = _recommend(meta, kind)
             lines.append(

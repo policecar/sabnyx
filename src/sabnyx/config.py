@@ -15,8 +15,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .paths import ROOT
 from ._dotenv import LOCAL_ENV_FILES, parse_dotenv  # re-exported for callers
+from .paths import ROOT
 
 # Default trusted source agents for deterministic auto-promote.
 _DEFAULT_TRUSTED_SOURCES = {"sabnyx-ingest"}
@@ -39,6 +39,14 @@ def trusted_sources() -> set[str]:
 
     Reads ``SABNYX_TRUSTED_SOURCES`` (comma-separated) from the environment.
     If the variable is absent or empty, returns the default ``{"sabnyx-ingest"}``.
+
+    Trust here means "provenance the operator has vetted", NOT "a channel that
+    wrote the file". Only operator-supplied local input (``sabnyx-ingest``)
+    is trusted by default. Remotely fetched or third-party content is stamped
+    with distinct, non-trusted actors (``sabnyx-ingest-web`` for URL ingestion,
+    ``sabnyx-telegram``, ``sabnyx-r1``) so prompt-injected content cannot
+    auto-promote unattended into the authoritative atlas tier. Add an actor here
+    only if you genuinely trust everything that channel produces.
 
     Pure and side-effect-free beyond reading ``os.environ``.
     """

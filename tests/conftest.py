@@ -115,7 +115,9 @@ def tmp_vault(tmp_path, monkeypatch):
             "SOURCES",
             "OPS",
         ):
-            mapping[key].mkdir(parents=True, exist_ok=True)
+            # every key listed here maps to a Path; ATLAS_TYPE_DIRS (a dict)
+            # widens the inferred value type but is never iterated here.
+            mapping[key].mkdir(parents=True, exist_ok=True)  # ty: ignore[unresolved-attribute]
 
     monkeypatch.setattr(sources, "ensure_tree", _ensure)
     monkeypatch.setattr(ingest_mod, "ensure_tree", _ensure)

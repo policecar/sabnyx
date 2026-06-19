@@ -3,60 +3,34 @@
 from __future__ import annotations
 
 import sys
-from datetime import UTC, date, datetime
 from pathlib import Path
 
 import click
 from rich.console import Console
 from rich.table import Table
 
-from .. import fm, ledger
-from ..paths import ATLAS, DATA_ROOT, INTAKE, OBSERVATIONS, VAULT
-from ..util import extract_wikilinks, walk_vault_md
+from .. import context, fm, ledger
+from ..paths import ATLAS, DATA_ROOT, INTAKE, OBSERVATIONS
+from ..util import age_days, extract_wikilinks
 
 # Gate 5: jibot flags time-sensitive content whose last_verified is absent
 # or older than 180 days. references are the time-sensitive type at stage 0.
 CURRENCY_DAYS = 180
 
 
-def _slug_index() -> dict[str, Path]:
-    """Map slug -> path for every file under vault/ (excl. observations)."""
-    idx: dict[str, Path] = {}
-    for p in walk_vault_md(VAULT):
-        if OBSERVATIONS in p.parents:
-            continue
-        idx[p.stem.lower()] = p
-    return idx
+def scan_wikilinks(
+    idx: dict[str, Path],
+) -> tuple[list[tuple[Path, str]], set[str], list[tuple[Path, str]]]:
+    """One pass over the index → (broken_links, linked_slugs, schema_drift).
 
-
-def _age_days(ts: datetime | date | str | None) -> int | None:
-    if ts is None:
-        return None
-    if isinstance(ts, str):
-        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    # NB: datetime is a subclass of date, so test datetime FIRST.
-    if isinstance(ts, datetime):
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=UTC)
-    elif isinstance(ts, date):
-        # a bare YAML date (e.g. `last_verified: 2026-06-13`) -> midnight UTC
-        ts = datetime(ts.year, ts.month, ts.day, tzinfo=UTC)
-    return (datetime.now(UTC) - ts).days
-
-
-@click.command("health")
-@click.option("--quick", is_flag=True, help="Skip the expensive checks.")
-def health_cmd(quick: bool) -> None:
-    """Report orphans, broken wikilinks, stale intake, ledger count."""
-    console = Console()
-    idx = _slug_index()
-
+    broken_links: (file, raw target) per wikilink whose lowercased target is
+    not a known slug. linked_slugs: targets that resolved (for orphan
+    detection). schema_drift: (file, errors) for files that fail to parse.
+    Shared by `health` and `tend` so the scan lives in one place.
+    """
     broken_links: list[tuple[Path, str]] = []
-    orphans: list[Path] = []
-    stale_intake: list[tuple[Path, int]] = []
-    schema_drift: list[tuple[Path, str]] = []
-
     linked_slugs: set[str] = set()
+    schema_drift: list[tuple[Path, str]] = []
     for path in idx.values():
         try:
             _meta, body, _kind = fm.load(path)
@@ -69,6 +43,20 @@ def health_cmd(quick: bool) -> None:
                 linked_slugs.add(tslug)
             else:
                 broken_links.append((path, target))
+    return broken_links, linked_slugs, schema_drift
+
+
+@click.command("health")
+@click.option("--quick", is_flag=True, help="Skip the expensive checks.")
+def health_cmd(quick: bool) -> None:
+    """Report orphans, broken wikilinks, stale intake, ledger count."""
+    console = Console()
+    idx = context.vault_slug_index()
+
+    orphans: list[Path] = []
+    stale_intake: list[tuple[Path, int]] = []
+
+    broken_links, linked_slugs, schema_drift = scan_wikilinks(idx)
 
     if not quick:
         for slug, p in idx.items():
@@ -83,7 +71,7 @@ def health_cmd(quick: bool) -> None:
             meta, _body, _kind = fm.load(p)
         except fm.FrontmatterError:
             continue
-        age = _age_days(meta.get("created"))
+        age = age_days(meta.get("created"))
         if age is not None and age > 60:
             stale_intake.append((p, age))
 
@@ -102,7 +90,7 @@ def health_cmd(quick: bool) -> None:
             continue
         atlas_count += 1
 
-        age = _age_days(meta.get("last_verified"))
+        age = age_days(meta.get("last_verified"))
         if age is None or age > CURRENCY_DAYS:
             stale_atlas.append((p, age))
 
@@ -173,7 +161,9 @@ def health_cmd(quick: bool) -> None:
             "files": len(idx),
             "intake": intake_count,
             "atlas": atlas_count,
-            "cost_ratio": round(cost_ratio, 3),
+            # A string, not a float: hashed ledger payloads forbid floats so the
+            # content_hash stays byte-compatible with opsctl (ADR-0002).
+            "cost_ratio": f"{cost_ratio:.3f}",
             "observations": pending_obs,
             "broken_links": len(broken_links),
             "orphans": len(orphans) if not quick else None,

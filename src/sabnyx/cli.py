@@ -12,6 +12,7 @@ from .commands.ingest import ingest_cmd
 from .commands.lint import lint_cmd
 from .commands.new import new_cmd
 from .commands.promote import promote_cmd
+from .commands.reconcile import reconcile_cmd
 from .commands.reweave import reweave_cmd
 from .commands.scan import scan_cmd
 from .commands.serve import serve_cmd
@@ -40,6 +41,7 @@ main.add_command(lint_cmd)
 main.add_command(tend_cmd)
 main.add_command(triage_cmd)
 main.add_command(promote_cmd)
+main.add_command(reconcile_cmd)
 main.add_command(reweave_cmd)
 main.add_command(scan_cmd)
 main.add_command(entities_cmd)

@@ -28,8 +28,8 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from .. import context, fm, ledger
-from ..paths import ATLAS, INTAKE, ensure_tree
+from .. import context, fm, ledger, llm
+from ..paths import ATLAS, DATA_ROOT, INTAKE, ensure_tree
 from ..services import (
     ACTOR_TEND,
     AutoPromoteDecision,
@@ -49,10 +49,11 @@ def _intake_files() -> list[Path]:
 
 
 def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
-    """Consume pending reweave.proposed intents.
+    """Consume pending reweave.proposed intents via reweave.reweave_one.
 
-    Reuses reweave.py's internal helpers directly so we don't duplicate the
-    LLM call, guard logic, or ledger events. Returns count of files reweaved.
+    Delegates the LLM call, guards, apply, and ledger event to the shared
+    helper so the apply path lives in one place. tend's --dry-run skips the
+    helper entirely (no LLM call), per DEC-01. Returns files reweaved.
     """
     from . import reweave as rw
 
@@ -62,78 +63,35 @@ def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
         return 0
 
     console.print(f"reweave: [bold]{len(targets)}[/bold] pending target(s)")
-    idx = context.slug_index(ATLAS)
+    index = context.slug_index(ATLAS)
     reweaved = 0
 
     for tgt in targets:
-        from .. import llm
-        from ..schemas import ReweaveChangeset
-
-        rel = str(tgt.relative_to(ATLAS.parent.parent))  # relative to DATA_ROOT (ATLAS = DATA_ROOT/vault/atlas)
+        rel = str(tgt.relative_to(DATA_ROOT))
         console.print(f"  [bold]reweave[/bold] {rel}")
 
         if dry_run:
             console.print("    [dim]dry run: skipping LLM call[/dim]")
             continue
 
-        changeset = llm.parse_structured(
-            task_system=rw._TASK_SYSTEM,
-            user=rw._context_for(tgt, idx),
-            output_format=ReweaveChangeset,
-            role="standard",
-            actor=ACTOR_TEND,
-            purpose=f"reweave:{tgt.stem}",
+        result = rw.reweave_one(
+            tgt, index, role="standard", actor=ACTOR_TEND, yes=yes, dry_run=False, console=console
         )
-
-        console.print(f"  [bold]Proposed:[/bold] {changeset.summary}")
-        has_changes = bool(changeset.related_additions or changeset.observations)
-        if has_changes and not yes and not click.confirm("  apply?", default=True):
-            console.print("  [dim]declined; intent left pending[/dim]")
-            continue
-
-        modified = rw._apply_links(tgt, changeset, idx, console)
-        from .. import writers
-
-        obs_written: list[str] = []
-        for ob in changeset.observations:
-            written = writers.write_observation(ob, actor=ACTOR_TEND, console=console)
-            if written:
-                obs_written.append(written)
-
-        ledger.append_event(
-            kind="reweave.completed",
-            actor=ACTOR_TEND,
-            subject=rel,
-            payload={
-                "summary": changeset.summary,
-                "files_linked": modified,
-                "observations": obs_written,
-            },
-        )
-        reweaved += 1
+        if result is not None:
+            reweaved += 1
 
     return reweaved
 
 
 def _health_summary(console: Console) -> None:
-    """Print a concise health table (reuses health.py helpers)."""
+    """Print a concise health table (reuses health.py's link scan)."""
     from . import health as health_mod
 
-    idx = health_mod._slug_index()
+    idx = context.vault_slug_index()
+    broken_links, _linked, _drift = health_mod.scan_wikilinks(idx)
     intake_count = len(list(INTAKE.glob("*.md")))
     atlas_count = sum(1 for p in ATLAS.rglob("*.md") if p.is_file())
     pending_obs = sum(1 for _ in (INTAKE / ".observations").glob("*.md"))
-    broken = 0
-    for path in idx.values():
-        try:
-            _meta, body, _kind = fm.load(path)
-        except fm.FrontmatterError:
-            continue
-        from ..util import extract_wikilinks
-
-        for target in extract_wikilinks(body):
-            if target.lower().strip() not in idx:
-                broken += 1
 
     t = Table(title="health summary")
     t.add_column("Check")
@@ -141,7 +99,7 @@ def _health_summary(console: Console) -> None:
     t.add_row("intake queue", str(intake_count))
     t.add_row("atlas files", str(atlas_count))
     t.add_row("pending observations", str(pending_obs))
-    t.add_row("broken wikilinks", str(broken))
+    t.add_row("broken wikilinks", str(len(broken_links)))
     t.add_row("ledger events", str(ledger.count()))
     console.print(t)
 
@@ -228,57 +186,61 @@ def tend_cmd(dry_run: bool, yes: bool, threshold: int, no_reweave: bool, no_heal
         f"deferred: [bold]{len(deferred)}[/bold]"
     )
 
-    # -- pass 2: LLM triage --
+    # Passes 2 + 3 are the LLM-calling passes. Bound them under one per-run call
+    # budget (fail-closed) so an unattended `tend --yes` loop with a misbehaving
+    # prompt or a huge queue can't spin the provider without limit.
     llm_triaged = 0
-    console.print(
-        f"\n[bold]pass 2: LLM triage[/bold]  ({len(deferred)} deferred, threshold {threshold})"
-    )
-
-    if len(deferred) >= threshold:
-        console.print(f"  calling LLM triage for {len(deferred)} item(s)…")
-        if not dry_run:
-            batch = triage_batch(deferred, role="standard")
-            slug_to_path = {p.stem.lower(): p for p in deferred}
-
-            for item in batch.items:
-                path = slug_to_path.get(item.slug.lower())
-                if path is None:
-                    console.print(f"  [yellow]unknown slug from LLM:[/yellow] {item.slug!r}")
-                    continue
-
-                if item.action == "promote" and item.atlas_type:
-                    console.print(
-                        f"  [bold]LLM promote[/bold] {item.slug} → {item.atlas_type}  "
-                        f"[dim]({item.reason})[/dim]"
-                    )
-                    if yes or click.confirm(f"  apply promote for {item.slug}?", default=True):
-                        try:
-                            promote_file(path, item.atlas_type, actor=ACTOR_TEND)
-                            llm_triaged += 1
-                            atlas_slugs.add(path.stem.lower())
-                        except RuntimeError as e:
-                            console.print(f"  [red]promote failed:[/red] {e}")
-                elif item.action == "keep":
-                    console.print(f"  [dim]keep[/dim] {item.slug}  ({item.reason})")
-                elif item.action == "discard":
-                    console.print(
-                        f"  [yellow]discard (noted, not deleted)[/yellow] {item.slug}  "
-                        f"({item.reason})"
-                    )
-        else:
-            console.print("  [dim]dry run: skipping LLM call[/dim]")
-    else:
+    reweaved = 0
+    with llm.call_budget():
+        # -- pass 2: LLM triage --
         console.print(
-            f"  [dim]below threshold ({len(deferred)} < {threshold}); skipping LLM tier[/dim]"
+            f"\n[bold]pass 2: LLM triage[/bold]  ({len(deferred)} deferred, threshold {threshold})"
         )
 
-    # -- pass 3: reweave --
-    reweaved = 0
-    if not no_reweave:
-        console.print("\n[bold]pass 3: reweave[/bold]")
-        reweaved = _reweave_pending(dry_run=dry_run, yes=yes, console=console)
-    else:
-        console.print("\n[dim]pass 3: reweave skipped (--no-reweave)[/dim]")
+        if len(deferred) >= threshold:
+            console.print(f"  calling LLM triage for {len(deferred)} item(s)…")
+            if not dry_run:
+                batch = triage_batch(deferred, role="standard")
+                slug_to_path = {p.stem.lower(): p for p in deferred}
+
+                for item in batch.items:
+                    path = slug_to_path.get(item.slug.lower())
+                    if path is None:
+                        console.print(f"  [yellow]unknown slug from LLM:[/yellow] {item.slug!r}")
+                        continue
+
+                    if item.action == "promote" and item.atlas_type:
+                        console.print(
+                            f"  [bold]LLM promote[/bold] {item.slug} → {item.atlas_type}  "
+                            f"[dim]({item.reason})[/dim]"
+                        )
+                        if yes or click.confirm(f"  apply promote for {item.slug}?", default=True):
+                            try:
+                                promote_file(path, item.atlas_type, actor=ACTOR_TEND)
+                                llm_triaged += 1
+                                atlas_slugs.add(path.stem.lower())
+                            except RuntimeError as e:
+                                console.print(f"  [red]promote failed:[/red] {e}")
+                    elif item.action == "keep":
+                        console.print(f"  [dim]keep[/dim] {item.slug}  ({item.reason})")
+                    elif item.action == "discard":
+                        console.print(
+                            f"  [yellow]discard (noted, not deleted)[/yellow] {item.slug}  "
+                            f"({item.reason})"
+                        )
+            else:
+                console.print("  [dim]dry run: skipping LLM call[/dim]")
+        else:
+            console.print(
+                f"  [dim]below threshold ({len(deferred)} < {threshold}); skipping LLM tier[/dim]"
+            )
+
+        # -- pass 3: reweave --
+        if not no_reweave:
+            console.print("\n[bold]pass 3: reweave[/bold]")
+            reweaved = _reweave_pending(dry_run=dry_run, yes=yes, console=console)
+        else:
+            console.print("\n[dim]pass 3: reweave skipped (--no-reweave)[/dim]")
 
     # -- pass 4: health --
     if not no_health:

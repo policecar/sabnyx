@@ -44,23 +44,28 @@ def _terms(text: str) -> set[str]:
     return {t for t in _TOKEN_RE.findall(text.lower()) if len(t) >= 2}
 
 
-def _doc_terms(path: Path) -> set[str]:
-    """Searchable terms for a vault file: slug + description + tags + body
-    excerpt. Returns an empty set for unreadable files rather than raising —
-    a bad file should sink in the ranking, not crash retrieval."""
+def _page_haystack(path: Path, cap: int) -> str:
+    """slug + description + tags + body (capped at ``cap`` chars).
+
+    Falls back to the bare slug for unreadable files rather than raising — a
+    bad file should sink in ranking, not crash retrieval."""
     try:
         meta, body, _ = fm.load(path)
     except Exception:
-        return _terms(path.stem)
-    haystack = " ".join(
+        return path.stem
+    return " ".join(
         [
             path.stem,
             str(meta.get("description", "")),
             " ".join(meta.get("tags", []) or []),
-            body[: context.EXCERPT_CHARS],
+            body[:cap],
         ]
     )
-    return _terms(haystack)
+
+
+def _doc_terms(path: Path) -> set[str]:
+    """Searchable terms for a vault file (the keyword-ranking haystack)."""
+    return _terms(_page_haystack(path, context.EXCERPT_CHARS))
 
 
 def _rank(query: str, index: dict[str, Path]) -> list[str]:
@@ -140,7 +145,7 @@ def _embedder():
         import os
 
         try:
-            from model2vec import StaticModel
+            from model2vec import StaticModel  # ty: ignore[unresolved-import]
         except ImportError as e:
             raise RuntimeError(
                 "the vector retriever needs model2vec; install the extra: "
@@ -152,19 +157,8 @@ def _embedder():
 
 
 def _page_text(path: Path) -> str:
-    """Embeddable text for a page: slug + description + tags + body (capped)."""
-    try:
-        meta, body, _ = fm.load(path)
-    except Exception:
-        return path.stem
-    return " ".join(
-        [
-            path.stem,
-            str(meta.get("description", "")),
-            " ".join(meta.get("tags", []) or []),
-            body[:EMBED_CHARS],
-        ]
-    )
+    """Embeddable text for a page (the same haystack, capped for embedding)."""
+    return _page_haystack(path, EMBED_CHARS)
 
 
 def _vector_order(query: str, index: dict[str, Path]) -> list[str]:

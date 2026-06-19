@@ -24,23 +24,22 @@ pub fn build(events_path: &Path) -> anyhow::Result<Projection> {
 
     let mut counts_by_kind: HashMap<String, usize> = HashMap::new();
 
-    // Track reweave state: subjects that have a reweave.proposed but no later reweave.completed
-    // We track the last-seen index for each subject for each event type.
-    let mut reweave_proposed_idx: HashMap<String, usize> = HashMap::new();
-    let mut reweave_completed_idx: HashMap<String, usize> = HashMap::new();
+    // Track reweave state per subject: events replay in file order, so the last
+    // reweave.* event for a subject wins. proposed → pending; completed → resolved.
+    let mut reweave_pending: HashMap<String, bool> = HashMap::new();
 
     let mut atlas_files: HashSet<String> = HashSet::new();
     let mut last_tend_completed: Option<Value> = None;
 
-    for (idx, event) in events.iter().enumerate() {
+    for event in events.iter() {
         *counts_by_kind.entry(event.kind.clone()).or_insert(0) += 1;
 
         match event.kind.as_str() {
             "reweave.proposed" => {
-                reweave_proposed_idx.insert(event.subject.clone(), idx);
+                reweave_pending.insert(event.subject.clone(), true);
             }
             "reweave.completed" => {
-                reweave_completed_idx.insert(event.subject.clone(), idx);
+                reweave_pending.insert(event.subject.clone(), false);
             }
             "atlas.promoted" | "atlas.created" => {
                 atlas_files.insert(event.subject.clone());
@@ -52,16 +51,11 @@ pub fn build(events_path: &Path) -> anyhow::Result<Projection> {
         }
     }
 
-    // Pending reweave: proposed with no later completed for same subject
-    let mut pending_reweave: Vec<String> = reweave_proposed_idx
-        .iter()
-        .filter(|(subject, proposed_idx)| {
-            reweave_completed_idx
-                .get(*subject)
-                .map(|completed_idx| completed_idx < proposed_idx)
-                .unwrap_or(true) // no completed at all → pending
-        })
-        .map(|(subject, _)| subject.clone())
+    // Pending reweave: subjects whose latest reweave event was a proposal.
+    let mut pending_reweave: Vec<String> = reweave_pending
+        .into_iter()
+        .filter(|(_, pending)| *pending)
+        .map(|(subject, _)| subject)
         .collect();
     pending_reweave.sort();
 

@@ -73,7 +73,11 @@ script enforces this and the git pre-commit hook blocks violations.
     tags: []
     status: draft
     created: 2026-04-22T19:55:00Z         # ISO 8601 with TZ
-    source_agent: manual | sabnyx-cli | <agent-name>
+    source_agent: manual | sabnyx-cli | sabnyx-ingest | sabnyx-ingest-web
+                  | sabnyx-telegram | sabnyx-r1 | <agent-name>
+                  # provenance-trust label: only operator-supplied local input
+                  # (sabnyx-ingest) is trusted for unattended auto-promotion.
+                  # Remote/third-party agents (-web, -telegram, -r1) are not.
     ---
 
 ### Atlas schema

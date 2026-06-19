@@ -4,7 +4,28 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from datetime import UTC, date, datetime
 from pathlib import Path
+
+
+def age_days(ts: datetime | date | str | None) -> int | None:
+    """Whole days from a timestamp to now (UTC), or None if ``ts`` is None.
+
+    Accepts an aware/naive datetime, a bare YAML date, or an ISO string.
+    Naive datetimes and bare dates are interpreted as UTC.
+    """
+    if ts is None:
+        return None
+    if isinstance(ts, str):
+        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    # NB: datetime is a subclass of date, so test datetime FIRST.
+    if isinstance(ts, datetime):
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+    elif isinstance(ts, date):
+        # a bare YAML date (e.g. `last_verified: 2026-06-13`) -> midnight UTC
+        ts = datetime(ts.year, ts.month, ts.day, tzinfo=UTC)
+    return (datetime.now(UTC) - ts).days
 
 
 def slugify(text: str, max_len: int = 80) -> str:

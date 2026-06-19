@@ -262,7 +262,7 @@ def _make_handler(
             )
             self._respond(status, payload)
 
-        def log_message(self, *args) -> None:  # silence default stderr access log
+        def log_message(self, format: str, *args: object) -> None:  # silence access log
             pass
 
     return Handler
