@@ -198,9 +198,7 @@ def test_ingest_requires_exactly_one_input(tmp_vault, monkeypatch):
 def test_local_ingest_is_trusted_provenance(tmp_vault, monkeypatch):
     from sabnyx import config, services
 
-    result, _ = _run_ingest(
-        tmp_vault, monkeypatch, ["--stdin", "--title", "Local Source", "--yes"]
-    )
+    result, _ = _run_ingest(tmp_vault, monkeypatch, ["--stdin", "--title", "Local Source", "--yes"])
     assert result.exit_code == 0, result.output
     intake = (tmp_vault["INTAKE"] / "markdown-first-publishing.md").read_text()
     assert "source_agent: sabnyx-ingest" in intake
@@ -213,9 +211,7 @@ def test_url_ingest_is_non_trusted_provenance(tmp_vault, monkeypatch):
     from sabnyx.commands import ingest as ingest_mod
 
     monkeypatch.setattr(ingest_mod.sources, "fetch_url", lambda url: "remote body text\n")
-    result, _ = _run_ingest(
-        tmp_vault, monkeypatch, ["--url", "https://example.com/post", "--yes"]
-    )
+    result, _ = _run_ingest(tmp_vault, monkeypatch, ["--url", "https://example.com/post", "--yes"])
     assert result.exit_code == 0, result.output
 
     intake = (tmp_vault["INTAKE"] / "markdown-first-publishing.md").read_text()

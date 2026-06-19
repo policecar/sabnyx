@@ -56,9 +56,7 @@ def ask_cmd(question: str, role: ModelRole | None, capture_flag: bool | None, ye
         sys.exit(2)
 
     result = services.answer_question(question=question, role_override=role)
-    console.print(
-        f"[dim]role: {result.role}, model: {llm.model_for(result.role)}[/dim]"
-    )
+    console.print(f"[dim]role: {result.role}, model: {llm.model_for(result.role)}[/dim]")
 
     answer = result.answer
     console.print()

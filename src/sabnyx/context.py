@@ -31,9 +31,7 @@ def vault_slug_index() -> dict[str, Path]:
     References ``paths`` by module attribute so tests can redirect the vault
     wholesale (matching writers.py)."""
     return {
-        p.stem.lower(): p
-        for p in walk_vault_md(paths.VAULT)
-        if paths.OBSERVATIONS not in p.parents
+        p.stem.lower(): p for p in walk_vault_md(paths.VAULT) if paths.OBSERVATIONS not in p.parents
     }
 
 

@@ -145,7 +145,7 @@ def _embedder():
         import os
 
         try:
-            from model2vec import StaticModel
+            from model2vec import StaticModel  # ty: ignore[unresolved-import]
         except ImportError as e:
             raise RuntimeError(
                 "the vector retriever needs model2vec; install the extra: "

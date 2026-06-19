@@ -98,12 +98,13 @@ def model_for(role: ModelRole, prov: str | None = None) -> str:
 
 def role_for_depth(depth: ExtractionDepth) -> ModelRole:
     """Map extraction depth (jibot's word-count tiers) to a model role."""
-    return {
+    mapping: dict[ExtractionDepth, ModelRole] = {
         "shallow": "fast",
         "standard": "standard",
         "standard-plus": "standard",
         "deep": "deep",
-    }[depth]  # type: ignore[return-value]
+    }
+    return mapping[depth]
 
 
 # -- rule-based message router ----------------------------------------------------
@@ -568,9 +569,7 @@ def _call_openai_compatible(
                 # model doesn't support json_schema response_format; the schema is
                 # already in the prompt, so retry without the parameter
                 b.pop("response_format", None)
-                r = httpx.post(
-                    f"{base_url}/chat/completions", json=b, headers=headers, timeout=300
-                )
+                r = httpx.post(f"{base_url}/chat/completions", json=b, headers=headers, timeout=300)
             if r.status_code in _RETRYABLE_STATUS and attempt < retries:
                 # transient: rate limit / 5xx — back off and retry
                 time.sleep(_backoff_seconds(attempt))

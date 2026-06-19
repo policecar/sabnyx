@@ -23,7 +23,7 @@ def parse_dotenv(text: str) -> dict[str, str]:
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
-            line = line[len("export "):]
+            line = line[len("export ") :]
         key, sep, value = line.partition("=")
         if not sep:
             continue
