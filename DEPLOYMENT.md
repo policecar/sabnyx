@@ -230,9 +230,12 @@ Type=simple
 WorkingDirectory=%h/sabnyx
 EnvironmentFile=%h/sabnyx/.env
 # Haiku for low-latency voice — overrides the .env provider for THIS service only.
-# Order matters: Environment= comes after EnvironmentFile= so it wins.
-Environment=SABNYX_LLM_PROVIDER=anthropic
-ExecStart=%h/.local/bin/uv run sabnyx serve-http --static creations --host 127.0.0.1 --port 8787
+# NOTE: do NOT use `Environment=SABNYX_LLM_PROVIDER=anthropic` here — systemd's
+# EnvironmentFile= overrides Environment= regardless of order, so the .env's
+# `moonshot` would win and the voice path would silently run on Kimi (~35s →
+# nginx 504s). Set it in ExecStart via env(1), which is applied to the actual
+# exec'd process and is unambiguous.
+ExecStart=/usr/bin/env SABNYX_LLM_PROVIDER=anthropic %h/.local/bin/uv run sabnyx serve-http --static creations --host 127.0.0.1 --port 8787
 Restart=always
 RestartSec=5
 # same namespace-free hardening as serve
@@ -257,6 +260,8 @@ server {
     location / {
         limit_req zone=r1 burst=20 nodelay;   # blunt brute-force / floods
         proxy_pass http://127.0.0.1:8787;
+        proxy_read_timeout 120s;              # headroom over the LLM round-trip (Haiku ~seconds);
+        proxy_send_timeout 120s;              # without this, nginx's 60s default 504s a slow reply
     }
 }
 ```
