@@ -118,7 +118,7 @@ def _health_summary(console: Console) -> None:
     """Print a concise health table (reuses health.py's link scan)."""
     from . import health as health_mod
 
-    idx = health_mod._slug_index()
+    idx = context.vault_slug_index()
     broken_links, _linked, _drift = health_mod.scan_wikilinks(idx)
     intake_count = len(list(INTAKE.glob("*.md")))
     atlas_count = sum(1 for p in ATLAS.rglob("*.md") if p.is_file())
