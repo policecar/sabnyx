@@ -311,6 +311,9 @@ systemctl --user list-timers | grep sabnyx           # next tend run
 | `SABNYX_TELEGRAM_ALLOW` | comma-separated trusted numeric user IDs | no |
 | `SABNYX_R1_KEYS` | comma-separated bearer keys for the R1 ingress (`serve-http`) | **yes** |
 | `SABNYX_RETRIEVER` | `grep` (default) \| `vector` | no |
+| `SABNYX_TRUSTED_SOURCES` | `source_agent`s trusted for auto-promote (default `sabnyx-ingest`) | no |
+| `SABNYX_MAX_LLM_CALLS` | per-run LLM call ceiling for `tend` (default `50`; `0` = unlimited) | no |
+| `SABNYX_LLM_MAX_RETRIES` | retries on transient provider 429/5xx (default `3`) | no |
 
 ---
 
