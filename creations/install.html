@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Install sabnyx on your R1</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        background: #0e0e10;
+        color: #e8e8ea;
+        font: 15px/1.5 -apple-system, system-ui, sans-serif;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0;
+      }
+      img {
+        background: #0e0e10;
+        border-radius: 8px;
+      }
+      code {
+        background: #16161a;
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+      .hint {
+        color: #8a8a90;
+        font-size: 13px;
+        max-width: 320px;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>sabnyx → rabbit R1</h1>
+    <img id="qr" width="200" height="200" alt="install QR" />
+    <div class="hint">
+      Scan with your R1 to install the Creation. The first run asks for your
+      sabnyx API key (stored encrypted on the device).
+    </div>
+    <div class="hint">Creation URL: <code id="url"></code></div>
+
+    <script>
+      // The Creation lives next to this page. Adjust if you host index.html
+      // elsewhere.
+      var creationUrl = new URL("index.html", window.location.href).href;
+
+      // Guard against file:// — opening this page from disk to preview the QR
+      // would bake a file:// URL into the payload, and the R1 would install a
+      // Creation it can never load. Require an http(s) origin (i.e. served by
+      // the running server) so the QR encodes a URL the device can reach.
+      if (!/^https?:$/.test(window.location.protocol)) {
+        document.getElementById("url").textContent =
+          "Serve this page over http(s) from the sabnyx server — not file:// — so the QR encodes a reachable URL.";
+        document.getElementById("qr").remove();
+      } else {
+        // The R1's "add via QR code" installer expects a JSON payload, NOT a bare
+        // URL — matching the official SDK QR creator (creations-sdk/qr): the QR
+        // encodes JSON.stringify({title, url, description, iconUrl, themeColor}).
+        var payload = JSON.stringify({
+          title: "sabnyx",
+          url: creationUrl,
+          description: "Voice capture & ask, into your sabnyx vault",
+          iconUrl: "",
+          themeColor: "#ff6a3d",
+        });
+
+        document.getElementById("url").textContent = creationUrl;
+        document.getElementById("qr").src =
+          "https://api.qrserver.com/v1/create-qr-code/?size=260x260&bgcolor=0e0e10&color=ffffff&data=" +
+          encodeURIComponent(payload);
+      }
+    </script>
+  </body>
+</html>

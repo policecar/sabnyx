@@ -33,6 +33,29 @@ ACTOR_ASK = "sabnyx-ask"
 ACTOR_TEND = "sabnyx-tend"
 
 
+# -- shared interface helpers ---------------------------------------------------
+# Used by every channel (CLI, Telegram serve, R1 serve-http) so the title and
+# pulse logic lives once. Channel commands format the results their own way.
+
+
+def title_from(text: str, n: int = 8) -> str:
+    """A short title from the first few words of a captured message."""
+    words = text.split()
+    return " ".join(words[:n]) if words else "untitled"
+
+
+def vault_pulse() -> dict[str, int]:
+    """A terse vault pulse: counts of intake, atlas, and pending observations.
+
+    Computed without the full health command — cheap enough for a status poll.
+    """
+    return {
+        "intake": len(list(paths.INTAKE.glob("*.md"))),
+        "atlas": sum(1 for _ in paths.ATLAS.rglob("*.md")),
+        "observations": len(list(paths.OBSERVATIONS.glob("*.md"))),
+    }
+
+
 # -- promote (reusable service) -------------------------------------------------
 
 
@@ -468,6 +491,44 @@ def apply_ingest(
         payload={"written": written},
     )
     return written
+
+
+def ingest_text(
+    *,
+    text: str,
+    title: str,
+    source_kind: str,
+    source_url: str | None,
+    console: Console,
+    actor: str = ACTOR_INGEST,
+) -> tuple[str, list[str]]:
+    """Capture raw text, then build and apply an ingest proposal.
+
+    The whole capture -> propose -> apply pipeline every channel shares. Returns
+    ``(summary, written_paths)``. Raises ``FileExistsError`` if the source was
+    already captured (sources are write-once); callers shape that into their own
+    "already captured" reply.
+    """
+    src_path = sources.capture(text=text, slug=title, actor=actor, source_url=source_url)
+    src_rel = str(src_path.relative_to(paths.DATA_ROOT))
+    proposal = build_ingest_proposal(
+        text=text,
+        title=title,
+        source_kind=source_kind,
+        source_url=source_url,
+        src_rel=src_rel,
+        actor=actor,
+    )
+    written = apply_ingest(
+        proposal,
+        title=title,
+        source_kind=source_kind,
+        source_url=source_url,
+        src_rel=src_rel,
+        console=console,
+        actor=actor,
+    )
+    return proposal.changeset.summary, written
 
 
 # -- ask --------------------------------------------------------------------------------
