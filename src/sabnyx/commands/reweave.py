@@ -82,9 +82,7 @@ def _context_for(target: Path, index: dict[str, Path]) -> str:
     pending observations. Retrieval goes through the Retriever seam, ranking
     the rest of the atlas by overlap with the target page."""
     t_meta, t_body, _ = fm.load(target)
-    query = " ".join(
-        [target.stem, t_meta.get("description", ""), " ".join(t_meta.get("tags", []))]
-    )
+    query = " ".join([target.stem, t_meta.get("description", ""), " ".join(t_meta.get("tags", []))])
     parts = [
         f"## Target (recently promoted): {target.stem}",
         f"description: {t_meta.get('description', '')}",
@@ -144,7 +142,7 @@ def _apply_links(
             continue
 
         current = get_marker_block(body, "related")
-        lines = [ln for ln in (current or "").splitlines() if ln.strip()]
+        lines: list[str] = [ln for ln in (current or "").splitlines() if ln.strip()]
         lines += [f"- [[{link}]]" for link in new_links]
         new_body = set_marker_block(body, "related", lines, heading="Related")
         fm.write(path, meta, new_body)

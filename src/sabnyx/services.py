@@ -209,9 +209,7 @@ def reconcile_atlas() -> Reconciliation:
     """
     promoted: set[str] = {e.subject for e in ledger.replay() if e.kind == "atlas.promoted"}
     actual: set[str] = {
-        str(p.relative_to(paths.DATA_ROOT))
-        for p in paths.ATLAS.rglob("*.md")
-        if p.is_file()
+        str(p.relative_to(paths.DATA_ROOT)) for p in paths.ATLAS.rglob("*.md") if p.is_file()
     }
     return Reconciliation(
         unledgered=sorted(actual - promoted),

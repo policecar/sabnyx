@@ -51,9 +51,9 @@ def _canonical(payload: dict) -> bytes:
     no-floats contract that keeps the hash byte-compatible with opsctl.
     """
     _reject_floats(payload)
-    return json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(
+        "utf-8"
+    )
 
 
 def content_hash(payload: dict) -> str:

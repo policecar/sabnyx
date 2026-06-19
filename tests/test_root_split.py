@@ -46,7 +46,9 @@ def _good_meta(
     }
 
 
-def _make_intake(intake_dir: Path, slug: str, meta: dict, body: str = "# body\n\ncontent\n") -> Path:
+def _make_intake(
+    intake_dir: Path, slug: str, meta: dict, body: str = "# body\n\ncontent\n"
+) -> Path:
     p = intake_dir / f"{slug}.md"
     fm.write(p, meta, body)
     return p
@@ -163,9 +165,12 @@ def test_new_ledger_subject_uses_data_root(tmp_vault, monkeypatch) -> None:
     result = CliRunner().invoke(
         new_mod.new_cmd,
         [
-            "--type", "thought",
-            "--title", "Root Split Idea",
-            "--description", "a description that is definitely at least 30 chars long yes",
+            "--type",
+            "thought",
+            "--title",
+            "Root Split Idea",
+            "--description",
+            "a description that is definitely at least 30 chars long yes",
         ],
     )
     assert result.exit_code == 0, result.output

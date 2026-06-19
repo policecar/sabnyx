@@ -87,11 +87,11 @@ def _guard_url(url: str) -> None:
     except socket.gaierror as e:
         raise ValueError(f"could not resolve host {host!r}: {e}") from e
     for info in infos:
-        ip = info[4][0]
+        # sockaddr[0] is the address; str() pins it for AF_INET/AF_INET6 (the
+        # tuple element type is broad). Always a host string here.
+        ip = str(info[4][0])
         if _is_blocked_ip(ip):
-            raise ValueError(
-                f"refusing to fetch internal/reserved address {ip} (host {host!r})"
-            )
+            raise ValueError(f"refusing to fetch internal/reserved address {ip} (host {host!r})")
 
 
 class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -113,9 +113,7 @@ def fetch_url(url: str, timeout: int = 30) -> str:
     try:
         _guard_url(url)
         opener = urllib.request.build_opener(_GuardedRedirectHandler())
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "sabnyx/0.1 (+knowledge vault)"}
-        )
+        req = urllib.request.Request(url, headers={"User-Agent": "sabnyx/0.1 (+knowledge vault)"})
         with opener.open(req, timeout=timeout) as resp:  # noqa: S310 — scheme guarded above
             charset = resp.headers.get_content_charset() or "utf-8"
             # read at most MAX_FETCH_BYTES: bounded memory even if the server

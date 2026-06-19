@@ -80,6 +80,4 @@ def test_bools_are_allowed() -> None:
 
 def test_append_event_rejects_float_payload(tmp_vault) -> None:
     with pytest.raises(TypeError, match="float"):
-        ledger.append_event(
-            kind="test.event", actor="t", subject="s", payload={"ratio": 0.5}
-        )
+        ledger.append_event(kind="test.event", actor="t", subject="s", payload={"ratio": 0.5})
