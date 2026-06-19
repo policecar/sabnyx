@@ -630,7 +630,11 @@ def _call_openai_compatible(
                 time.sleep(_backoff_seconds(attempt))
                 continue
             break
-        assert r is not None
+        # `r` is always bound here — range(retries + 1) runs at least once — but
+        # an explicit guard (not an assert, which `python -O` strips) keeps this
+        # correct under -O and narrows Optional for the type checker below.
+        if r is None:  # pragma: no cover - unreachable
+            raise RuntimeError("retry loop produced no HTTP response")
         r.raise_for_status()
         return r.json()
 
