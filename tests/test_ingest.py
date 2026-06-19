@@ -192,6 +192,58 @@ def test_ingest_requires_exactly_one_input(tmp_vault, monkeypatch):
     assert result.exit_code == 2
 
 
+# -- provenance trust: remote content must not be auto-promotable ------------------
+
+
+def test_local_ingest_is_trusted_provenance(tmp_vault, monkeypatch):
+    from sabnyx import config, services
+
+    result, _ = _run_ingest(tmp_vault, monkeypatch, ["--stdin", "--title", "Local Source", "--yes"])
+    assert result.exit_code == 0, result.output
+    intake = (tmp_vault["INTAKE"] / "markdown-first-publishing.md").read_text()
+    assert "source_agent: sabnyx-ingest" in intake
+    # and that agent is in the default trusted set (would auto-promote)
+    assert services.ACTOR_INGEST in config.trusted_sources()
+
+
+def test_url_ingest_is_non_trusted_provenance(tmp_vault, monkeypatch):
+    from sabnyx import config, services
+    from sabnyx.commands import ingest as ingest_mod
+
+    monkeypatch.setattr(ingest_mod.sources, "fetch_url", lambda url: "remote body text\n")
+    result, _ = _run_ingest(tmp_vault, monkeypatch, ["--url", "https://example.com/post", "--yes"])
+    assert result.exit_code == 0, result.output
+
+    intake = (tmp_vault["INTAKE"] / "markdown-first-publishing.md").read_text()
+    assert "source_agent: sabnyx-ingest-web" in intake
+    # the web actor is NOT trusted -> cannot auto-promote unattended
+    assert services.ACTOR_INGEST_WEB not in config.trusted_sources()
+
+
+def test_auto_promote_rejects_web_provenance():
+    from sabnyx import services
+
+    base = {
+        "type": "bookmark",
+        "description": "a sufficiently long description of a remote bookmark source",
+        "source": "web",
+        "status": "draft",
+    }
+    trusted = {services.ACTOR_INGEST}
+    common = {"trusted": trusted, "atlas_slugs": set(), "source_slug": "x"}
+
+    web = services.auto_promote_decision(
+        {**base, "source_agent": services.ACTOR_INGEST_WEB}, "intake", **common
+    )
+    assert not web.promotable
+    assert any("not in trusted" in r for r in web.reasons)
+
+    local = services.auto_promote_decision(
+        {**base, "source_agent": services.ACTOR_INGEST}, "intake", **common
+    )
+    assert local.promotable
+
+
 def test_walk_vault_md_excludes_sources(tmp_vault):
     from sabnyx import paths as paths_mod
     from sabnyx import util

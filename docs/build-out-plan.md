@@ -29,7 +29,10 @@ Two-speed triage + auto-reweave + health, in one schedulable command.
   4. description ≥ 30 chars
   5. no duplicate slug already in atlas/
   6. trusted source (`source_agent` in the configured allowlist;
-     default `{"sabnyx-ingest"}`, override `SABNYX_TRUSTED_SOURCES`)
+     default `{"sabnyx-ingest"}`, override `SABNYX_TRUSTED_SOURCES`).
+     Trust is by provenance, not channel: remote/third-party agents
+     (`sabnyx-ingest-web`, `sabnyx-telegram`, `sabnyx-r1`) are excluded so
+     prompt-injected content can't auto-promote unattended.
 - **LLM triage** tier: when ≥ N (default 5) items remain un-auto-promoted,
   one batched `parse_structured` call proposes per-item routing
   (promote-as-X / keep / discard) — human-gated unless `--yes`.
@@ -69,6 +72,20 @@ direction only: vault → halbor.
 - Multi-machine Syncthing (git already syncs one user across machines)
 - NanoClaw container fleet / multi-channel gateway
 - Payments (x402/USDC) — not even in jibot; ledger hashing covers integrity
+
+## Deferred ideas (noted, gated on a real trigger)
+
+- **Point-in-time vault reconstruction from the ledger.** *Problem:* the ledger
+  records agent *actions*, not file content, so replaying it cannot rebuild the
+  vault — git is the source of truth and a manual edit emits no event, so there
+  is no event → vault-state mapping. *Proposed solution (when needed):* anchor,
+  don't event-source — a post-commit hook appends a `git.committed` event linking
+  each commit SHA to the ledger high-water mark, so "vault at event N" =
+  `git checkout` that SHA; the ledger stays the shadow, git stays the store.
+  *Trigger:* turning on Lemma/ZK attestation (SPEC §9), recurring multi-machine
+  drift `reconcile` can't pinpoint, or an audit/UI surface that needs it. Until
+  then git history + `reconcile` suffice. (Full event-sourcing the vault stays a
+  non-goal: it reimplements git, worse, and breaks the plain-files contract.)
 
 ## Progress & resume (last updated 2026-06-13)
 

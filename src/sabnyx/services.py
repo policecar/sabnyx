@@ -25,10 +25,18 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from . import context, ledger, llm, paths, retrieval, sources, writers
-from .schemas import AskAnswer, IngestChangeset, ProposedIntake, TriageBatch
+from .schemas import AskAnswer, IngestChangeset, ModelRole, ProposedIntake, TriageBatch
 from .util import extract_wikilinks, slugify
 
-ACTOR_INGEST = "sabnyx-ingest"
+# Channel/provenance actors. The `source_agent` stamped on an intake file IS its
+# provenance-trust level for unattended auto-promotion (see config.trusted_sources
+# and auto_promote_decision's Gate 6). Only operator-vetted provenance belongs in
+# the trusted set: ACTOR_INGEST is for content the operator hands in directly
+# (local file / stdin). Content fetched from a remote/untrusted origin must use a
+# DISTINCT, non-trusted actor so a prompt-injected `bookmark`/`paper` intake can't
+# auto-promote into the authoritative atlas tier unattended.
+ACTOR_INGEST = "sabnyx-ingest"  # trusted: operator-supplied local source
+ACTOR_INGEST_WEB = "sabnyx-ingest-web"  # NOT trusted: remotely fetched URL content
 ACTOR_ASK = "sabnyx-ask"
 ACTOR_TEND = "sabnyx-tend"
 
@@ -122,27 +130,18 @@ def promote_file(
         dest.unlink()
         raise RuntimeError(f"wrote invalid atlas file, rolled back: {e}") from e
 
-    # Remove the intake source
-    source.unlink()
-
-    # Provenance log (Gate 3 materia)
-    KNOWLEDGE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    if not KNOWLEDGE_LOG.exists():
-        KNOWLEDGE_LOG.write_text(
-            "# Knowledge log\n\nAppend-only provenance trail.\n\n", encoding="utf-8"
-        )
-    with KNOWLEDGE_LOG.open("a", encoding="utf-8") as f:
-        f.write(
-            f"- {today} promote: `{source.relative_to(DATA_ROOT)}` -> "
-            f"`{dest.relative_to(DATA_ROOT)}` ({atlas_type})\n"
-        )
-
+    # Ledger BEFORE unlinking the source: the append is the commit point. If the
+    # process dies after this, the promotion is recorded (and the reweave intent
+    # preserved) and the next tend's duplicate-slug gate refuses a re-promote —
+    # far better than the inverse (file moved, no ledger record, lost reweave).
+    src_rel = str(source.relative_to(DATA_ROOT))
+    dest_rel = str(dest.relative_to(DATA_ROOT))
     ledger.append_event(
         kind="atlas.promoted",
         actor=actor,
-        subject=str(dest.relative_to(DATA_ROOT)),
+        subject=dest_rel,
         payload={
-            "from": str(source.relative_to(DATA_ROOT)),
+            "from": src_rel,
             "as": atlas_type,
             "description": meta["description"],
             "source_url": meta.get("source_url"),
@@ -154,7 +153,7 @@ def promote_file(
         plane="intent",
         kind="reweave.proposed",
         actor=actor,
-        subject=str(dest.relative_to(DATA_ROOT)),
+        subject=dest_rel,
         payload={
             "description": meta["description"],
             "tags": meta.get("tags", []),
@@ -167,7 +166,55 @@ def promote_file(
         },
     )
 
+    # Remove the intake source (the move is now committed on the ledger).
+    source.unlink()
+
+    # Provenance log (Gate 3 materia)
+    KNOWLEDGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    if not KNOWLEDGE_LOG.exists():
+        KNOWLEDGE_LOG.write_text(
+            "# Knowledge log\n\nAppend-only provenance trail.\n\n", encoding="utf-8"
+        )
+    with KNOWLEDGE_LOG.open("a", encoding="utf-8") as f:
+        f.write(f"- {today} promote: `{src_rel}` -> `{dest_rel}` ({atlas_type})\n")
+
     return dest
+
+
+# -- reconciliation (ledger vs filesystem) -------------------------------------
+
+
+@dataclass
+class Reconciliation:
+    """Drift between the ledger's record of promotions and the actual atlas/.
+
+    The ledger is an append-only audit of *agent* actions, not an event-sourced
+    mirror of the vault — git is the source of truth, and a manual file edit
+    produces no event. This surfaces where the two disagree.
+    """
+
+    unledgered: list[str]  # atlas files with no atlas.promoted event (manual/pre-ledger)
+    orphaned: list[str]  # atlas.promoted subjects whose file is now missing
+
+    @property
+    def clean(self) -> bool:
+        return not self.unledgered and not self.orphaned
+
+
+def reconcile_atlas() -> Reconciliation:
+    """Diff `atlas.promoted` ledger subjects against the files under atlas/.
+
+    Read-only: replays the ledger and walks the filesystem, mutating nothing.
+    Both sides use DATA_ROOT-relative paths so the comparison is apples-to-apples.
+    """
+    promoted: set[str] = {e.subject for e in ledger.replay() if e.kind == "atlas.promoted"}
+    actual: set[str] = {
+        str(p.relative_to(paths.DATA_ROOT)) for p in paths.ATLAS.rglob("*.md") if p.is_file()
+    }
+    return Reconciliation(
+        unledgered=sorted(actual - promoted),
+        orphaned=sorted(promoted - actual),
+    )
 
 
 # -- auto-promote gate (pure, no IO) -------------------------------------------
@@ -289,7 +336,7 @@ Rules:
 Return a TriageBatch with one TriageItem per input file."""
 
 
-def triage_batch(files: list[Path], *, role: str = "standard") -> TriageBatch:
+def triage_batch(files: list[Path], *, role: ModelRole = "standard") -> TriageBatch:
     """Run a batched LLM triage pass over `files`.
 
     Assembles a description of each file's metadata, calls parse_structured
@@ -327,7 +374,7 @@ def triage_batch(files: list[Path], *, role: str = "standard") -> TriageBatch:
         task_system=TRIAGE_TASK_SYSTEM,
         user=user,
         output_format=TriageBatch,
-        role=role,  # type: ignore[arg-type]
+        role=role,
         actor=ACTOR_TEND,
         purpose="triage:batch",
     )
@@ -394,7 +441,7 @@ Rules, in addition to the SPEC and ROUTING contract above:
 class IngestProposal:
     changeset: IngestChangeset
     depth: str
-    role: str
+    role: ModelRole
 
 
 def build_ingest_proposal(
@@ -404,7 +451,7 @@ def build_ingest_proposal(
     source_kind: str,
     source_url: str | None,
     src_rel: str,
-    role_override: str | None = None,
+    role_override: ModelRole | None = None,
     actor: str = ACTOR_INGEST,
 ) -> IngestProposal:
     """Classify depth, assemble vault context, run the extraction call,
@@ -424,7 +471,7 @@ def build_ingest_proposal(
         task_system=INGEST_TASK_SYSTEM,
         user=user,
         output_format=IngestChangeset,
-        role=role,  # type: ignore[arg-type]
+        role=role,
         actor=actor,
         purpose=f"ingest:{slugify(title)}",
     )
@@ -537,7 +584,7 @@ def ingest_text(
 @dataclass
 class AskResult:
     answer: AskAnswer
-    role: str
+    role: ModelRole
     capture_dropped: bool = False  # a malformed optional capture was discarded
 
 
@@ -582,7 +629,7 @@ def _clean_citations(cited: list[str], answer_text: str) -> list[str]:
 
 
 def answer_question(
-    *, question: str, role_override: str | None = None, actor: str = ACTOR_ASK
+    *, question: str, role_override: ModelRole | None = None, actor: str = ACTOR_ASK
 ) -> AskResult:
     """Assemble context, answer the question grounded in the vault, ledger
     the projection. Writes nothing (capture is a separate step)."""
@@ -601,7 +648,7 @@ def answer_question(
             task_system=ASK_TASK_SYSTEM,
             user=user,
             output_format=AskAnswer,
-            role=role,  # type: ignore[arg-type]
+            role=role,
             actor=actor,
             purpose=purpose,
         )

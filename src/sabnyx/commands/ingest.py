@@ -27,7 +27,7 @@ from rich.console import Console
 
 from .. import llm, services, sources
 from ..paths import DATA_ROOT, ensure_tree
-from ..services import ACTOR_INGEST as ACTOR
+from ..schemas import ModelRole
 from ..util import slugify
 
 
@@ -49,7 +49,7 @@ def ingest_cmd(
     url: str | None,
     use_stdin: bool,
     title: str | None,
-    role: str | None,
+    role: ModelRole | None,
     yes: bool,
     dry_run: bool,
 ) -> None:
@@ -61,6 +61,10 @@ def ingest_cmd(
     if sum(map(bool, (source_file, url, use_stdin))) != 1:
         console.print("[red]provide exactly one of: FILE, --url, --stdin[/red]")
         sys.exit(2)
+
+    # Remotely fetched content gets a non-trusted source_agent so it can't
+    # auto-promote unattended; operator-supplied local sources stay trusted.
+    actor = services.ACTOR_INGEST_WEB if url else services.ACTOR_INGEST
 
     if url:
         text = sources.fetch_url(url)
@@ -86,7 +90,7 @@ def ingest_cmd(
     # -- 2. capture raw -------------------------------------------------------------
     if not dry_run:
         try:
-            src_path = sources.capture(text=text, slug=src_title, actor=ACTOR, source_url=url)
+            src_path = sources.capture(text=text, slug=src_title, actor=actor, source_url=url)
         except FileExistsError as e:
             console.print(f"[red]{e}[/red]")
             sys.exit(1)
@@ -102,11 +106,11 @@ def ingest_cmd(
         source_url=url,
         src_rel=src_rel,
         role_override=role,
-        actor=ACTOR,
+        actor=actor,
     )
     console.print(
         f"captured [bold]{src_rel}[/bold]  "
-        f"(depth: {proposal.depth}, role: {proposal.role}, model: {llm.model_for(proposal.role)})"  # type: ignore[arg-type]
+        f"(depth: {proposal.depth}, role: {proposal.role}, model: {llm.model_for(proposal.role)})"
     )
 
     changeset = proposal.changeset
@@ -137,7 +141,7 @@ def ingest_cmd(
         source_url=url,
         src_rel=src_rel,
         console=console,
-        actor=ACTOR,
+        actor=actor,
     )
     console.print(
         f"\n[green]ingest complete[/green] ({len(written)} file(s)). "

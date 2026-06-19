@@ -1,8 +1,21 @@
 // @decision DEC-001: Canonical JSON matches Python's json.dumps(sort_keys=True, separators=(",",":"))
 // @rationale: Byte-for-byte compatible hash requires identical canonicalization. Python defaults to
 //   ensure_ascii=True, which escapes non-ASCII as \uXXXX. We replicate this with a custom serializer.
+//
+// @decision DEC-003: Only `payload` is hashed; `ts` is an opaque RFC3339 string.
+// @rationale: The content_hash commits to payload bytes only — never `ts` or any other envelope
+//   field. So the two writers need only agree on payload canonicalization, NOT on timestamp
+//   formatting. `new_event` emits microsecond precision (to_rfc3339_opts(Micros, true)) to match
+//   pydantic's serialization in the common case; the zero-microsecond edge may differ, which is
+//   harmless precisely because `ts` is excluded from the hash and only compared lexicographically.
+//   Do NOT fold `ts` into the hash without making both writers emit byte-identical timestamps.
+//
+// @decision DEC-004: Hashed payloads must not contain floats.
+// @rationale: Python's json.dumps and serde_json stringify floats differently at scientific-notation
+//   magnitudes (1e+20 vs 100000000000000000000.0), so a float would silently break hash parity. The
+//   Python side enforces this (ledger._reject_floats); opsctl's own task.* payloads are ints/strings.
 
-use chrono::Utc;
+use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -174,10 +187,11 @@ pub fn replay(events_path: &Path) -> io::Result<Vec<Event>> {
     Ok(events)
 }
 
-/// Build a new Event with current UTC timestamp (second precision).
-/// The caller must provide the content_hash.
+/// Build a new Event with current UTC timestamp (microsecond precision, `Z`).
+/// Matches pydantic's serialization (see DEC-003); `ts` is excluded from the
+/// hash. The caller must provide the content_hash.
 pub fn new_event(plane: &str, kind: &str, actor: &str, subject: &str, payload: Value) -> Event {
-    let ts = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let ts = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
     let ch = content_hash(&payload);
     Event {
         ts,
@@ -270,11 +284,10 @@ mod tests {
         let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         dir = dir.parent().unwrap().to_path_buf(); // opsctl/ -> repo root
 
-        let script = format!(
-            "import json,sys; from sabnyx.ledger import content_hash; print(content_hash(json.loads(sys.argv[1])), end='')"
-        );
+        let script =
+            "import json,sys; from sabnyx.ledger import content_hash; print(content_hash(json.loads(sys.argv[1])), end='')";
         let output = Command::new("uv")
-            .args(["run", "python", "-c", &script, json_str])
+            .args(["run", "python", "-c", script, json_str])
             .current_dir(&dir)
             .output()
             .ok()?;
@@ -319,6 +332,36 @@ mod tests {
             content_hash(&payload),
             py_hash,
             "Hash mismatch for empty payload"
+        );
+    }
+
+    #[test]
+    fn test_compat_unicode() {
+        // Non-ASCII must hash identically: Python's ensure_ascii=True escapes to
+        // \uXXXX (and surrogate pairs for supplementary chars); write_json_string
+        // replicates that. café = BMP, 🎉 = supplementary (surrogate pair).
+        let payload = json!({"k": "café 日本語 🎉"});
+        let py_hash = python_hash(r#"{"k":"café 日本語 🎉"}"#)
+            .expect("Python must be available for compat test");
+        assert_eq!(
+            content_hash(&payload),
+            py_hash,
+            "Hash mismatch for non-ASCII payload — ensure_ascii escaping diverged"
+        );
+    }
+
+    #[test]
+    fn test_ts_is_microsecond_rfc3339() {
+        // ts is opaque and excluded from the hash, but should match pydantic's
+        // microsecond `...Z` format in the common (nonzero-micros) case (DEC-003).
+        let e = new_event("event", "test", "opsctl", "subj", json!({}));
+        assert!(e.ts.ends_with('Z'), "ts must use Z suffix, got {}", e.ts);
+        // RFC3339 with microseconds: 'YYYY-MM-DDTHH:MM:SS.ffffffZ' (27 chars).
+        assert_eq!(
+            e.ts.len(),
+            27,
+            "ts must be microsecond precision, got {}",
+            e.ts
         );
     }
 

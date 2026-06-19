@@ -20,12 +20,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from sabnyx import fm, ledger
 from sabnyx.schemas import IngestChangeset, ProposedIntake
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -48,7 +46,9 @@ def _good_meta(
     }
 
 
-def _make_intake(intake_dir: Path, slug: str, meta: dict, body: str = "# body\n\ncontent\n") -> Path:
+def _make_intake(
+    intake_dir: Path, slug: str, meta: dict, body: str = "# body\n\ncontent\n"
+) -> Path:
     p = intake_dir / f"{slug}.md"
     fm.write(p, meta, body)
     return p
@@ -63,7 +63,7 @@ def test_fixture_root_not_equal_data_root(tmp_vault) -> None:
     """The fixture must produce ROOT != DATA_ROOT, or no crash-class tests are meaningful."""
     from sabnyx import paths as paths_mod
 
-    assert paths_mod.ROOT != tmp_vault["DATA_ROOT"], (
+    assert tmp_vault["DATA_ROOT"] != paths_mod.ROOT, (
         "ROOT should be the real code repo, not the temp vault"
     )
     assert tmp_vault["ROOT"] == paths_mod.ROOT
@@ -165,9 +165,12 @@ def test_new_ledger_subject_uses_data_root(tmp_vault, monkeypatch) -> None:
     result = CliRunner().invoke(
         new_mod.new_cmd,
         [
-            "--type", "thought",
-            "--title", "Root Split Idea",
-            "--description", "a description that is definitely at least 30 chars long yes",
+            "--type",
+            "thought",
+            "--title",
+            "Root Split Idea",
+            "--description",
+            "a description that is definitely at least 30 chars long yes",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -255,11 +258,13 @@ def test_health_displays_use_data_root(tmp_vault, monkeypatch) -> None:
     """
     from sabnyx.commands import health as health_mod
 
-    # Wire up all paths health uses
+    # Wire up the path constants health references directly. The vault slug
+    # index now comes from context.vault_slug_index(), which resolves
+    # paths.VAULT at call time — already redirected by the tmp_vault fixture —
+    # so health no longer carries its own VAULT attribute to patch.
     monkeypatch.setattr(health_mod, "ATLAS", tmp_vault["ATLAS"])
     monkeypatch.setattr(health_mod, "INTAKE", tmp_vault["INTAKE"])
     monkeypatch.setattr(health_mod, "OBSERVATIONS", tmp_vault["OBSERVATIONS"])
-    monkeypatch.setattr(health_mod, "VAULT", tmp_vault["VAULT"])
     monkeypatch.setattr(health_mod, "DATA_ROOT", tmp_vault["DATA_ROOT"])
 
     # Create an atlas file that references a non-existent slug → broken wikilink

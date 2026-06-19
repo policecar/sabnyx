@@ -20,7 +20,7 @@ import click
 from rich.console import Console
 
 from .. import llm
-from ..schemas import HealthProbe
+from ..schemas import HealthProbe, ModelRole
 
 ACTOR = "sabnyx-verify"
 
@@ -55,11 +55,11 @@ _TASK_SYSTEM = (
     help="Which role to exercise (default: fast — cheapest).",
 )
 @click.option("--all-roles", is_flag=True, help="Probe fast, standard, and deep in turn.")
-def verify_cmd(role: str, all_roles: bool) -> None:
+def verify_cmd(role: ModelRole, all_roles: bool) -> None:
     """Send one real structured call per role; report model + token usage."""
     console = Console()
     prov = llm.provider()
-    roles = ["fast", "standard", "deep"] if all_roles else [role]
+    roles: list[ModelRole] = ["fast", "standard", "deep"] if all_roles else [role]
 
     console.print(f"provider: [bold]{prov}[/bold]")
     hint = _credential_hint(prov)
@@ -70,7 +70,7 @@ def verify_cmd(role: str, all_roles: bool) -> None:
     failures = 0
     for r in roles:
         try:
-            model = llm.model_for(r, prov)  # type: ignore[arg-type]
+            model = llm.model_for(r, prov)
         except ValueError as e:
             console.print(f"[red]{r}: {e}[/red]")
             failures += 1
@@ -81,7 +81,7 @@ def verify_cmd(role: str, all_roles: bool) -> None:
                 task_system=_TASK_SYSTEM,
                 user="Are you reachable?",
                 output_format=HealthProbe,
-                role=r,  # type: ignore[arg-type]
+                role=r,
                 actor=ACTOR,
                 purpose="verify",
                 # Reasoning models (e.g. kimi-k2.x) bill thinking against

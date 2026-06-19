@@ -32,7 +32,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from .. import fm, ledger, paths, writers
+from .. import context, fm, ledger, paths, writers
 from ..paths import ENTITY_TYPES, ensure_tree
 from ..schemas import ProposedObservation
 from ..util import extract_wikilinks, slugify, walk_vault_md
@@ -63,14 +63,6 @@ def _entity_pages() -> list[tuple[str, str, dict]]:
     return sorted(out, key=lambda t: (t[1], t[0].lower()))
 
 
-def _existing_slugs() -> set[str]:
-    """Canonical slug set for every knowledge file under vault/ (excl.
-    observations). Stems are already slug-form; lowercased for matching."""
-    return {
-        p.stem.lower() for p in walk_vault_md(paths.VAULT) if paths.OBSERVATIONS not in p.parents
-    }
-
-
 def _broken_link_counts() -> dict[str, list[str]]:
     """Map canonical missing-target slug -> sorted distinct referrer rels.
 
@@ -79,7 +71,7 @@ def _broken_link_counts() -> dict[str, list[str]]:
     not raw occurrences — N different files naming a target is the real
     "this entity matters" signal). Observation files are not scanned (so a
     gap observation's own `[[target]]` never re-counts itself)."""
-    existing = _existing_slugs()
+    existing = set(context.vault_slug_index())
     counts: dict[str, set[str]] = {}
     for p in walk_vault_md(paths.VAULT):
         if paths.OBSERVATIONS in p.parents:

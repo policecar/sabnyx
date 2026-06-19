@@ -221,13 +221,9 @@ def test_effective_dotenv_used_without_moonshot(tmp_path: Path) -> None:
     moonshot_dir = tmp_path / "moonshot-data"
     moonshot_dir.mkdir()
 
-    (tmp_path / ".env").write_text(
-        f"SABNYX_DATA_DIR={dotenv_dir}\n", encoding="utf-8"
-    )
+    (tmp_path / ".env").write_text(f"SABNYX_DATA_DIR={dotenv_dir}\n", encoding="utf-8")
     # Write a moonshot file with a different value — it must be ignored.
-    (tmp_path / "moonshot").write_text(
-        f"SABNYX_DATA_DIR={moonshot_dir}\n", encoding="utf-8"
-    )
+    (tmp_path / "moonshot").write_text(f"SABNYX_DATA_DIR={moonshot_dir}\n", encoding="utf-8")
 
     result = effective_data_dir({}, tmp_path)
     assert result == dotenv_dir.resolve()
@@ -249,9 +245,7 @@ def test_effective_empty_env_var_falls_through(tmp_path: Path) -> None:
 
     for empty in ("", "   ", "\t"):
         result = effective_data_dir({"SABNYX_DATA_DIR": empty}, tmp_path)
-        assert result == data_dir.resolve(), (
-            f"expected file-data for SABNYX_DATA_DIR={empty!r}"
-        )
+        assert result == data_dir.resolve(), f"expected file-data for SABNYX_DATA_DIR={empty!r}"
 
 
 def test_effective_empty_file_value_falls_through_to_root(tmp_path: Path) -> None:

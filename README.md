@@ -65,8 +65,10 @@ uv run sabnyx triage                      # write a review report of the intake 
 uv run sabnyx promote <intake.md> --as concept   # move one file intake → atlas
 uv run sabnyx reweave                     # LLM: backward-link recent promotions
 uv run sabnyx scan                        # LLM: contradiction scan across atlas
+uv run sabnyx entities                    # lightweight entity layer: list, gaps, resolve
 uv run sabnyx lint                        # gates 1,2,4 (frontmatter + containment)
 uv run sabnyx health                      # orphans, broken links, currency, cost
+uv run sabnyx reconcile                   # diff the ledger against atlas/ (drift check)
 
 # channels & ops
 uv run sabnyx serve                       # Telegram interface (trusted senders)
@@ -99,7 +101,11 @@ One schedulable command that runs the whole self-maintenance cycle:
 1. **Auto-promote** — deterministic, no LLM. Six gates must pass: promotable
    type (`bookmark`/`paper` → `reference`), not temporal, required fields,
    `description` ≥ 30 chars, no duplicate slug, and a **trusted `source_agent`**
-   (`SABNYX_TRUSTED_SOURCES`, default `sabnyx-ingest`).
+   (`SABNYX_TRUSTED_SOURCES`, default `sabnyx-ingest`). Trust follows
+   *provenance*, not channel: only operator-supplied local input is trusted —
+   remotely-fetched (`ingest --url` → `sabnyx-ingest-web`) and third-party
+   (`sabnyx-telegram`, `sabnyx-r1`) content is **not** auto-promotable, so
+   prompt-injected content can't slip into atlas unattended.
 2. **LLM triage** — for everything that didn't auto-promote, *only* once
    `≥ --threshold` (default 5) items are pending: one batched call proposes
    promote / keep / discard. Human-gated unless `--yes`. Discard never deletes.
@@ -118,7 +124,10 @@ Schedule it with `opsctl supervise` (below) or `recipes/heartbeat.sh`.
 
 `opsctl` owns the event ledger and supervises scheduled work. It is
 byte/parse-compatible with the Python ledger (same `ops/events.jsonl`,
-same `content_hash`), so the two interoperate freely (ADR-0002).
+same `content_hash` — only the `payload` is hashed; `ts` is opaque and
+payloads carry no floats; see ADR-0002), so the two interoperate freely. Like
+the Python side, it resolves the ledger from `SABNYX_DATA_DIR` (env or
+`<repo>/.env`), falling back to the code repo, so both write to one file.
 
 ```sh
 cd opsctl && cargo build --release      # binary: opsctl/target/release/opsctl
@@ -149,6 +158,14 @@ indirection: **role → model → provider** (ADR-0006). Call sites name a *role
 Override any role's model with `SABNYX_MODEL_FAST` / `_STANDARD` / `_DEEP`.
 Every call is ledgered (`llm.requested` intent + `llm.completed` action) with
 provider, model, prompt hash, and token usage — the prompt text never is.
+
+**Cost & reliability guards.** Unattended runs (`tend`) are bounded by a
+per-run call ceiling (`SABNYX_MAX_LLM_CALLS`, default 50; `0` = unlimited) so a
+runaway queue or prompt can't spin the provider without limit — one-shot CLI
+calls and the long-lived `serve` daemon are uncapped. Transient provider
+failures (HTTP 429 / 5xx / 529) are retried with exponential backoff
+(`SABNYX_LLM_MAX_RETRIES`, default 3) on both the Anthropic and
+OpenAI-compatible paths.
 
 ## Layout
 

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python (ruff · ty · pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+
+      - name: Format (ruff format --check)
+        run: uv run ruff format --check .
+
+      - name: Type check (ty)
+        run: uv run ty check
+
+      - name: Tests
+        run: uv run pytest -q
+
+  rust:
+    name: Rust (fmt · clippy · test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # opsctl's ledger compat tests shell out to `uv run python` to assert
+      # byte-for-byte content_hash parity with the Python side, so this job
+      # needs uv + the synced package on PATH.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync Python package (for cross-language compat tests)
+        run: uv sync
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: opsctl
+
+      - name: Format (cargo fmt --check)
+        working-directory: opsctl
+        run: cargo fmt --check
+
+      - name: Lint (clippy -D warnings)
+        working-directory: opsctl
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        working-directory: opsctl
+        run: cargo test

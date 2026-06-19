@@ -16,6 +16,27 @@ from .schemas import ProposedIntake, ProposedObservation
 from .util import slugify
 
 
+def _write_checked(path, meta: dict, body: str, *, console: Console) -> str | None:
+    """Skip-if-exists, write, re-validate, roll back on schema failure.
+
+    Returns the DATA_ROOT-relative path string on success, or None if the file
+    already existed or failed validation (in which case it is unlinked). The
+    rollback is the bit you least want to maintain in two copies; callers keep
+    their own meta/ledger/messaging.
+    """
+    if path.exists():
+        console.print(f"  [yellow]skip (exists)[/yellow] {path.relative_to(paths.DATA_ROOT)}")
+        return None
+    fm.write(path, meta, body)
+    try:
+        fm.load(path)  # belt + suspenders
+    except fm.FrontmatterError as e:
+        console.print(f"  [red]invalid, rolled back:[/red] {e}")
+        path.unlink()
+        return None
+    return str(path.relative_to(paths.DATA_ROOT))
+
+
 def write_intake(
     pi: ProposedIntake,
     *,
@@ -33,9 +54,6 @@ def write_intake(
     """
     slug = slugify(pi.title)
     path = paths.INTAKE / f"{slug}.md"
-    if path.exists():
-        console.print(f"  [yellow]skip (exists)[/yellow] {path.relative_to(paths.DATA_ROOT)}")
-        return None
 
     meta: dict = {
         "type": pi.type,
@@ -49,15 +67,10 @@ def write_intake(
     if source_url:
         meta["source_url"] = source_url
     body = f"# {pi.title}\n\n{pi.body.strip()}\n" + (f"\n{trailer}\n" if trailer else "")
-    fm.write(path, meta, body)
-    try:
-        fm.load(path)  # belt + suspenders
-    except fm.FrontmatterError as e:
-        console.print(f"  [red]invalid, rolled back:[/red] {e}")
-        path.unlink()
+    rel = _write_checked(path, meta, body, console=console)
+    if rel is None:
         return None
 
-    rel = str(path.relative_to(paths.DATA_ROOT))
     ledger.append_event(
         kind="intake.created",
         actor=actor,
@@ -90,9 +103,6 @@ def write_observation(ob: ProposedObservation, *, actor: str, console: Console) 
     today = date_cls.today().isoformat()
     slug = slugify(ob.title)
     path = paths.OBSERVATIONS / f"{today}-{ob.category}-{slug}.md"
-    if path.exists():
-        console.print(f"  [yellow]skip (exists)[/yellow] {path.relative_to(paths.DATA_ROOT)}")
-        return None
 
     meta = {
         "type": "observation",
@@ -102,15 +112,10 @@ def write_observation(ob: ProposedObservation, *, actor: str, console: Console) 
         "status": "pending",
         "involves": ob.involves,
     }
-    fm.write(path, meta, f"# {ob.title}\n\n{ob.body.strip()}\n")
-    try:
-        fm.load(path)  # belt + suspenders
-    except fm.FrontmatterError as e:
-        console.print(f"  [red]invalid, rolled back:[/red] {e}")
-        path.unlink()
+    rel = _write_checked(path, meta, f"# {ob.title}\n\n{ob.body.strip()}\n", console=console)
+    if rel is None:
         return None
 
-    rel = str(path.relative_to(paths.DATA_ROOT))
     ledger.append_event(
         kind="observation.created",
         actor=actor,
