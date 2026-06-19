@@ -1,9 +1,9 @@
 # sabnyx R1 Creation
 
 A pocket capture client for the [Rabbit R1](https://www.rabbit.tech). A static
-web app ("Creation") that runs in the R1's 240×282 WebView: hold PTT to speak,
-the transcript is captured into your sabnyx vault (or answered from it), and the
-R1 speaks the reply.
+web app ("Creation") that runs in the R1's 240×282 WebView: hold PTT to speak (or
+type), the transcript is captured into your sabnyx vault (or answered from it),
+and the reply is shown as on-screen text.
 
 This is the **client half**. The **server half** is the HTTP ingress in the
 sabnyx package (`src/sabnyx/commands/serve_http.py` + `adapters/r1.py`), run with
@@ -31,8 +31,9 @@ Bad/missing key → `401`. Empty/oversized/invalid body → `400`/`413`.
 - The raw audio transits **rabbit's cloud** (the device↔`r1-api.rabbit.tech`
   channel). If you ever need to keep audio off rabbit's cloud, swap `voice.js`
   for `navigator.mediaDevices.getUserMedia` + your own ASR endpoint.
-- TTS: `PluginMessageHandler` with `useLLM:false` speaks the reply **exactly** on
-  the device speaker. Desktop falls back to `SpeechSynthesis`.
+- Replies are **text-only**: the answer is rendered on-screen in the Creation's
+  log and is never spoken. Input still accepts speech (PTT) or typing — only the
+  response path is text.
 - Side button (single click): toggles **CAPTURE ⇄ ASK**.
 
 > `CreationVoiceHandler`/`sttEnded` are undocumented in the official SDK
@@ -102,7 +103,7 @@ Bad/missing key → `401`. Empty/oversized/invalid body → `400`/`413`.
 
 Run `sabnyx serve-http --static creations` and open `http://localhost:8787/` in a
 desktop browser. With no R1 bridge present it uses the typed input, `localStorage`
-for the key, and `SpeechSynthesis` for replies — enough to exercise the full
+for the key, and renders replies as on-screen text — enough to exercise the full
 request/response path end to end.
 
 ## Files
@@ -113,23 +114,19 @@ request/response path end to end.
 | `install.html` | QR installer (points the R1 at `index.html`).                |
 | `js/api.js`    | Backend client: key storage + `fetch` to the contract above. |
 | `js/voice.js`  | PTT → rabbit cloud STT → transcript.                          |
-| `js/speak.js`  | Reply TTS via the R1 bridge (`useLLM:false`).                |
 | `TESTING.md`   | End-to-end test guide (curl → tunnel → device).              |
 
 ## TODO
 
 - **Response latency / UX** (deferred, not yet designed). The slow part is the
   LLM round-trip — a few seconds even on Haiku, ~35s on Moonshot — and on a
-  listen-not-look device a silent multi-second wait reads as "broken." We should
-  improve the perceived (and actual) response experience. Candidate directions,
-  not mutually exclusive, none chosen yet:
-  - an **interim ack** (spoken "got it, one sec…", an earcon, or a visual pulse)
-    the instant the transcript lands, before the fetch;
-  - surface the answer as **on-screen text** instead of / alongside speaking it
-    (skips TTS, shows up sooner);
-  - **shorten the spoken output** (terser, 1–2 sentence answers) to cut both
-    generation time and speech length;
-  - **stream** partial output if the bridge allows it;
+  listen-not-look device a silent multi-second wait reads as "broken." Replies are
+  now **text-only** (shown on-screen as soon as they arrive), which already skips
+  TTS latency; remaining directions, not mutually exclusive, none chosen yet:
+  - a **visual interim ack** (a pulse or a "working…" state) the instant the
+    transcript lands, before the fetch;
+  - **shorter answers** (terser, 1–2 sentence replies) to cut generation time;
+  - **stream** partial text in if the transport allows it;
   - a **faster model/provider** for the voice path (Haiku already helps).
 
   Client-side code site: `index.html` → `submit()`.
