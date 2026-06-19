@@ -23,6 +23,7 @@ from rich.markup import escape
 
 from .. import llm, services
 from ..paths import ensure_tree
+from ..schemas import ModelRole
 from ..util import slugify
 
 
@@ -41,7 +42,7 @@ from ..util import slugify
     help="Force or suppress filing the answer into intake/ (default: ask).",
 )
 @click.option("--yes", "-y", is_flag=True, help="Accept a proposed capture without prompting.")
-def ask_cmd(question: str, role: str | None, capture_flag: bool | None, yes: bool) -> None:
+def ask_cmd(question: str, role: ModelRole | None, capture_flag: bool | None, yes: bool) -> None:
     """Answer a question from the vault, citing [[wikilinks]].
 
     Durable answers can be filed back into intake/ so the vault
@@ -56,7 +57,7 @@ def ask_cmd(question: str, role: str | None, capture_flag: bool | None, yes: boo
 
     result = services.answer_question(question=question, role_override=role)
     console.print(
-        f"[dim]role: {result.role}, model: {llm.model_for(result.role)}[/dim]"  # type: ignore[arg-type]
+        f"[dim]role: {result.role}, model: {llm.model_for(result.role)}[/dim]"
     )
 
     answer = result.answer
