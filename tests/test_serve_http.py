@@ -316,3 +316,39 @@ def test_post_content_length_guards_over_socket(tmp_vault):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_rejects_transfer_encoding_over_socket(tmp_vault):
+    """A request framed with Transfer-Encoding is refused (400) on both GET and
+    POST — http.server can't decode chunked, and honoring it invites a CL/TE
+    smuggling desync behind a proxy."""
+    import socket
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from sabnyx.commands import serve_http
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), serve_http._make_handler({"k1"}, None))
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+
+        def status_line(method: str) -> bytes:
+            c = socket.create_connection(("127.0.0.1", port), timeout=5)
+            req = (
+                f"{method} /status HTTP/1.1\r\n"
+                "Host: localhost\r\n"
+                "Authorization: Bearer k1\r\n"
+                "Transfer-Encoding: chunked\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode()
+            c.sendall(req)
+            first = c.recv(256).split(b"\r\n", 1)[0]
+            c.close()
+            return first
+
+        assert b"400" in status_line("GET")
+        assert b"400" in status_line("POST")
+    finally:
+        srv.shutdown()
+        srv.server_close()

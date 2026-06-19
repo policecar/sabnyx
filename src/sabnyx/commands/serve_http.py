@@ -198,7 +198,23 @@ def _make_handler(
             self.end_headers()
             self.wfile.write(body)
 
+        def _reject_te(self) -> bool:
+            """Reject any request that frames its body with Transfer-Encoding.
+
+            This server only speaks Content-Length framing, and http.server does
+            not actually decode chunked bodies — so honoring a TE header invites a
+            request-smuggling desync when a front proxy and this backend disagree
+            on where the body ends. Reject it and close the connection (an
+            unconsumed chunked body would otherwise poison the keep-alive)."""
+            if self.headers.get("Transfer-Encoding"):
+                self.close_connection = True
+                self._respond(400, {"error": "Transfer-Encoding not supported"})
+                return True
+            return False
+
         def do_GET(self) -> None:  # noqa: N802 — stdlib dispatch name
+            if self._reject_te():
+                return
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
             if path == "/status":  # API route — bearer-gated
                 status, payload = route(
@@ -214,6 +230,8 @@ def _make_handler(
             self._respond(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802 — stdlib dispatch name
+            if self._reject_te():
+                return
             # Validate Content-Length before reading: a negative value would
             # otherwise skip the cap (-1 > _MAX_BODY is False) and turn into
             # rfile.read(-1) — an unbounded read until EOF; a non-numeric value
