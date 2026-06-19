@@ -22,7 +22,6 @@ from sabnyx.paths import (
     resolve_data_root,
 )
 
-
 # ---------------------------------------------------------------------------
 # Pure helper tests (no import-time state)
 # ---------------------------------------------------------------------------
@@ -51,8 +50,6 @@ def test_resolve_data_root_uses_env_var(tmp_path: Path) -> None:
 
 def test_resolve_data_root_expands_tilde(tmp_path: Path) -> None:
     """SABNYX_DATA_DIR with a tilde is expanded via expanduser."""
-    import os
-
     home = Path.home()
     # Use a path relative to home that we can verify expands correctly.
     # We don't need it to actually exist; resolve() just canonicalises the path.
