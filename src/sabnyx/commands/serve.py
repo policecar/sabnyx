@@ -30,7 +30,7 @@ from rich.console import Console
 
 from .. import ledger, services
 from ..adapters import telegram
-from ..paths import DATA_ROOT, ensure_tree
+from ..paths import ensure_tree
 from ..schemas import NormalizedEnvelope
 
 ACTOR = "sabnyx-telegram"
@@ -66,12 +66,6 @@ def classify(text: str) -> tuple[str, str]:
     if t.endswith("?"):
         return "ask", t
     return "ingest_text", t
-
-
-def _title_from(text: str, n: int = 8) -> str:
-    """A short title from the first few words of a captured message."""
-    words = text.split()
-    return " ".join(words[:n]) if words else "untitled"
 
 
 def handle(env: NormalizedEnvelope) -> str:
@@ -120,7 +114,7 @@ def handle(env: NormalizedEnvelope) -> str:
     else:
         if not arg:
             return "nothing to remember — send some text after /remember."
-        body, title, source_kind, source_url = arg, _title_from(arg), "manual", None
+        body, title, source_kind, source_url = arg, services.title_from(arg), "manual", None
 
     return _ingest(body, title=title, source_kind=source_kind, source_url=source_url)
 
@@ -133,32 +127,17 @@ def telegram_fetch(url: str) -> str:
 
 
 def _ingest(text: str, *, title: str, source_kind: str, source_url: str | None) -> str:
-    from .. import sources
-
     try:
-        src_path = sources.capture(text=text, slug=title, actor=ACTOR, source_url=source_url)
+        head, written = services.ingest_text(
+            text=text,
+            title=title,
+            source_kind=source_kind,
+            source_url=source_url,
+            console=_QUIET,
+            actor=ACTOR,
+        )
     except FileExistsError:
         return f"already captured something titled '{title}'."
-    src_rel = str(src_path.relative_to(DATA_ROOT))
-
-    proposal = services.build_ingest_proposal(
-        text=text,
-        title=title,
-        source_kind=source_kind,
-        source_url=source_url,
-        src_rel=src_rel,
-        actor=ACTOR,
-    )
-    written = services.apply_ingest(
-        proposal,
-        title=title,
-        source_kind=source_kind,
-        source_url=source_url,
-        src_rel=src_rel,
-        console=_QUIET,
-        actor=ACTOR,
-    )
-    head = proposal.changeset.summary
     if written:
         return f"{head}\n\nfiled {len(written)}: " + ", ".join(written)
     return f"{head}\n\n(nothing new filed — already covered)"
@@ -166,12 +145,8 @@ def _ingest(text: str, *, title: str, source_kind: str, source_url: str | None) 
 
 def _status() -> str:
     """A terse health pulse, computed without the full health command."""
-    from ..paths import ATLAS, INTAKE, OBSERVATIONS
-
-    intake = len(list(INTAKE.glob("*.md")))
-    atlas = sum(1 for _ in ATLAS.rglob("*.md"))
-    obs = len(list(OBSERVATIONS.glob("*.md")))
-    return f"intake: {intake}  atlas: {atlas}  pending observations: {obs}"
+    p = services.vault_pulse()
+    return f"intake: {p['intake']}  atlas: {p['atlas']}  pending observations: {p['observations']}"
 
 
 def _dispatch_batch(updates: list[dict], trusted: set[str]) -> int:

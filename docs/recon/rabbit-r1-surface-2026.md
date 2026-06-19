@@ -64,7 +64,16 @@ voice, and rabbit DOES transcribe for us: `CreationVoiceHandler` starts/
 stops capture and the transcript arrives via `onPluginMessage`
 (`{type:"sttEnded", transcript}`). So the Creation POSTs **text** and the
 server needs **no Whisper**. `sideClick` (single click) is therefore free
-for other UI. The official reference still lists `getUserMedia` mic access
+for other UI.
+
+Note this ASR is rabbit's **cloud** STT (the device↔`wss://r1-api.rabbit.tech`
+channel), not on-device. So two things follow: (1) the raw audio transits
+rabbit's cloud — our server only ever sees the transcript text; (2) there's an
+extra hop (device → rabbit cloud → device → our server), which the latency
+estimate below accounts for. If keeping audio off rabbit's cloud ever matters,
+the `getUserMedia` mic-capture fallback + our own ASR is the bypass.
+
+The official reference still lists `getUserMedia` mic access
 as a documented fallback if we ever want raw audio, but the bridge path is
 simpler and proven.
 
@@ -155,7 +164,8 @@ Staging:
   1. Ingress on example.net (a small HTTP adapter over services.py — no
      Whisper, no server TTS; rabbit transcribes and the R1 speaks).
      nginx reverse-proxy, Let's Encrypt cert. Writes to the vault, git
-     push on mutations. **[CORRECTED 2026-06-18: ASR/TTS are on-device.]**
+     push on mutations. **[CORRECTED 2026-06-18: STT/ASR run in rabbit's
+     cloud (not our server, not the device); the R1 only plays the reply.]**
   2. Minimal Creation (single index.html, one PTT-triggered flow).
      Deploy via rabbit.tech/creations.
   3. First envelope kind: content.submit (voice → intake/thought).
