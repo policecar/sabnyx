@@ -103,9 +103,10 @@ terminator with `limit_req`, and `SABNYX_R1_KEYS` in `~/sabnyx/.env`.
 3. Header shows `CAPTURE` + a live `intake N · atlas N` — if that loads, `/status`
    round-trips from the device. ✅
 4. **CAPTURE:** hold PTT, say *"remember to buy oat milk"*, release → transcript
-   shows, the R1 **speaks** the summary, the count ticks up.
+   shows, the summary appears as **on-screen text** (replies are never spoken),
+   the count ticks up.
 5. **ASK:** single-click the side button → header flips to `ASK`. Hold PTT, ask a
-   question → spoken, vault-grounded answer.
+   question → vault-grounded answer shown as on-screen text.
 6. Voice stuck? The on-screen text box does the same without the mic — isolates
    "network vs. mic".
 
