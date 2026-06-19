@@ -29,7 +29,10 @@ Two-speed triage + auto-reweave + health, in one schedulable command.
   4. description ≥ 30 chars
   5. no duplicate slug already in atlas/
   6. trusted source (`source_agent` in the configured allowlist;
-     default `{"sabnyx-ingest"}`, override `SABNYX_TRUSTED_SOURCES`)
+     default `{"sabnyx-ingest"}`, override `SABNYX_TRUSTED_SOURCES`).
+     Trust is by provenance, not channel: remote/third-party agents
+     (`sabnyx-ingest-web`, `sabnyx-telegram`, `sabnyx-r1`) are excluded so
+     prompt-injected content can't auto-promote unattended.
 - **LLM triage** tier: when ≥ N (default 5) items remain un-auto-promoted,
   one batched `parse_structured` call proposes per-item routing
   (promote-as-X / keep / discard) — human-gated unless `--yes`.
