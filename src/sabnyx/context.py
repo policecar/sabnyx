@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import fm
+from . import fm, paths
 from .util import walk_vault_md
 
 EXCERPT_CHARS = 2500
@@ -21,6 +21,20 @@ TOTAL_CHARS = 300_000
 def slug_index(dir_: Path) -> dict[str, Path]:
     """slug -> path for every knowledge file under dir_."""
     return {p.stem: p for p in walk_vault_md(dir_)}
+
+
+def vault_slug_index() -> dict[str, Path]:
+    """Lowercased slug -> path for every knowledge file under vault/, excluding
+    observations. The lowercase key is the canonical form health/entities use
+    for case-insensitive wikilink matching.
+
+    References ``paths`` by module attribute so tests can redirect the vault
+    wholesale (matching writers.py)."""
+    return {
+        p.stem.lower(): p
+        for p in walk_vault_md(paths.VAULT)
+        if paths.OBSERVATIONS not in p.parents
+    }
 
 
 def description_index(dir_: Path, label: str) -> str:

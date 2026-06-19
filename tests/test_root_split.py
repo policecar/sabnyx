@@ -255,11 +255,13 @@ def test_health_displays_use_data_root(tmp_vault, monkeypatch) -> None:
     """
     from sabnyx.commands import health as health_mod
 
-    # Wire up all paths health uses
+    # Wire up the path constants health references directly. The vault slug
+    # index now comes from context.vault_slug_index(), which resolves
+    # paths.VAULT at call time — already redirected by the tmp_vault fixture —
+    # so health no longer carries its own VAULT attribute to patch.
     monkeypatch.setattr(health_mod, "ATLAS", tmp_vault["ATLAS"])
     monkeypatch.setattr(health_mod, "INTAKE", tmp_vault["INTAKE"])
     monkeypatch.setattr(health_mod, "OBSERVATIONS", tmp_vault["OBSERVATIONS"])
-    monkeypatch.setattr(health_mod, "VAULT", tmp_vault["VAULT"])
     monkeypatch.setattr(health_mod, "DATA_ROOT", tmp_vault["DATA_ROOT"])
 
     # Create an atlas file that references a non-existent slug → broken wikilink

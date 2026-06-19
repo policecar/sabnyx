@@ -9,23 +9,13 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from .. import fm, ledger
-from ..paths import ATLAS, DATA_ROOT, INTAKE, OBSERVATIONS, VAULT
-from ..util import age_days, extract_wikilinks, walk_vault_md
+from .. import context, fm, ledger
+from ..paths import ATLAS, DATA_ROOT, INTAKE, OBSERVATIONS
+from ..util import age_days, extract_wikilinks
 
 # Gate 5: jibot flags time-sensitive content whose last_verified is absent
 # or older than 180 days. references are the time-sensitive type at stage 0.
 CURRENCY_DAYS = 180
-
-
-def _slug_index() -> dict[str, Path]:
-    """Map slug -> path for every file under vault/ (excl. observations)."""
-    idx: dict[str, Path] = {}
-    for p in walk_vault_md(VAULT):
-        if OBSERVATIONS in p.parents:
-            continue
-        idx[p.stem.lower()] = p
-    return idx
 
 
 def scan_wikilinks(
@@ -61,7 +51,7 @@ def scan_wikilinks(
 def health_cmd(quick: bool) -> None:
     """Report orphans, broken wikilinks, stale intake, ledger count."""
     console = Console()
-    idx = _slug_index()
+    idx = context.vault_slug_index()
 
     orphans: list[Path] = []
     stale_intake: list[tuple[Path, int]] = []
