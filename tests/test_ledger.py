@@ -13,6 +13,7 @@ tests pin the same invariants from the Python gate so a regression in
 from __future__ import annotations
 
 import math
+import os
 
 import pytest
 
@@ -117,3 +118,25 @@ def test_append_large_event_is_one_line_and_replays(tmp_vault) -> None:
     events = list(ledger.replay())
     assert len(events) == 1
     assert events[0].payload["blob"] == big
+
+
+# -- append durability: fsync is the commit point ----------------------------------
+
+
+def test_append_event_fsyncs_for_durability(tmp_vault, monkeypatch) -> None:
+    # The append is the ledger's commit point, so it must be fsync'd to disk
+    # before returning — not left in the OS page cache where a power loss
+    # could drop it. Spy on os.fsync to prove the durability path runs, and
+    # confirm the appended event is intact and replayable.
+    synced_fds: list[int] = []
+    real_fsync = os.fsync
+
+    def _spy(fd: int) -> None:
+        synced_fds.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(ledger.os, "fsync", _spy)
+    event = ledger.append_event(kind="test.event", actor="t", subject="s", payload={"n": 1})
+
+    assert synced_fds, "append_event must fsync the ledger file before returning"
+    assert list(ledger.replay())[-1].content_hash == event.content_hash

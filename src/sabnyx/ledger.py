@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
@@ -105,8 +106,14 @@ def append_event(
     # can't interleave bytes within a line — mirrors opsctl's append. A
     # buffered text writer may split large lines across write() syscalls.
     # (PIPE_BUF governs pipes, not regular files, so it buys nothing here.)
+    # fsync then makes the line durable to disk before we return, so the
+    # append is a true commit point even across a kernel panic / power loss —
+    # a process crash is already safe once write(2) returns (page cache), but
+    # that cache is lost on hard failure. opsctl's appender sync_all()s for
+    # the same guarantee.
     with EVENTS_JSONL.open("ab", buffering=0) as f:
         f.write(data)
+        os.fsync(f.fileno())
     return event
 
 
