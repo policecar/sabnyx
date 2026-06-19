@@ -27,7 +27,7 @@ import click
 from rich.console import Console
 
 from .. import context, fm, ledger, llm, paths, retrieval, writers
-from ..schemas import ReweaveChangeset
+from ..schemas import ModelRole, ReweaveChangeset
 from ..util import extract_wikilinks, get_marker_block, set_marker_block
 
 ACTOR = "sabnyx-reweave"
@@ -169,6 +169,74 @@ def _apply_links(
     return modified
 
 
+def reweave_one(
+    tgt: Path,
+    index: dict[str, Path],
+    *,
+    role: ModelRole,
+    actor: str,
+    yes: bool,
+    dry_run: bool,
+    console: Console,
+) -> tuple[list[str], list[str]] | None:
+    """Reweave one atlas file: LLM proposal → approval gate → apply links and
+    observations → ledger ``reweave.completed``.
+
+    Returns ``(files_linked, observations_written)`` when changes are applied,
+    or ``None`` on a dry run or when the operator declines (intent left
+    pending). Callers own their per-target framing and decide whether to call
+    this under --dry-run at all: tend skips it to avoid the LLM call, while
+    reweave_cmd calls it to preview the changeset.
+    """
+    changeset = llm.parse_structured(
+        task_system=_TASK_SYSTEM,
+        user=_context_for(tgt, index),
+        output_format=ReweaveChangeset,
+        role=role,
+        actor=actor,
+        purpose=f"reweave:{tgt.stem}",
+    )
+
+    console.print(f"[bold]Proposed:[/bold] {changeset.summary}")
+    for add in changeset.related_additions:
+        console.print(
+            f"  [green]+ links[/green] {add.file} += "
+            f"{', '.join(add.add_links)} [dim]({add.priority}: {add.reason})[/dim]"
+        )
+    for ob in changeset.observations:
+        console.print(f"  [yellow]+ observation[/yellow] ({ob.category}) {ob.title}")
+    if not changeset.related_additions and not changeset.observations:
+        console.print("  [dim]nothing qualifies — graph already coherent[/dim]")
+
+    if dry_run:
+        console.print("[dim]dry run: nothing written[/dim]")
+        return None
+
+    has_changes = bool(changeset.related_additions or changeset.observations)
+    if has_changes and not yes and not click.confirm("apply?", default=True):
+        console.print("[dim]declined; intent left pending[/dim]")
+        return None
+
+    modified = _apply_links(tgt, changeset, index, console)
+    obs_written: list[str] = []
+    for ob in changeset.observations:
+        written = writers.write_observation(ob, actor=actor, console=console)
+        if written:
+            obs_written.append(written)
+
+    ledger.append_event(
+        kind="reweave.completed",
+        actor=actor,
+        subject=str(tgt.relative_to(paths.DATA_ROOT)),
+        payload={
+            "summary": changeset.summary,
+            "files_linked": modified,
+            "observations": obs_written,
+        },
+    )
+    return modified, obs_written
+
+
 @click.command("reweave")
 @click.argument("target", required=False, type=click.Path(exists=True, path_type=Path))
 @click.option(
@@ -206,52 +274,12 @@ def reweave_cmd(target: Path | None, role: str, yes: bool, dry_run: bool) -> Non
         rel = str(tgt.relative_to(paths.DATA_ROOT))
         console.print(f"\n[bold]reweave[/bold] {rel}  (role: {role}, model: {llm.model_for(role)})")
 
-        changeset = llm.parse_structured(
-            task_system=_TASK_SYSTEM,
-            user=_context_for(tgt, index),
-            output_format=ReweaveChangeset,
-            role=role,  # type: ignore[arg-type]
-            actor=ACTOR,
-            purpose=f"reweave:{tgt.stem}",
+        result = reweave_one(
+            tgt, index, role=role, actor=ACTOR, yes=yes, dry_run=dry_run, console=console
         )
-
-        console.print(f"[bold]Proposed:[/bold] {changeset.summary}")
-        for add in changeset.related_additions:
-            console.print(
-                f"  [green]+ links[/green] {add.file} += "
-                f"{', '.join(add.add_links)} [dim]({add.priority}: {add.reason})[/dim]"
-            )
-        for ob in changeset.observations:
-            console.print(f"  [yellow]+ observation[/yellow] ({ob.category}) {ob.title}")
-        if not changeset.related_additions and not changeset.observations:
-            console.print("  [dim]nothing qualifies — graph already coherent[/dim]")
-
-        if dry_run:
-            console.print("[dim]dry run: nothing written[/dim]")
+        if result is None:
             continue
-
-        has_changes = bool(changeset.related_additions or changeset.observations)
-        if has_changes and not yes and not click.confirm("apply?", default=True):
-            console.print("[dim]declined; intent left pending[/dim]")
-            continue
-
-        modified = _apply_links(tgt, changeset, index, console)
-        obs_written: list[str] = []
-        for ob in changeset.observations:
-            written = writers.write_observation(ob, actor=ACTOR, console=console)
-            if written:
-                obs_written.append(written)
-
-        ledger.append_event(
-            kind="reweave.completed",
-            actor=ACTOR,
-            subject=rel,
-            payload={
-                "summary": changeset.summary,
-                "files_linked": modified,
-                "observations": obs_written,
-            },
-        )
+        modified, obs_written = result
         console.print(
             f"[green]reweave complete[/green] "
             f"({len(modified)} file(s) linked, {len(obs_written)} observation(s))"

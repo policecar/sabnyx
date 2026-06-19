@@ -49,10 +49,11 @@ def _intake_files() -> list[Path]:
 
 
 def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
-    """Consume pending reweave.proposed intents.
+    """Consume pending reweave.proposed intents via reweave.reweave_one.
 
-    Reuses reweave.py's internal helpers directly so we don't duplicate the
-    LLM call, guard logic, or ledger events. Returns count of files reweaved.
+    Delegates the LLM call, guards, apply, and ledger event to the shared
+    helper so the apply path lives in one place. tend's --dry-run skips the
+    helper entirely (no LLM call), per DEC-01. Returns files reweaved.
     """
     from . import reweave as rw
 
@@ -62,12 +63,10 @@ def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
         return 0
 
     console.print(f"reweave: [bold]{len(targets)}[/bold] pending target(s)")
-    idx = context.slug_index(ATLAS)
+    index = context.slug_index(ATLAS)
     reweaved = 0
 
     for tgt in targets:
-        from ..schemas import ReweaveChangeset
-
         rel = str(tgt.relative_to(DATA_ROOT))
         console.print(f"  [bold]reweave[/bold] {rel}")
 
@@ -75,41 +74,11 @@ def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
             console.print("    [dim]dry run: skipping LLM call[/dim]")
             continue
 
-        changeset = llm.parse_structured(
-            task_system=rw._TASK_SYSTEM,
-            user=rw._context_for(tgt, idx),
-            output_format=ReweaveChangeset,
-            role="standard",
-            actor=ACTOR_TEND,
-            purpose=f"reweave:{tgt.stem}",
+        result = rw.reweave_one(
+            tgt, index, role="standard", actor=ACTOR_TEND, yes=yes, dry_run=False, console=console
         )
-
-        console.print(f"  [bold]Proposed:[/bold] {changeset.summary}")
-        has_changes = bool(changeset.related_additions or changeset.observations)
-        if has_changes and not yes and not click.confirm("  apply?", default=True):
-            console.print("  [dim]declined; intent left pending[/dim]")
-            continue
-
-        modified = rw._apply_links(tgt, changeset, idx, console)
-        from .. import writers
-
-        obs_written: list[str] = []
-        for ob in changeset.observations:
-            written = writers.write_observation(ob, actor=ACTOR_TEND, console=console)
-            if written:
-                obs_written.append(written)
-
-        ledger.append_event(
-            kind="reweave.completed",
-            actor=ACTOR_TEND,
-            subject=rel,
-            payload={
-                "summary": changeset.summary,
-                "files_linked": modified,
-                "observations": obs_written,
-            },
-        )
-        reweaved += 1
+        if result is not None:
+            reweaved += 1
 
     return reweaved
 
