@@ -86,5 +86,8 @@ def load(path: Path) -> tuple[dict, str, FileKind]:
 def write(path: Path, meta: dict, body: str) -> None:
     """Write a file with frontmatter. Does NOT validate — use after load/build."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    post = frontmatter.Post(body, **meta)
+    # Assign .metadata rather than passing **meta: a frontmatter key named
+    # "content" or "handler" would collide with Post's own parameters.
+    post = frontmatter.Post(body)
+    post.metadata = dict(meta)
     path.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")

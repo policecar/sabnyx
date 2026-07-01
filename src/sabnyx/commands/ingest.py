@@ -88,6 +88,10 @@ def ingest_cmd(
         sys.exit(1)
 
     # -- 2. capture raw -------------------------------------------------------------
+    # The model must read exactly what gets captured (Gate 3: the immutable
+    # artifact is the audit record of the extraction input).
+    text = text[: sources.MAX_SOURCE_CHARS]
+    src_path: Path | None = None
     if not dry_run:
         try:
             src_path = sources.capture(text=text, slug=src_title, actor=actor, source_url=url)
@@ -99,15 +103,26 @@ def ingest_cmd(
         src_rel = f"vault/sources/{slugify(src_title)}.md (dry run, not written)"
 
     # -- 3 + 4. propose (classify, assemble, extract) -------------------------------
-    proposal = services.build_ingest_proposal(
-        text=text,
-        title=src_title,
-        source_kind=src_kind,
-        source_url=url,
-        src_rel=src_rel,
-        role_override=role,
-        actor=actor,
-    )
+    try:
+        proposal = services.build_ingest_proposal(
+            text=text,
+            title=src_title,
+            source_kind=src_kind,
+            source_url=url,
+            src_rel=src_rel,
+            role_override=role,
+            actor=actor,
+        )
+    except Exception as e:
+        if src_path is not None:
+            # Roll back the fresh capture so a retry isn't dead-ended by the
+            # write-once sources layer (ingest.failed is ledgered).
+            services.rollback_capture(
+                src_path, src_rel, actor=actor, reason=f"{type(e).__name__}: {e}"
+            )
+            console.print(f"[red]extraction failed; captured source rolled back:[/red] {e}")
+            sys.exit(1)
+        raise
     console.print(
         f"captured [bold]{src_rel}[/bold]  "
         f"(depth: {proposal.depth}, role: {proposal.role}, model: {llm.model_for(proposal.role)})"
@@ -130,7 +145,11 @@ def ingest_cmd(
     if not changeset.intake_files and not changeset.observations:
         return
     if not yes and not click.confirm("\napply?", default=True):
-        console.print("[dim]declined; raw source kept, nothing else written[/dim]")
+        # Roll back the capture this run made, like the extraction-failure
+        # path — a kept artifact would block re-ingesting the same content.
+        assert src_path is not None
+        services.rollback_capture(src_path, src_rel, actor=actor, reason="operator declined")
+        console.print("[dim]declined; captured source rolled back, nothing written[/dim]")
         return
 
     # -- 6. apply through the validated writers --------------------------------------

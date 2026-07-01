@@ -100,8 +100,9 @@ def test_tight_budget_keeps_relevant_drops_rest(atlas):
     """Once the budget bites, the ranking decides who survives — graceful,
     relevance-prioritised truncation (the trigger to add a vector retriever)."""
     _, index = atlas
-    # budget < any single body: only the top-ranked file renders
-    out = retrieval.GrepRetriever().retrieve("vector embeddings cosine", index, budget=10)
+    # budget fits one entry's header (+ a trimmed excerpt) but not a second:
+    # only the top-ranked file renders, trimmed to the remaining budget
+    out = retrieval.GrepRetriever().retrieve("vector embeddings cosine", index, budget=120)
     assert "### vector-search" in out
     assert "### markdown-surfaces" not in out
     assert "### git-sync" not in out

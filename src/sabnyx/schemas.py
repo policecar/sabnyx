@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # -- frontmatter ---------------------------------------------------------------
 
@@ -46,6 +46,22 @@ class IntakeFrontmatter(BaseModel):
         if v.strip().lower() in bad:
             raise ValueError("description is a placeholder")
         return v
+
+    @field_validator("created")
+    @classmethod
+    def _created_has_tz(cls, v: datetime) -> datetime:
+        # SPEC §3: "ISO 8601 with TZ" — a naive timestamp is ambiguous provenance.
+        if v.tzinfo is None:
+            raise ValueError("created must be timezone-aware (SPEC §3: ISO 8601 with TZ)")
+        return v
+
+    @model_validator(mode="after")
+    def _url_required_for_references(self) -> IntakeFrontmatter:
+        # SPEC §3: source_url is required for bookmark/paper. This is Gate 2
+        # (PRECISION) — the contract lives here, not in any one CLI command.
+        if self.type in ("bookmark", "paper") and not self.source_url:
+            raise ValueError(f"source_url is required for type={self.type!r}")
+        return self
 
 
 class AtlasFrontmatter(BaseModel):

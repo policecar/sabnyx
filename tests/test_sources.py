@@ -45,6 +45,8 @@ def test_guard_rejects_non_http_schemes(url: str) -> None:
         "169.254.169.254",  # link-local / cloud metadata (IMDS)
         "0.0.0.0",  # unspecified
         "224.0.0.1",  # multicast
+        "100.64.0.1",  # CGNAT (RFC 6598) — not is_private, blocked explicitly
+        "100.127.255.254",  # CGNAT upper edge
     ],
 )
 def test_guard_rejects_internal_addresses(monkeypatch, ip: str) -> None:

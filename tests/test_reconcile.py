@@ -12,6 +12,7 @@ def _make_intake(tmp_vault, slug: str) -> None:
     (tmp_vault["INTAKE"] / f"{slug}.md").write_text(
         "---\n"
         "type: bookmark\n"
+        "source_url: https://example.com/source\n"
         "description: a sufficiently long description for promotion tests\n"
         "source: web\n"
         "status: draft\n"

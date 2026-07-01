@@ -231,6 +231,45 @@ def test_apply_links_dedups_within_one_addition(tmp_vault, monkeypatch):
     assert body.count("- [[beta]]") == 1
 
 
+def test_apply_links_skips_half_open_marker_block(tmp_vault, monkeypatch):
+    """A file with only one of BEGIN/END (manual edit damage) is reported and
+    skipped — never given a duplicate/nested block (SPEC §8)."""
+    from sabnyx.commands import reweave as rw
+
+    concepts = tmp_vault["ATLAS_CONCEPTS"]
+    target = _make_atlas_file(concepts, "alpha", "a concept about alpha things, long enough yes")
+    corrupt = concepts / "beta.md"
+    fm.write(
+        corrupt,
+        {
+            "type": "concept",
+            "description": "a concept about beta things, also long enough to pass",
+            "tags": [],
+            "status": "final",
+            "promoted_from": None,
+            "promoted_date": None,
+            "last_verified": None,
+            "proof": None,
+        },
+        "# beta\n\n<!-- BEGIN sabnyx:related -->\n- [[old]]\n",  # END lost to a manual edit
+    )
+    _propose_reweave(str(target.relative_to(tmp_vault["DATA_ROOT"])))
+
+    changeset = ReweaveChangeset(
+        summary="link into a corrupt file",
+        related_additions=[RelatedAddition(file="beta", add_links=["alpha"], reason="x")],
+        observations=[],
+    )
+    monkeypatch.setattr(rw.llm, "parse_structured", lambda **kw: changeset)
+    result = CliRunner().invoke(rw.reweave_cmd, ["--yes"])
+    assert result.exit_code == 0, result.output
+    assert "corrupt marker block" in result.output
+    # the file is untouched: still exactly one BEGIN, no END appended
+    text = corrupt.read_text()
+    assert text.count("BEGIN sabnyx:related") == 1
+    assert "END sabnyx:related" not in text
+
+
 def test_reweave_explicit_target_rejects_non_atlas(tmp_vault, monkeypatch, tmp_path):
     from sabnyx.commands import reweave as rw
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rich.console import Console
+
 from . import fm, paths
 from .util import slugify, walk_vault_md
 
@@ -19,8 +21,24 @@ TOTAL_CHARS = 300_000
 
 
 def slug_index(dir_: Path) -> dict[str, Path]:
-    """slug -> path for every knowledge file under dir_."""
-    return {p.stem: p for p in walk_vault_md(dir_)}
+    """Lowercased slug -> path for every knowledge file under dir_.
+
+    Lowercased keys match vault_slug_index's canonical form (Foo.md and
+    foo.md must not be two different pages to one consumer and one page to
+    another). On a stem collision the FIRST file in the deterministic walk
+    order wins, loudly — silent last-wins shadowing hid files from ask and
+    reweave."""
+    out: dict[str, Path] = {}
+    for p in walk_vault_md(dir_):
+        key = p.stem.lower()
+        if key in out:
+            Console(stderr=True).print(
+                f"[yellow]warning:[/yellow] duplicate slug {key!r}: keeping {out[key]}, "
+                f"shadowing {p}"
+            )
+            continue
+        out[key] = p
+    return out
 
 
 def vault_slug_index() -> dict[str, Path]:
@@ -95,25 +113,36 @@ def excerpts(
     ``order`` lets a retriever supply a relevance ranking (slugs first-to-last);
     slugs absent from ``index`` are skipped. When ``None`` the files render in
     slug order — the default the seam preserves byte-for-byte.
+
+    ``total_chars`` bounds the whole block: headers count against the budget,
+    the excerpt that would overflow it is trimmed to the remainder (with a
+    trim marker), and iteration stops once the budget is spent.
     """
     parts: list[str] = []
     budget = total_chars
     slugs = order if order is not None else sorted(index)
     for slug in slugs:
+        if budget <= 0:
+            break
         p = index.get(slug)
-        if p is None or p == exclude or budget <= 0:
+        if p is None or p == exclude:
             continue
         try:
             meta, body, _ = fm.load(p)
         except Exception:
             continue
-        excerpt = body.strip()[:excerpt_chars]
-        budget -= len(excerpt)
-        parts += [
+        header = [
             f"### {slug}",
             f"description: {meta.get('description', '')}",
             f"tags: {', '.join(meta.get('tags', []))}",
-            excerpt,
-            "",
         ]
+        header_len = sum(len(h) + 1 for h in header)  # +1 per joining newline
+        if header_len > budget:
+            break
+        excerpt = body.strip()[:excerpt_chars]
+        remaining = budget - header_len
+        if len(excerpt) > remaining:
+            excerpt = excerpt[:remaining].rstrip() + " […]"
+        budget -= header_len + len(excerpt)
+        parts += [*header, excerpt, ""]
     return "\n".join(parts) if parts else "(empty)"

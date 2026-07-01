@@ -120,7 +120,8 @@ def _apply_links(
     Returns relative paths of files actually modified."""
     modified: list[str] = []
     for add in changeset.related_additions:
-        path = index.get(add.file)
+        # index keys are lowercased slugs (context.slug_index)
+        path = index.get(add.file.lower())
         if path is None:
             console.print(f"  [yellow]drop[/yellow] unknown file slug: {add.file}")
             continue
@@ -133,9 +134,10 @@ def _apply_links(
         existing = {link.lower() for link in extract_wikilinks(body)}
         new_links: list[str] = []
         for link in add.add_links:
-            if link in index and link != add.file and link.lower() not in existing:
+            key = link.lower()
+            if key in index and key != add.file.lower() and key not in existing:
                 new_links.append(link)
-                existing.add(link.lower())  # dedup repeats within one add_links list
+                existing.add(key)  # dedup repeats within one add_links list
         dropped = [link for link in add.add_links if link not in new_links]
         if dropped:
             console.print(f"  [dim]drop (unknown/self/duplicate): {', '.join(dropped)}[/dim]")
@@ -145,7 +147,13 @@ def _apply_links(
         current = get_marker_block(body, "related")
         lines: list[str] = [ln for ln in (current or "").splitlines() if ln.strip()]
         lines += [f"- [[{link}]]" for link in new_links]
-        new_body = set_marker_block(body, "related", lines, heading="Related")
+        try:
+            new_body = set_marker_block(body, "related", lines, heading="Related")
+        except ValueError as e:
+            # half-open marker block (manual edit damage): report and skip the
+            # file rather than nest/duplicate markers (SPEC §8)
+            console.print(f"  [red]skip (corrupt marker block)[/red] {add.file}: {e}")
+            continue
         fm.write(path, meta, new_body)
 
         rel = str(path.relative_to(paths.DATA_ROOT))

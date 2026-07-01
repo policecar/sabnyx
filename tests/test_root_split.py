@@ -36,7 +36,7 @@ def _good_meta(
     description: str = "a long enough description that satisfies the 30 char minimum",
     source_agent: str = "sabnyx-ingest",
 ) -> dict:
-    return {
+    meta = {
         "type": intake_type,
         "description": description,
         "source": "web",
@@ -44,6 +44,9 @@ def _good_meta(
         "created": datetime.now(UTC).isoformat(),
         "source_agent": source_agent,
     }
+    if intake_type in ("bookmark", "paper"):
+        meta["source_url"] = "https://example.com/source"  # schema-required (Gate 2)
+    return meta
 
 
 def _make_intake(

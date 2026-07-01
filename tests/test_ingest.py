@@ -68,14 +68,27 @@ def test_classify_depth():
     assert sources.classify_depth("abstract", source_url="https://arxiv.org/abs/1") == "deep"
 
 
-def test_capture_is_write_once(tmp_vault):
+def test_capture_is_write_once_for_identical_content(tmp_vault):
     p = sources.capture(text="hello world", slug="My Source", actor="pytest")
     assert p.name == "my-source.md"
     assert p.read_text() == "hello world"
-    with pytest.raises(FileExistsError):
-        sources.capture(text="again", slug="My Source", actor="pytest")
+    with pytest.raises(FileExistsError, match="already captured"):
+        sources.capture(text="hello world", slug="My Source", actor="pytest")
     kinds = [e.kind for e in ledger.replay()]
     assert kinds == ["source.captured"]
+
+
+def test_capture_slug_collision_with_different_content_disambiguates(tmp_vault):
+    # Two different messages sharing a title-derived slug (first-8-words titles
+    # collide easily) must both land — the second under a content-hash suffix.
+    p1 = sources.capture(text="the same opening phrase then A", slug="The Same", actor="pytest")
+    p2 = sources.capture(text="the same opening phrase then B", slug="The Same", actor="pytest")
+    assert p1 != p2
+    assert p2.name.startswith("the-same-")
+    assert p2.read_text() == "the same opening phrase then B"
+    # write-once still holds per content: recapturing B is refused
+    with pytest.raises(FileExistsError, match="already captured"):
+        sources.capture(text="the same opening phrase then B", slug="The Same", actor="pytest")
 
 
 def test_capture_records_url_header(tmp_vault):
@@ -170,7 +183,9 @@ def test_ingest_dry_run_writes_nothing(tmp_vault, monkeypatch):
     assert not list(tmp_vault["INTAKE"].glob("*.md"))
 
 
-def test_ingest_declined_keeps_raw_only(tmp_vault, monkeypatch, tmp_path):
+def test_ingest_declined_rolls_back_capture(tmp_vault, monkeypatch, tmp_path):
+    # A declined run must not leave the write-once artifact behind — that would
+    # dead-end every later re-ingest of the same content (M11 consistency).
     src = tmp_path / "declined-input.txt"
     src.write_text("source text\n")
     result, _calls = _run_ingest(
@@ -180,8 +195,101 @@ def test_ingest_declined_keeps_raw_only(tmp_vault, monkeypatch, tmp_path):
         input_text="n\n",  # answer 'n' at the approval prompt
     )
     assert result.exit_code == 0, result.output
-    assert (tmp_vault["SOURCES"] / "declined.md").exists()
+    assert not (tmp_vault["SOURCES"] / "declined.md").exists()
     assert not list(tmp_vault["INTAKE"].glob("*.md"))
+    kinds = [e.kind for e in ledger.replay()]
+    assert "ingest.failed" in kinds  # the rollback is ledgered
+    # and the same content can be re-ingested afterwards
+    result2, _ = _run_ingest(tmp_vault, monkeypatch, [str(src), "--title", "Declined", "--yes"])
+    assert result2.exit_code == 0, result2.output
+    assert (tmp_vault["SOURCES"] / "declined.md").exists()
+
+
+def test_ingest_extraction_failure_rolls_back_capture(tmp_vault, monkeypatch):
+    """LLM failure after a fresh capture must not poison the slug: the artifact
+    is removed, ingest.failed is ledgered, and a retry can succeed."""
+    from rich.console import Console
+
+    from sabnyx import services
+
+    def boom(**kwargs):
+        raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(services.llm, "parse_structured", boom)
+    with pytest.raises(RuntimeError, match="provider exploded"):
+        services.ingest_text(
+            text="some source text",
+            title="Poisoned Slug",
+            source_kind="manual",
+            source_url=None,
+            console=Console(),
+        )
+    assert not (tmp_vault["SOURCES"] / "poisoned-slug.md").exists()
+    events = list(ledger.replay())
+    kinds = [e.kind for e in events]
+    assert kinds == ["source.captured", "ingest.failed"]
+    failed = events[-1]
+    assert "provider exploded" in failed.payload["reason"]
+    assert failed.payload["capture_rolled_back"] is True
+
+    # retry with a working model succeeds — the slug is not dead
+    monkeypatch.setattr(services.llm, "parse_structured", lambda **kw: CANNED)
+    summary, written = services.ingest_text(
+        text="some source text",
+        title="Poisoned Slug",
+        source_kind="manual",
+        source_url=None,
+        console=Console(),
+    )
+    assert (tmp_vault["SOURCES"] / "poisoned-slug.md").exists()
+    assert written
+
+
+def test_ingest_cli_extraction_failure_rolls_back(tmp_vault, monkeypatch):
+    from sabnyx.commands import ingest as ingest_mod
+
+    def boom(**kwargs):
+        raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(ingest_mod.llm, "parse_structured", boom)
+    result = CliRunner().invoke(
+        ingest_mod.ingest_cmd,
+        ["--stdin", "--title", "Doomed"],
+        input="doomed source text\n",
+    )
+    assert result.exit_code == 1, result.output
+    assert "rolled back" in result.output
+    assert not (tmp_vault["SOURCES"] / "doomed.md").exists()
+    assert "ingest.failed" in [e.kind for e in ledger.replay()]
+
+
+def test_ingest_model_reads_exactly_the_captured_text(tmp_vault, monkeypatch):
+    """Gate 3: the immutable artifact must match the extraction input — an
+    oversized source is truncated once, and the model sees that truncation."""
+    from rich.console import Console
+
+    from sabnyx import services
+
+    monkeypatch.setattr(sources, "MAX_SOURCE_CHARS", 50)
+    seen: list[str] = []
+
+    def fake_parse_structured(**kwargs):
+        seen.append(kwargs["user"])
+        return CANNED
+
+    monkeypatch.setattr(services.llm, "parse_structured", fake_parse_structured)
+    oversized = "a" * 40 + "b" * 100  # truncates to 40 a's + 10 b's
+    services.ingest_text(
+        text=oversized,
+        title="Big Source",
+        source_kind="manual",
+        source_url=None,
+        console=Console(),
+    )
+    captured = (tmp_vault["SOURCES"] / "big-source.md").read_text()
+    assert captured == oversized[:50]
+    assert captured in seen[0]  # model got exactly the truncated text...
+    assert "b" * 11 not in seen[0]  # ...never the untruncated overflow
 
 
 def test_ingest_requires_exactly_one_input(tmp_vault, monkeypatch):
@@ -190,6 +298,38 @@ def test_ingest_requires_exactly_one_input(tmp_vault, monkeypatch):
     runner = CliRunner()
     result = runner.invoke(ingest_mod.ingest_cmd, [])
     assert result.exit_code == 2
+
+
+def test_ingest_downgrades_urlless_bookmark_to_note(tmp_vault, monkeypatch):
+    """The model may classify pasted text as `bookmark` with no URL in sight;
+    the writer downgrades it to `note` instead of writing an invalid file."""
+    from sabnyx.commands import ingest as ingest_mod
+
+    urlless_bookmark = IngestChangeset(
+        summary="pasted text the model took for a bookmark",
+        intake_files=[
+            ProposedIntake(
+                type="bookmark",
+                title="Looks Like A Bookmark",
+                description="a pasted snippet the model classified as a bookmark, no URL known",
+                tags=[],
+                body="No URL anywhere in this text.",
+            )
+        ],
+    )
+    monkeypatch.setattr(ingest_mod.llm, "parse_structured", lambda **kw: urlless_bookmark)
+    result = CliRunner().invoke(
+        ingest_mod.ingest_cmd,
+        ["--stdin", "--title", "Pasted", "--yes"],
+        input="pasted text with no url\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "downgrade" in result.output
+    intake = tmp_vault["INTAKE"] / "looks-like-a-bookmark.md"
+    assert intake.exists()
+    text = intake.read_text()
+    assert "type: note" in text
+    assert "type: bookmark" not in text
 
 
 # -- provenance trust: remote content must not be auto-promotable ------------------

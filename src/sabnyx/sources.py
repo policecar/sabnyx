@@ -9,6 +9,7 @@ HTML-comment syntax:  <!-- source-id:sabnyx-sources:<filename> -->
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import socket
 import urllib.error
@@ -50,10 +51,15 @@ def classify_depth(text: str, source_url: str | None = None) -> ExtractionDepth:
     return "deep"
 
 
+# Carrier-grade NAT (RFC 6598). Not flagged by ipaddress.is_private, but it is
+# never a legitimate public destination — treat it like RFC-1918.
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+
+
 def _is_blocked_ip(ip: str) -> bool:
     """True for any address we refuse to connect to: loopback, RFC-1918
-    private, link-local (incl. cloud metadata 169.254.169.254), reserved,
-    multicast, or unspecified."""
+    private, link-local (incl. cloud metadata 169.254.169.254), CGNAT,
+    reserved, multicast, or unspecified."""
     addr = ipaddress.ip_address(ip)
     return (
         addr.is_private
@@ -62,6 +68,7 @@ def _is_blocked_ip(ip: str) -> bool:
         or addr.is_reserved
         or addr.is_multicast
         or addr.is_unspecified
+        or (addr.version == 4 and addr in _CGNAT_NET)
     )
 
 
@@ -134,20 +141,31 @@ def capture(
 ) -> Path:
     """Write one immutable raw artifact to vault/sources/ and ledger it.
 
-    Refuses to overwrite: sources are write-once. Returns the path.
+    Write-once per *content*: recapturing identical content raises
+    FileExistsError. A slug collision with DIFFERENT content (title-derived
+    slugs collide easily — first-8-words titles, non-Latin titles) gets a
+    short content-hash suffix instead of a refusal, so one earlier capture
+    can never dead-end a genuinely new source. Returns the path.
     """
     ensure_tree()
     if len(text) > MAX_SOURCE_CHARS:
         text = text[:MAX_SOURCE_CHARS]
 
-    path = SOURCES / f"{slugify(slug)}{suffix}"
-    if path.exists():
-        raise FileExistsError(f"source already captured: {path.relative_to(DATA_ROOT)}")
-
     header = ""
     if source_url:
         header = f"<!-- source-url: {source_url} -->\n<!-- captured-by: {actor} -->\n\n"
-    path.write_text(header + text, encoding="utf-8")
+    content = header + text
+
+    path = SOURCES / f"{slugify(slug)}{suffix}"
+    if path.exists():
+        if path.read_text(encoding="utf-8") == content:
+            raise FileExistsError(f"source already captured: {path.relative_to(DATA_ROOT)}")
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+        path = SOURCES / f"{slugify(slug)}-{digest}{suffix}"
+        if path.exists():
+            # the disambiguated name exists too -> this exact content is captured
+            raise FileExistsError(f"source already captured: {path.relative_to(DATA_ROOT)}")
+    path.write_text(content, encoding="utf-8")
 
     ledger.append_event(
         kind="source.captured",
