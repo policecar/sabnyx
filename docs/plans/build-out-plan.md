@@ -142,9 +142,9 @@ direction only: vault → halbor.
 - **Phase 5 v1 — halbor persona/query interface**: `halbor ask` — grounded,
   cited answers over the *projected* face (`build/site` + `llms.txt`),
   reusing the Phase 4 retrieval pattern; grep default, opt-in vector. Still
-  one direction: vault → face → reader. See `ARCHITECTURE.md` / `TESTING.md`.
+  one direction: vault → face → reader. See `../architecture.md` / `../testing.md`.
 - **Review + hardening pass (2026-07-01)**: full review against the jibot
-  spec (`docs/codebase-spec-review.md`), then every confirmed finding fixed —
+  spec (`../reviews/codebase-spec-review.md`), then every confirmed finding fixed —
   including the critical tend-overwrites-atlas bug, domains/-tolerant lint
   and health, alias-aware link resolution, ingest capture rollback, the
   cross-language DEL hash bug, atomic appends, exe-relative opsctl root
@@ -183,6 +183,6 @@ keyword-ranked rather than query-blind:
   `cd opsctl && cargo test` (50), plus ruff/ty/clippy/fmt in CI.
 - Config lives in the gitignored `.env` at the repo root (the old `moonshot`
   key-file convention was removed): `SABNYX_LLM_PROVIDER=moonshot` +
-  `MOONSHOT_API_KEY=...`, or an Anthropic/OpenRouter key. See `DEPLOYMENT.md`
+  `MOONSHOT_API_KEY=...`, or an Anthropic/OpenRouter key. See `../deployment.md`
   for the two-repo (code/DATA) production layout.
 - halbor is a sibling repo (`../halbor`), v1 shipped (`project` + `ask`).

@@ -13,7 +13,7 @@ the char budget this only reorders — full recall is preserved. Once the
 vault outgrows the budget, the ranking decides who survives truncation, so
 relevance-prioritised degradation is graceful and the moment grep starts
 dropping relevant pages becomes observable — the concrete trigger to add a
-vector retriever (see ``docs/build-out-plan.md``). No query (e.g. the
+vector retriever (see ``docs/plans/build-out-plan.md``). No query (e.g. the
 contradiction ``scan``) → today's byte-for-byte full dump.
 
 Switch implementations with ``SABNYX_RETRIEVER`` (default ``grep``).

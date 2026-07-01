@@ -2,7 +2,7 @@
 
 End-to-end test of `sabnyx serve-http --static creations` + the Creation, staged
 so each step de-risks the next. Companion to this directory's `README.md`
-(contract + setup) and the repo's `DEPLOYMENT.md` (production systemd/nginx).
+(contract + setup) and the repo's `docs/deployment.md` (production systemd/nginx).
 
 ## Heads-up
 
@@ -84,7 +84,7 @@ One origin serves both static + API; `BASE_URL=""` already points there.
 
 ### Path B — production on the server
 
-See `DEPLOYMENT.md` → **"Rabbit R1 ingress (optional)"**: the
+See `docs/deployment.md` → **"Rabbit R1 ingress (optional)"**: the
 `sabnyx-serve-http.service` unit (`serve-http --static creations`), an nginx TLS
 terminator with `limit_req`, and `SABNYX_R1_KEYS` in `~/sabnyx/.env`.
 
@@ -134,7 +134,7 @@ grep -o '"kind":"[^"]*"' "$SABNYX_DATA_DIR"/ops/events.jsonl | sort | uniq -c
 | PTT does nothing, typing works | `CreationVoiceHandler` absent/renamed on your firmware — the one unverified API |
 | `GET /` is 404 | launched without `--static`, or the static path is wrong relative to cwd |
 | R1 won't install / rejects the scan | QR must encode the JSON payload (`{title,url,description,…}`), not a bare URL — use the fixed `install.html` or the SDK `qr` tool |
-| Responses lag many seconds | LLM provider latency (Moonshot measured ~35s round-trip) — run the ingress with `SABNYX_LLM_PROVIDER=anthropic` so the `fast` role uses Haiku; see DEPLOYMENT.md → "Rabbit R1 ingress" |
+| Responses lag many seconds | LLM provider latency (Moonshot measured ~35s round-trip) — run the ingress with `SABNYX_LLM_PROVIDER=anthropic` so the `fast` role uses Haiku; see docs/deployment.md → "Rabbit R1 ingress" |
 
 Smartest order: **Stage 1 curl → Stage 2A tunnel → desktop-browser the tunnel URL
 → then the device.**
