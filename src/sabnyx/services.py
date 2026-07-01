@@ -79,13 +79,14 @@ def promote_file(
     Contains the core logic extracted from commands/promote.py.
     Callers are responsible for the guards:
       - source must be under INTAKE
-      - dest must not exist
       - kind must be "intake"
     This function writes, validates, rolls back on failure, unlinks the
     source, appends the knowledge log, and emits ledger events.
 
     Returns the destination Path.
-    Raises RuntimeError on validation failure (destination is rolled back).
+    Raises RuntimeError when the destination already exists (never
+    overwrites the atlas tier) or on validation failure (the file this
+    call wrote — and only that file — is rolled back).
     """
     from . import fm
     from .paths import ATLAS_TYPE_DIRS, DATA_ROOT, KNOWLEDGE_LOG
@@ -94,6 +95,13 @@ def promote_file(
 
     dest_dir = ATLAS_TYPE_DIRS[atlas_type]
     dest = dest_dir / source.name
+    # Refuse to overwrite: a duplicate slug reaching this point (e.g. an
+    # LLM-triaged gate-5 deferral) must never replace a durable atlas file,
+    # and the rollback below may only unlink what THIS call created.
+    if dest.exists():
+        raise RuntimeError(
+            f"destination already exists: {dest.relative_to(DATA_ROOT)} — refusing to overwrite"
+        )
     today = date_cls.today().isoformat()
 
     new_meta = {
@@ -206,8 +214,18 @@ def reconcile_atlas() -> Reconciliation:
 
     Read-only: replays the ledger and walks the filesystem, mutating nothing.
     Both sides use DATA_ROOT-relative paths so the comparison is apples-to-apples.
+
+    An `atlas.removed` event (subject = the DATA_ROOT-relative file path) is
+    the compensating record for a legitimate deletion (SPEC §10) — it takes
+    the file back out of the expected set, in ledger order, so a deliberate
+    removal doesn't stay red forever.
     """
-    promoted: set[str] = {e.subject for e in ledger.replay() if e.kind == "atlas.promoted"}
+    promoted: set[str] = set()
+    for e in ledger.replay():
+        if e.kind == "atlas.promoted":
+            promoted.add(e.subject)
+        elif e.kind == "atlas.removed":
+            promoted.discard(e.subject)
     actual: set[str] = {
         str(p.relative_to(paths.DATA_ROOT)) for p in paths.ATLAS.rglob("*.md") if p.is_file()
     }

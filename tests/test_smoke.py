@@ -104,3 +104,33 @@ def test_classify():
     assert fm.classify(ROOT / "vault" / "intake" / "x.md") == "intake"
     assert fm.classify(ROOT / "vault" / "atlas" / "concepts" / "x.md") == "atlas"
     assert fm.classify(ROOT / "vault" / "intake" / ".observations" / "x.md") == "observation"
+
+
+def test_classify_is_vault_relative(tmp_path, monkeypatch):
+    """A data root containing an 'intake' path component must not misclassify
+    the whole vault — classification keys off the VAULT-relative path."""
+    from sabnyx import paths as paths_mod
+
+    vault = tmp_path / "intake" / "vault"
+    monkeypatch.setattr(paths_mod, "VAULT", vault)
+    assert fm.classify(vault / "atlas" / "concepts" / "x.md") == "atlas"
+    assert fm.classify(vault / "intake" / "x.md") == "intake"
+
+
+def test_classify_domains_raises_value_error(tmp_vault):
+    p = tmp_vault["VAULT"] / "domains" / "chanoyu" / "wabi.md"
+    with pytest.raises(ValueError, match="cannot classify"):
+        fm.classify(p)
+
+
+def test_load_wraps_malformed_yaml_as_frontmatter_error(tmp_vault):
+    """Malformed YAML must surface as the recoverable FrontmatterError, not a
+    raw yaml parser exception (which would abort a whole tend run)."""
+    p = tmp_vault["INTAKE"] / "bad-yaml.md"
+    p.write_text("---\ntype: note\ntags: [unclosed\n---\nbody\n", encoding="utf-8")
+    with pytest.raises(fm.FrontmatterError, match="malformed YAML"):
+        fm.load(p)
+    # a literal tab in the YAML block is the other classic
+    p.write_text("---\ntype: note\n\tdescription: x\n---\nbody\n", encoding="utf-8")
+    with pytest.raises(fm.FrontmatterError, match="malformed YAML"):
+        fm.load(p)
