@@ -1,7 +1,7 @@
 # How sabnyx + halbor work (ELI5)
 
 A plain-English tour of the whole system. For the formal contract see `SPEC.md`;
-for commands to run see `TESTING.md` and `README.md`. This doc is the gentle
+for commands to run see `testing.md` and the root `README.md`. This doc is the gentle
 version.
 
 ---
@@ -223,8 +223,8 @@ you capture / ingest  ──▶  intake/  ──(tend: gates + AI)──▶  atl
 | Publish the face | `halbor project --vault ../sabnyx/vault --out build/site` |
 | Ask the face | `halbor ask "..."` |
 
-Full command list + provider setup: `README.md`. Step-by-step testing recipe:
-`TESTING.md`.
+Full command list + provider setup: the root `README.md`. Step-by-step
+testing recipe: `testing.md`.
 
 ---
 

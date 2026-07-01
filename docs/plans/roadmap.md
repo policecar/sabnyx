@@ -1,7 +1,7 @@
 # Roadmap
 
 > **Historical** — the original stage 0–3 arc (2026-04). Current state
-> and next steps live in `docs/build-out-plan.md`; items below marked
+> and next steps live in `build-out-plan.md` (this directory); items below marked
 > *shipped* have since been built.
 
 Stage 0 through stage 3, with ZK provenance and x402 slotted in.
@@ -57,7 +57,7 @@ stage.
   Major moves, each independently opt-in:
 
   - Agent daemon (*shipped differently*: `opsctl supervise` + a
-    systemd timer run `tend` on schedule — see DEPLOYMENT.md).
+    systemd timer run `tend` on schedule — see docs/deployment.md).
 
   - Telegram adapter (*shipped* — ADR 0007, `sabnyx serve`): the
     second NormalizedEnvelope source. New intake by message:

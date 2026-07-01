@@ -1,7 +1,7 @@
 # Deploying sabnyx (always-on server + Telegram)
 
 How to run sabnyx as a 24/7 service that ingests + answers over Telegram and tidies
-the vault on a timer. Companion to `ARCHITECTURE.md` (what the system is) and
+the vault on a timer. Companion to `architecture.md` (what the system is) and
 `README.md` (the CLI). Secrets never live in this repo — only in `~/sabnyx/.env`
 on the server (chmod 600).
 

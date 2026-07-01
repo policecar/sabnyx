@@ -2,7 +2,7 @@
 
 Date: 2026-06-12
 Status: historical — the plan below shipped as milestone 1
-(see docs/build-out-plan.md); kept for the reasoning
+(see docs/plans/build-out-plan.md); kept for the reasoning
 
 A review of the current sabnyx codebase against the two source documents,
 and a plan for building it out into a working jibot-like system.

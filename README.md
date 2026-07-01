@@ -14,19 +14,24 @@ contract, an append-only event ledger, and a small Rust control plane
 - **Single-user, no legacy bits.** The multi-user / at-scale half of jibot
   (people-CRM-scale entity resolution, enterprise RAG, container fleets,
   payments) is deliberately out of scope. The read-only public *face* is a
-  separate repo, **halbor** (see the roadmap).
+  separate sibling repo, **halbor**.
 - **Model-agnostic.** Runs on Kimi/Moonshot, Anthropic, OpenRouter, or any
   OpenAI-compatible endpoint — one config switch.
 
-## Read in this order
+## Where things are documented
+
+The root holds **the contract** — the files every agent loads before touching
+the vault (and `opsctl` uses `SPEC.md` as its repo-root marker):
 
 | File | What |
 |------|------|
 | `SPEC.md` | the contract: tiers, types, frontmatter, boundaries, gates |
 | `ROUTING.md` | the decision tree: where does a given piece of content go |
 | `AGENTS.md` | operator instructions for humans and LLMs on this vault |
-| `docs/build-out-plan.md` | the active milestone: the self-maintaining brain |
-| `docs/roadmap.md` | the original stage 0–3 arc |
+
+Everything else is in `docs/` — guides (`architecture.md`, `testing.md`,
+`deployment.md`), ADRs (`decisions/`), plans, dated reviews, and recon notes.
+`docs/README.md` is the index.
 
 ## Setup
 
@@ -195,12 +200,12 @@ src/sabnyx/            the Python package
 opsctl/                the Rust control plane (ledger, query, project,
                        supervise, verify)
 recipes/               cron/launchd-ready scripts (heartbeat.sh)
-docs/                  decisions/ (ADRs), recon/, roadmap.md, build-out-plan.md
+docs/                  guides, decisions/ (ADRs), plans/, reviews/, recon/
 ```
 
 `vault/` and the two `ops/` data files are gitignored here: in production they
 live in a separate private DATA repo pointed at by `SABNYX_DATA_DIR` (see
-`DEPLOYMENT.md`); without it they resolve under this repo (single-repo dev
+`docs/deployment.md`); without it they resolve under this repo (single-repo dev
 mode).
 
 ## Status
@@ -210,7 +215,7 @@ Milestone 1 — *the self-maintaining brain* — complete: the LLM loop
 layer (`entities`), the retrieval seam (grep default, opt-in vector), and
 **halbor** (the read-only face, a separate sibling repo). A full review
 against the jibot spec plus a hardening pass landed 2026-07-01 — see
-`docs/codebase-spec-review.md`. What's next: `docs/build-out-plan.md`.
+`docs/reviews/codebase-spec-review.md`. What's next: `docs/plans/build-out-plan.md`.
 
 ## Credits
 
