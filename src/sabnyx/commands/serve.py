@@ -38,7 +38,6 @@ _URL_RE = re.compile(r"^https?://\S+$")
 # Matches /start or /help with an optional @botname suffix and/or a trailing argument.
 # Examples: /start, /help, /start@your-bot, /start somedeeplink, /help@your-bot
 _GREET_RE = re.compile(r"^/(start|help)(@\S+)?(\s.*)?$", re.IGNORECASE)
-_QUIET = Console(file=io.StringIO())  # writers want a console; swallow their output
 
 _GREETING = (
     "👋 sabnyx — your vault over Telegram.\n"
@@ -47,6 +46,15 @@ _GREETING = (
     "• /status — vault health\n"
     "(/start and /help just show this.)"
 )
+
+
+def _quiet() -> Console:
+    """A throwaway console whose output is discarded.
+
+    Built per message, not shared at module scope: the writers want a console
+    but we don't want their output. A fresh StringIO each call avoids unbounded
+    growth over the server's lifetime (mirrors serve_http's _quiet)."""
+    return Console(file=io.StringIO())
 
 
 def classify(text: str) -> tuple[str, str]:
@@ -100,7 +108,7 @@ def handle(env: NormalizedEnvelope) -> str:
             reply += "\n\ncited: " + ", ".join(f"[[{s}]]" for s in result.answer.cited)
         if result.answer.capture is not None:
             rel = services.capture_answer(
-                result.answer.capture, question=arg, console=_QUIET, actor=ACTOR
+                result.answer.capture, question=arg, console=_quiet(), actor=ACTOR
             )
             if rel:
                 reply += f"\n\n(captured to {rel})"
@@ -110,8 +118,17 @@ def handle(env: NormalizedEnvelope) -> str:
     if action == "ingest_url":
         try:
             body = telegram_fetch(arg)
-        except Exception as e:  # noqa: BLE001 — report fetch failure back to the user
-            return f"couldn't fetch that URL: {e}"
+        except Exception as e:  # noqa: BLE001 — generic reply; detail to the ledger only
+            # Exception text can carry paths/provider detail — never echo it to
+            # the chat (mirrors serve_http's generic-500 hardening).
+            ledger.append_event(
+                plane="event",
+                kind="wire.errored",
+                actor=ACTOR,
+                subject=f"telegram:{env.source_id}",
+                payload={"error": str(e), "action": "ingest_url"},
+            )
+            return "couldn't fetch that URL."
         title, source_kind, source_url = arg, "web", arg
     else:
         if not arg:
@@ -135,7 +152,7 @@ def _ingest(text: str, *, title: str, source_kind: str, source_url: str | None) 
             title=title,
             source_kind=source_kind,
             source_url=source_url,
-            console=_QUIET,
+            console=_quiet(),
             actor=ACTOR,
         )
     except FileExistsError:
@@ -160,7 +177,10 @@ def _dispatch_batch(updates: list[dict], trusted: set[str]) -> int:
         if env is None:
             continue
         chat_id = env.payload.get("chat_id")
-        if trusted and env.actor_raw not in trusted:
+        # Fail closed: an empty allowlist rejects everyone (serve_cmd refuses
+        # to start open, but the dispatch primitive must not trust-by-default
+        # either — same posture as r1.check_bearer).
+        if not trusted or env.actor_raw not in trusted:
             ledger.append_event(
                 plane="event",
                 kind="wire.rejected",
@@ -172,7 +192,9 @@ def _dispatch_batch(updates: list[dict], trusted: set[str]) -> int:
         try:
             reply = handle(env)
         except Exception as e:  # noqa: BLE001 — never let one message kill the loop
-            reply = f"sorry, that failed: {e}"
+            # Generic reply only — exception text (paths, provider errors) goes
+            # to the ledger, never to the chat (mirrors serve_http's 500 path).
+            reply = "sorry, that failed. (logged)"
             ledger.append_event(
                 plane="event",
                 kind="wire.errored",
@@ -181,7 +203,19 @@ def _dispatch_batch(updates: list[dict], trusted: set[str]) -> int:
                 payload={"error": str(e)},
             )
         if chat_id is not None:
-            telegram.send_message(chat_id, reply)
+            try:
+                telegram.send_message(chat_id, reply)
+            except Exception as e:  # noqa: BLE001 — a failed send must not stall the offset
+                # If this raised out of the batch, next_offset would never be
+                # returned and the whole batch (LLM calls included) would be
+                # re-fetched and re-run on the next poll. Ledger and move on.
+                ledger.append_event(
+                    plane="event",
+                    kind="wire.errored",
+                    actor=ACTOR,
+                    subject=f"telegram:{env.source_id}",
+                    payload={"error": str(e), "action": "send"},
+                )
     return next_offset
 
 

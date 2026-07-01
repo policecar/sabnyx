@@ -29,6 +29,9 @@ def test_check_bearer():
     assert r1.check_bearer("", trusted) is False
     assert r1.check_bearer(None, trusted) is False
     assert r1.check_bearer("Bearer key-aaa", set()) is False  # empty allowlist denies
+    # non-ASCII token: clean deny, not hmac.compare_digest's TypeError (pre-auth path)
+    assert r1.check_bearer("Bearer café", trusted) is False
+    assert r1.check_bearer("Bearer café", {"café"}) is True  # non-ASCII keys still match
 
 
 def test_keys_parsing(monkeypatch):
@@ -249,6 +252,16 @@ def test_resolve_static_rejects_missing_and_traversal(tmp_path):
     assert serve_http.resolve_static("/js", root) is None  # a directory, not a file
 
 
+def test_resolve_static_rejects_nul_byte(tmp_path):
+    """A raw NUL byte in the path must be None, not Path.resolve()'s
+    ValueError('embedded null byte') — this runs unauthenticated."""
+    from sabnyx.commands import serve_http
+
+    root = _make_creations(tmp_path / "creations")
+    assert serve_http.resolve_static("/\x00evil", root) is None
+    assert serve_http.resolve_static("/js/\x00api.js", root) is None
+
+
 def test_static_public_while_api_gated_over_socket(tmp_vault):
     """End to end over a real socket: static is served unauthenticated, the API
     still requires the bearer key, and traversal can't escape the root."""
@@ -349,6 +362,48 @@ def test_rejects_transfer_encoding_over_socket(tmp_vault):
 
         assert b"400" in status_line("GET")
         assert b"400" in status_line("POST")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_hostile_bytes_get_clean_errors_over_socket(tmp_vault):
+    """Unauthenticated hostile bytes must yield clean HTTP errors, never a
+    handler traceback + connection reset: a non-ASCII bearer token used to hit
+    hmac.compare_digest's TypeError inside route(), and a raw NUL byte in a
+    static path used to hit Path.resolve()'s ValueError — both pre-auth."""
+    import socket
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from sabnyx.commands import serve_http
+
+    root = _make_creations(tmp_vault["DATA_ROOT"] / "creations")
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), serve_http._make_handler({"k1"}, root.resolve()))
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+
+        def status_line(req: bytes) -> bytes:
+            c = socket.create_connection(("127.0.0.1", port), timeout=5)
+            c.sendall(req)
+            first = c.recv(256).split(b"\r\n", 1)[0]  # b"" if the handler crashed
+            c.close()
+            return first
+
+        # non-ASCII bearer token (latin-1 é on the wire) -> clean 401, GET and POST
+        assert b"401" in status_line(
+            b"GET /status HTTP/1.1\r\nHost: x\r\n"
+            b"Authorization: Bearer caf\xe9\r\nConnection: close\r\n\r\n"
+        )
+        assert b"401" in status_line(
+            b"POST /ingest HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer caf\xe9\r\n"
+            b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        # raw NUL byte in a static path -> clean 404, not an embedded-null crash
+        assert b"404" in status_line(
+            b"GET /\x00evil HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+        )
     finally:
         srv.shutdown()
         srv.server_close()

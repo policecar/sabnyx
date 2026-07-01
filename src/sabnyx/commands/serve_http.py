@@ -160,11 +160,16 @@ def resolve_static(url_path: str, root: Path) -> Path | None:
     if rel.endswith("/"):
         rel += "index.html"
     root = root.resolve()
-    candidate = (root / rel).resolve()
     try:
+        # .resolve() itself can raise on hostile paths (ValueError for an
+        # embedded NUL byte, OSError for e.g. an over-long name) — this runs
+        # unauthenticated, so treat all of those as "no such file".
+        candidate = (root / rel).resolve()
         candidate.relative_to(root)
     except ValueError:
-        return None  # escaped the static root
+        return None  # escaped the static root, or unresolvable (NUL byte)
+    except OSError:
+        return None
     return candidate if candidate.is_file() else None
 
 
