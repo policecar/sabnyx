@@ -605,3 +605,81 @@ Worth stating plainly, because the fix list above shouldn't obscure it:
    clustered.
 10. Doc sweep: README Status, AGENTS.md dangling references and r1 row,
     roadmap ADR numbers, TESTING.md counts.
+
+---
+
+## 10. Resolution log (2026-07-01)
+
+Every finding was re-verified under scrutiny (reproduced live or traced
+end-to-end) before being fixed; findings that did not survive are marked
+refuted. Fixes landed in four commits on this branch:
+
+- `cd7d5eb` — channels (serve, serve-http, adapters)
+- `99f6898` — opsctl (Rust control plane)
+- `c04fac4` — pipeline/heartbeat (fm, tend, lint, health, entities, reweave, scan, reconcile, promote)
+- `52e59b2` — core library (ledger, llm, schemas, sources, context, util, writers, ingest, new, ask)
+
+Gates after the last commit: `pytest` 328 passed (was 258), `cargo test`
+50 passed (was 23), `ruff`/`ty`/`clippy`/`fmt` clean.
+
+### Critical and major findings
+
+| Finding | Verdict | Fixed in |
+|---|---|---|
+| C1 — heartbeat LLM-triage overwrites/deletes atlas files | CONFIRMED (reproduced) — fixed: `promote_file` refuses an existing destination; tend pass 2 skips duplicate slugs | `c04fac4` |
+| M1 — `domains/` files crash health/tend, hard-fail lint | CONFIRMED (reproduced) — fixed: VAULT-relative `classify`; unclassifiable files skipped non-fatally, still resolve as link targets | `c04fac4` |
+| M2 — `lint --staged` checks the code repo, not the data repo | CONFIRMED — fixed: `DATA_ROOT` for both cwd and join; first dedicated lint tests added | `c04fac4` |
+| M3 — one malformed-YAML intake file aborts `tend` | CONFIRMED (reproduced) — fixed: YAML errors wrapped as `FrontmatterError`; per-file handling in both tend passes | `c04fac4` |
+| M4 — non-ASCII bearer token crashes pre-auth; NUL byte crashes static path | CONFIRMED (socket-level repro) — fixed: bytes compare keeping the constant-time fold; `ValueError`/`OSError` caught in `resolve_static` | `cd7d5eb` |
+| M5 — Telegram bot token leaks into logs via httpx errors | CONFIRMED (reproduced) — fixed: errors re-raised redacted (`status + method` only, `from None`) | `cd7d5eb` |
+| M6 — Rust ledger append is two syscalls, not atomic | CONFIRMED (write_fmt trace) — fixed: single `write_all` of line+newline | `99f6898` |
+| M7 — DEL (U+007F) breaks the cross-language hash | CONFIRMED (executed both sides) — fixed: passthrough `0x20..=0x7E`; DEL added to hardcoded and shell-out parity vectors | `99f6898` |
+| M8 — root/.env resolution divergence (duplicate keys; cwd discovery panics under cron) | CONFIRMED (repro incl. cwd=/ panic) — fixed: last-match dotenv; exe-relative root discovery with clean error, no panic | `99f6898` |
+| M9 — one bad ledger line bricks all consumers; hash never verified | CONFIRMED — fixed both sides: line-numbered errors with snippet (Rust + Python), Python single-write append, new `opsctl verify` recomputing every `content_hash` | `99f6898`, `52e59b2` |
+| M10 — aliases never consulted; health/entities disagree on resolution | CONFIRMED (reproduced) — fixed: shared `link_resolution_index` (stems + slugified aliases) used by both | `c04fac4` |
+| M11 — capture-first ingest permanently poisons a slug | CONFIRMED — fixed: rollback + `ingest.failed` event on extraction failure or decline; content-hash suffix on different-content collisions | `52e59b2` |
+| M12 — `source_url` rule lives outside the schema | CONFIRMED — fixed: model validator (bookmark/paper); LLM path downgrades urlless bookmark to note; manual check removed | `52e59b2` |
+
+### Minor findings
+
+All pipeline, channel, and core minors were confirmed and fixed in the
+commits above (reweave requeue semantics now last-event-wins matching
+`opsctl project`; scan dry-run ledger purity; pending-observation status
+filter; ledgered `triage.decided` for keep/discard; `atlas.removed`
+compensating events in reconcile; non-tty and `--threshold 0` guards;
+Gate 5 restricted to references; orphan definition per spec plus
+dead-end detection; validated `--last-verified`; within-batch link
+dedup; generic error replies + per-call console + fail-closed dispatch +
+per-message send in serve; `--since`/`--limit`/backoff/drift/signal
+fixes in opsctl; slugify hash fallback; unified knowledge-log format;
+repair re-ask charged; `llm.failed` events; salvage on Anthropic;
+excerpt budget; slug-index collisions; captured-text parity; half-open
+marker refusal; citation filtering; CGNAT block; tz-aware `created`;
+`fm.write` kwargs; validate-before-write + Gate 3 in `new`; forced
+`--capture` note).
+
+Refuted or resolved as not-a-bug on scrutiny:
+
+- **reweave `--dry-run` ledger writes** — the `llm.requested`/`llm.completed`
+  events record calls that really happened; only scan's premature
+  `scan.completed` was wrong (fixed). REFUTED in part.
+- **`thinking: {"type": "adaptive"}`** — correct for the pinned anthropic
+  SDK 0.109.1 (`ThinkingConfigAdaptiveParam` is in the non-beta union).
+  VERIFIED-NO-FIX.
+- **dotenv inline-comment handling** — intentional byte parity between
+  `_dotenv.py` and `root.rs`; both keep `# comment` in values.
+  VERIFIED-NO-FIX.
+
+Deferred with reasons:
+
+- **opsctl signal trapping** (F18, partial) — recording the killing signal
+  in `task.failed` is done (`ExitStatusExt::signal`); trapping SIGTERM in
+  opsctl itself to close the dangling `task.started` window needs a new
+  dependency (`signal-hook`) — out of minimal-fix scope.
+- **serde_json lossy large ints** (F20) — a real fix requires the
+  `arbitrary_precision` feature with ripple effects; mitigated: the new
+  float guard makes such payloads error loudly in `content_hash`, and
+  `opsctl verify` flags them.
+- **Section 5 documentation-coherence items** (stale README Status,
+  dangling AGENTS.md references, roadmap ADR numbering, TESTING.md
+  counts) — not code findings; left for a separate docs sweep.
