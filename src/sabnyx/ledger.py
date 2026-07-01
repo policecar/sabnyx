@@ -13,8 +13,16 @@ import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
+from pydantic import ValidationError
+
 from .paths import EVENTS_JSONL, OPS
 from .schemas import LedgerEvent, LedgerPlane
+
+
+class LedgerError(RuntimeError):
+    """A ledger line failed to parse. Carries the 1-based line number in its
+    message (parity with opsctl's read_events) so the operator can find and
+    append a compensating fix instead of guessing which line bricked replay."""
 
 
 def _reject_floats(value: object, _path: str = "payload") -> None:
@@ -91,24 +99,35 @@ def append_event(
         payload=payload,
         content_hash=content_hash(payload),
     )
-    line = event.model_dump_json()
-    # Atomic-ish append: single write() with newline, O_APPEND on POSIX
-    # gives us atomicity for lines <= PIPE_BUF, which these always are.
-    with EVENTS_JSONL.open("a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    data = (event.model_dump_json() + "\n").encode("utf-8")
+    # One unbuffered write(2) of payload + newline under O_APPEND, so a
+    # concurrent appender (opsctl's supervise daemon vs an interactive CLI)
+    # can't interleave bytes within a line — mirrors opsctl's append. A
+    # buffered text writer may split large lines across write() syscalls.
+    # (PIPE_BUF governs pipes, not regular files, so it buys nothing here.)
+    with EVENTS_JSONL.open("ab", buffering=0) as f:
+        f.write(data)
     return event
 
 
 def replay() -> Iterator[LedgerEvent]:
-    """Yield every event in order. The only sanctioned read path."""
+    """Yield every event in order. The only sanctioned read path.
+
+    Raises LedgerError naming the 1-based line number and a snippet of the
+    offending line (parity with opsctl) — never skips silently.
+    """
     if not EVENTS_JSONL.exists():
         return
     with EVENTS_JSONL.open("r", encoding="utf-8") as f:
-        for line in f:
+        for lineno, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
-            yield LedgerEvent.model_validate_json(line)
+            try:
+                yield LedgerEvent.model_validate_json(line)
+            except ValidationError as e:
+                snippet = line[:60] + ("…" if len(line) > 60 else "")
+                raise LedgerError(f"ledger line {lineno}: {e} — line starts: {snippet}") from e
 
 
 def count() -> int:

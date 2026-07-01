@@ -89,7 +89,7 @@ def promote_file(
     call wrote — and only that file — is rolled back).
     """
     from . import fm
-    from .paths import ATLAS_TYPE_DIRS, DATA_ROOT, KNOWLEDGE_LOG
+    from .paths import ATLAS_TYPE_DIRS, DATA_ROOT
 
     meta, body, _kind = fm.load(source)
 
@@ -177,14 +177,11 @@ def promote_file(
     # Remove the intake source (the move is now committed on the ledger).
     source.unlink()
 
-    # Provenance log (Gate 3 materia)
-    KNOWLEDGE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    if not KNOWLEDGE_LOG.exists():
-        KNOWLEDGE_LOG.write_text(
-            "# Knowledge log\n\nAppend-only provenance trail.\n\n", encoding="utf-8"
-        )
-    with KNOWLEDGE_LOG.open("a", encoding="utf-8") as f:
-        f.write(f"- {today} promote: `{src_rel}` -> `{dest_rel}` ({atlas_type})\n")
+    # Provenance log (Gate 3 materia) — through the one shared writer so every
+    # operation keeps the same grep contract: `grep "^# \[" knowledge-log.md`.
+    writers.append_knowledge_log(
+        "promote", source.stem, {"from": src_rel, "to": dest_rel, "type": atlas_type}
+    )
 
     return dest
 
@@ -558,6 +555,20 @@ def apply_ingest(
     return written
 
 
+def rollback_capture(src_path: Path, src_rel: str, *, actor: str, reason: str) -> None:
+    """Remove a source artifact captured by THIS run whose ingest didn't land
+    (extraction failure, operator decline) and ledger why. Without the
+    rollback, write-once capture permanently dead-ends every re-ingest of the
+    same content behind "already captured"."""
+    src_path.unlink(missing_ok=True)
+    ledger.append_event(
+        kind="ingest.failed",
+        actor=actor,
+        subject=src_rel,
+        payload={"reason": reason[:500], "capture_rolled_back": True},
+    )
+
+
 def ingest_text(
     *,
     text: str,
@@ -572,18 +583,26 @@ def ingest_text(
     The whole capture -> propose -> apply pipeline every channel shares. Returns
     ``(summary, written_paths)``. Raises ``FileExistsError`` if the source was
     already captured (sources are write-once); callers shape that into their own
-    "already captured" reply.
+    "already captured" reply. If extraction fails after a fresh capture, the
+    artifact is rolled back (with an ``ingest.failed`` event) so re-ingest works.
     """
+    # The model must read exactly what was captured (Gate 3: the immutable
+    # artifact is the audit record of the extraction input).
+    text = text[: sources.MAX_SOURCE_CHARS]
     src_path = sources.capture(text=text, slug=title, actor=actor, source_url=source_url)
     src_rel = str(src_path.relative_to(paths.DATA_ROOT))
-    proposal = build_ingest_proposal(
-        text=text,
-        title=title,
-        source_kind=source_kind,
-        source_url=source_url,
-        src_rel=src_rel,
-        actor=actor,
-    )
+    try:
+        proposal = build_ingest_proposal(
+            text=text,
+            title=title,
+            source_kind=source_kind,
+            source_url=source_url,
+            src_rel=src_rel,
+            actor=actor,
+        )
+    except Exception as e:
+        rollback_capture(src_path, src_rel, actor=actor, reason=f"{type(e).__name__}: {e}")
+        raise
     written = apply_ingest(
         proposal,
         title=title,
@@ -627,15 +646,21 @@ def _salvage_ask_answer(error: llm.StructuredOutputError) -> AskAnswer:
         raise error from None
 
 
-def _clean_citations(cited: list[str], answer_text: str) -> list[str]:
+def _clean_citations(
+    cited: list[str], answer_text: str, index: dict[str, Path] | None = None
+) -> list[str]:
     """Make `cited` trustworthy regardless of how the model filled it.
 
     Models (especially smaller ones) sometimes return blank citation slots or
     cite inline but leave `cited` empty. Drop blanks, dedupe order-preserving,
-    and fall back to the [[wikilinks]] actually present in the answer prose."""
+    and fall back to the [[wikilinks]] actually present in the answer prose —
+    filtered against the vault ``index`` (lowercased slugs) when given, so a
+    hallucinated inline link never lands in an ask.answered payload."""
     candidates = [c.strip() for c in cited if c and c.strip()]
     if not candidates:
         candidates = extract_wikilinks(answer_text)
+        if index is not None:
+            candidates = [c for c in candidates if c.strip().lower() in index]
     seen: set[str] = set()
     cleaned: list[str] = []
     for c in candidates:
@@ -675,7 +700,7 @@ def answer_question(
         # salvaging the answer without its optional capture.
         answer = _salvage_ask_answer(e)
         capture_dropped = True
-    answer.cited = _clean_citations(answer.cited, answer.answer)
+    answer.cited = _clean_citations(answer.cited, answer.answer, index)
     ledger.append_event(
         plane="projection",
         kind="ask.answered",

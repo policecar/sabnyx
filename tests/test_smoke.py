@@ -37,6 +37,50 @@ def test_intake_schema_roundtrip():
     assert m.source == "manual"
 
 
+def test_intake_schema_requires_source_url_for_bookmark_and_paper():
+    # SPEC §3: source_url required for bookmark/paper — enforced by the schema
+    # itself (Gate 2), not just by one CLI command.
+    for t in ("bookmark", "paper"):
+        with pytest.raises(ValidationError, match="source_url is required"):
+            IntakeFrontmatter(
+                type=t,
+                description="a description that is definitely at least 30 characters long",
+                created=datetime.now(UTC),
+            )
+    m = IntakeFrontmatter(
+        type="bookmark",
+        description="a description that is definitely at least 30 characters long",
+        source_url="https://example.com/x",
+        created=datetime.now(UTC),
+    )
+    assert m.source_url == "https://example.com/x"
+
+
+def test_intake_schema_rejects_naive_created():
+    # SPEC §3: "ISO 8601 with TZ"
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        IntakeFrontmatter(
+            type="thought",
+            description="a description that is definitely at least 30 characters long",
+            created=datetime(2026, 7, 1, 12, 0, 0),  # naive
+        )
+
+
+def test_fm_write_survives_reserved_metadata_keys(tmp_path):
+    # frontmatter.Post(body, **meta) would raise TypeError on keys like
+    # "content"/"handler"; fm.write assigns .metadata instead. (Reading such a
+    # file back via frontmatter.loads has the same upstream collision, so the
+    # written text is verified directly.)
+    import yaml
+
+    p = tmp_path / "x.md"
+    fm.write(p, {"content": "meta-value", "handler": "h", "type": "note"}, "the body\n")
+    text = p.read_text(encoding="utf-8")
+    _, meta_block, body = text.split("---\n", 2)
+    assert yaml.safe_load(meta_block) == {"content": "meta-value", "handler": "h", "type": "note"}
+    assert body.strip() == "the body"
+
+
 def test_atlas_schema_roundtrip():
     m = AtlasFrontmatter(
         type="concept",

@@ -99,6 +99,23 @@ def test_clean_citations_falls_back_to_answer_wikilinks():
     assert out == ["foo-bar", "baz"]
 
 
+def test_clean_citations_fallback_filters_hallucinated_slugs():
+    from pathlib import Path
+
+    from sabnyx.services import _clean_citations
+
+    index = {"foo-bar": Path("vault/atlas/concepts/foo-bar.md")}  # lowercased keys
+    out = _clean_citations(["", ""], "see [[foo-bar]] and the invented [[not-a-page]]", index)
+    assert out == ["foo-bar"]  # the hallucinated slug never reaches the ledger
+
+
+def test_ask_forced_capture_with_no_proposal_prints_note(tmp_vault, monkeypatch):
+    result, _ = _run_ask(monkeypatch, ["q?", "--capture"], answer=PLAIN)
+    assert result.exit_code == 0, result.output
+    assert "proposed no capture" in result.output
+    assert not list(tmp_vault["INTAKE"].glob("*.md"))
+
+
 def test_ask_routes_by_message(tmp_vault, monkeypatch):
     _, calls = _run_ask(monkeypatch, ["[deep] q?", "--no-capture"])
     assert calls[0]["role"] == "deep"

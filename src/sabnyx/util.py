@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 from datetime import UTC, date, datetime
@@ -38,7 +39,11 @@ def slugify(text: str, max_len: int = 80) -> str:
     t = t.lower()
     t = re.sub(r"[^a-z0-9]+", "-", t).strip("-")
     if not t:
-        t = "untitled"
+        # The ASCII fold ate everything (e.g. a fully non-Latin title). Keep the
+        # SPEC §6 ASCII rule but derive a stable suffix from the original text so
+        # distinct titles don't all collapse to one colliding "untitled" slug.
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+        t = f"untitled-{digest}"
     if len(t) > max_len:
         t = t[:max_len].rstrip("-")
     return t
@@ -89,7 +94,11 @@ def set_marker_block(body: str, name: str, lines: list[str], heading: str | None
     """Replace the named marker block's content, preserving everything
     outside it byte-for-byte. If the block is absent, append a new
     section at the end (optionally under `heading`) — append, never
-    rewrite, per the round-trip invariant in docs/reserved-syntax.md."""
+    rewrite, per the round-trip invariant in docs/reserved-syntax.md.
+
+    Raises ValueError when exactly one of BEGIN/END is present (a half-open
+    block, e.g. after a manual edit): appending a fresh block there would
+    nest/duplicate markers, which SPEC §8 forbids. Callers report and skip."""
     begin, end = _markers(name)
     content = "\n".join(lines)
     block = f"{begin}\n{content}\n{end}" if lines else f"{begin}\n{end}"
@@ -98,6 +107,12 @@ def set_marker_block(body: str, name: str, lines: list[str], heading: str | None
         pre = body.split(begin, 1)[0]
         post = body.split(end, 1)[1]
         return pre + block + post
+    if begin in body or end in body:
+        half = "BEGIN" if begin in body else "END"
+        raise ValueError(
+            f"half-open marker block sabnyx:{name}: found {half} without its pair — "
+            "refusing to append a duplicate block (SPEC §8)"
+        )
 
     sep = "" if body.endswith("\n\n") else ("\n" if body.endswith("\n") else "\n\n")
     section = f"## {heading}\n\n{block}\n" if heading else f"{block}\n"

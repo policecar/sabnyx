@@ -23,7 +23,7 @@ def _good_meta(
     description: str = "a long enough description that satisfies the 30 char limit here",
     source_agent: str = "sabnyx-ingest",
 ) -> dict:
-    return {
+    meta = {
         "type": intake_type,
         "description": description,
         "source": "web",
@@ -31,6 +31,9 @@ def _good_meta(
         "created": datetime.now(UTC).isoformat(),
         "source_agent": source_agent,
     }
+    if intake_type in ("bookmark", "paper"):
+        meta["source_url"] = "https://example.com/source"  # schema-required (Gate 2)
+    return meta
 
 
 def _make_intake(
@@ -258,6 +261,9 @@ class TestPromoteFile:
         log = tmp_vault["KNOWLEDGE_LOG"].read_text()
         assert "log-test.md" in log
         assert "reference" in log
+        # one shared format for every operation: the Gate 3 grep contract
+        # `grep "^# \[" knowledge-log.md | grep promote` must find promotions
+        assert any(ln.startswith("# [") and "promote | log-test" in ln for ln in log.splitlines())
 
     def test_promote_emits_ledger_events(self, tmp_vault):
         from sabnyx.services import promote_file
