@@ -87,3 +87,25 @@ def test_reconcile_cmd_clean_exits_zero(tmp_vault):
     result = CliRunner().invoke(reconcile_cmd, [])
     assert result.exit_code == 0, result.output
     assert "clean" in result.output
+
+
+def test_atlas_removed_compensates_deleted_file(tmp_vault):
+    """A legitimate deletion is acknowledged with a compensating atlas.removed
+    event (SPEC §10) — reconcile stops expecting the file, in ledger order."""
+    _make_intake(tmp_vault, "epsilon")
+    dest = services.promote_file(tmp_vault["INTAKE"] / "epsilon.md", "reference")
+    dest.unlink()
+    assert services.reconcile_atlas().orphaned == ["vault/atlas/references/epsilon.md"]
+
+    ledger.append_event(
+        kind="atlas.removed",
+        actor="operator",
+        subject="vault/atlas/references/epsilon.md",
+        payload={"reason": "superseded"},
+    )
+    r = services.reconcile_atlas()
+    assert r.orphaned == []
+    assert r.clean
+
+    result = CliRunner().invoke(reconcile_cmd, [])
+    assert result.exit_code == 0, result.output

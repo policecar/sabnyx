@@ -58,18 +58,19 @@ ReweaveChangeset. Rules, in addition to the SPEC and ROUTING contract above:
 
 
 def _pending_targets() -> list[Path]:
-    """Atlas files with a `reweave.proposed` intent not yet consumed by a
-    `reweave.completed` event. The ledger is the queue."""
-    proposed: dict[str, None] = {}  # insertion-ordered set
-    done: set[str] = set()
+    """Atlas files whose LAST reweave event is a `reweave.proposed` intent.
+
+    Last event wins per subject (matching opsctl project's semantics), so a
+    file that is deleted, re-ingested, and re-promoted after a completed
+    reweave queues again — a historical completion never masks a later
+    intent. The ledger is the queue."""
+    status: dict[str, str] = {}  # subject -> last-seen kind, insertion-ordered
     for e in ledger.replay():
-        if e.kind == "reweave.proposed":
-            proposed[e.subject] = None
-        elif e.kind == "reweave.completed":
-            done.add(e.subject)
+        if e.kind in ("reweave.proposed", "reweave.completed"):
+            status[e.subject] = e.kind
     out: list[Path] = []
-    for subj in proposed:
-        if subj in done:
+    for subj, kind in status.items():
+        if kind != "reweave.proposed":
             continue
         p = paths.DATA_ROOT / subj
         if p.is_file():
@@ -130,11 +131,11 @@ def _apply_links(
             continue
 
         existing = {link.lower() for link in extract_wikilinks(body)}
-        new_links = [
-            link
-            for link in add.add_links
-            if link in index and link != add.file and link.lower() not in existing
-        ]
+        new_links: list[str] = []
+        for link in add.add_links:
+            if link in index and link != add.file and link.lower() not in existing:
+                new_links.append(link)
+                existing.add(link.lower())  # dedup repeats within one add_links list
         dropped = [link for link in add.add_links if link not in new_links]
         if dropped:
             console.print(f"  [dim]drop (unknown/self/duplicate): {', '.join(dropped)}[/dim]")
@@ -211,9 +212,16 @@ def reweave_one(
         return None
 
     has_changes = bool(changeset.related_additions or changeset.observations)
-    if has_changes and not yes and not click.confirm("apply?", default=True):
-        console.print("[dim]declined; intent left pending[/dim]")
-        return None
+    if has_changes and not yes:
+        try:
+            approved = click.confirm("apply?", default=True)
+        except click.Abort:
+            # non-tty without --yes (cron): leave pending, don't crash the run
+            console.print("[yellow]no interactive input; intent left pending (use --yes)[/yellow]")
+            return None
+        if not approved:
+            console.print("[dim]declined; intent left pending[/dim]")
+            return None
 
     modified = _apply_links(tgt, changeset, index, console)
     obs_written: list[str] = []

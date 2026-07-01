@@ -101,18 +101,21 @@ def scan_cmd(role: ModelRole, yes: bool, dry_run: bool) -> None:
     fresh = [f for f in result.findings if frozenset(f.involves) not in known]
     dup = len(result.findings) - len(fresh)
 
-    ledger.append_event(
-        plane="projection",
-        kind="scan.completed",
-        actor=ACTOR,
-        subject="vault/atlas/",
-        payload={
-            "files_scanned": len(index),
-            "findings": len(result.findings),
-            "fresh": len(fresh),
-            "duplicates": dup,
-        },
-    )
+    # Dry runs are ledger-write-free: the llm.* events for the call that
+    # really happened are appended by parse_structured and correctly stay.
+    if not dry_run:
+        ledger.append_event(
+            plane="projection",
+            kind="scan.completed",
+            actor=ACTOR,
+            subject="vault/atlas/",
+            payload={
+                "files_scanned": len(index),
+                "findings": len(result.findings),
+                "fresh": len(fresh),
+                "duplicates": dup,
+            },
+        )
 
     console.print(f"\n[bold]{result.summary}[/bold]")
     if dup:

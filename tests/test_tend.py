@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from sabnyx import fm, ledger
@@ -37,6 +38,25 @@ def _make_intake(
 ) -> Path:
     p = intake_dir / f"{slug}.md"
     fm.write(p, meta, body)
+    return p
+
+
+def _make_atlas(dir_: Path, slug: str, body: str = "# durable\n\noriginal content\n") -> Path:
+    p = dir_ / f"{slug}.md"
+    fm.write(
+        p,
+        {
+            "type": "concept",
+            "description": "an existing durable atlas file that must never be overwritten",
+            "tags": [],
+            "status": "final",
+            "promoted_from": None,
+            "promoted_date": None,
+            "last_verified": None,
+            "proof": None,
+        },
+        body,
+    )
     return p
 
 
@@ -268,6 +288,37 @@ class TestPromoteFile:
 
         atlas_meta, _, _ = fm.load(result)
         assert str(atlas_meta["last_verified"]) == "2025-01-01"
+
+    def test_promote_refuses_existing_destination(self, tmp_vault):
+        """C1: a duplicate slug must never overwrite (or roll back) an
+        existing atlas file — the durable tier is untouchable here."""
+        from sabnyx.services import promote_file
+
+        existing = _make_atlas(tmp_vault["ATLAS_REFERENCES"], "dupe")
+        original = existing.read_text()
+        p = _make_intake(tmp_vault["INTAKE"], "dupe", _good_meta("bookmark"))
+
+        with pytest.raises(RuntimeError, match="refusing to overwrite"):
+            promote_file(p, "reference", actor="test-actor")
+
+        assert existing.read_text() == original  # atlas file byte-identical
+        assert p.exists()  # intake source untouched
+        assert "atlas.promoted" not in [e.kind for e in ledger.replay()]
+
+
+class TestPromoteCli:
+    def test_rejects_malformed_last_verified_before_writing(self, tmp_vault):
+        """Validate the date at the CLI boundary, not as a post-write rollback."""
+        from sabnyx.commands.promote import promote_cmd
+
+        p = _make_intake(tmp_vault["INTAKE"], "lv-bad", _good_meta("bookmark"))
+        result = CliRunner().invoke(
+            promote_cmd, [str(p), "--as", "reference", "--last-verified", "not-a-date"]
+        )
+        assert result.exit_code == 2, result.output
+        assert "ISO date" in result.output
+        assert p.exists()
+        assert not (tmp_vault["ATLAS_REFERENCES"] / "lv-bad.md").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -570,6 +621,189 @@ class TestTendLLMTriage:
         # discard is noted only — file still present
         assert (tmp_vault["INTAKE"] / "note-0.md").exists()
         assert "discard (noted, not deleted)" in result.output
+
+    def test_llm_promote_of_duplicate_slug_is_skipped(self, tmp_vault, monkeypatch):
+        """C1: gate-5 deferrals reach triage and the LLM never sees the atlas
+        index — a 'promote' for an existing slug must be skipped, not applied."""
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        existing = _make_atlas(tmp_vault["ATLAS_CONCEPTS"], "note-0")
+        original = existing.read_text()
+        for i in range(5):
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note"))
+
+        batch = TriageBatch(
+            items=[
+                TriageItem(slug="note-0", action="promote", atlas_type="concept", reason="dup"),
+                *[
+                    TriageItem(slug=f"note-{i}", action="keep", atlas_type=None, reason="ok")
+                    for i in range(1, 5)
+                ],
+            ]
+        )
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "skip promote" in result.output
+
+        assert existing.read_text() == original  # atlas file untouched
+        assert (tmp_vault["INTAKE"] / "note-0.md").exists()  # kept in intake
+        assert "atlas.promoted" not in [e.kind for e in ledger.replay()]
+
+    def test_keep_and_discard_decisions_are_ledgered(self, tmp_vault, monkeypatch):
+        """DEC-02: 'note it' must survive an unattended run — as ledger events,
+        not console output alone."""
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        for i in range(5):
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note"))
+
+        batch = TriageBatch(
+            items=[
+                TriageItem(slug="note-0", action="discard", atlas_type=None, reason="noise"),
+                *[
+                    TriageItem(slug=f"note-{i}", action="keep", atlas_type=None, reason="ok")
+                    for i in range(1, 5)
+                ],
+            ]
+        )
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        decided = [e for e in ledger.replay() if e.kind == "triage.decided"]
+        assert len(decided) == 5
+        by_slug = {e.payload["slug"]: e for e in decided}
+        assert by_slug["note-0"].payload["action"] == "discard"
+        assert by_slug["note-0"].payload["reason"] == "noise"
+        assert by_slug["note-0"].subject == "vault/intake/note-0.md"
+        assert by_slug["note-1"].payload["action"] == "keep"
+
+
+class TestTendRobustness:
+    def test_malformed_yaml_intake_does_not_abort_run(self, tmp_vault, monkeypatch):
+        """M3: one unparseable file defers; the rest of the run proceeds."""
+        from sabnyx.commands import tend as tend_mod
+
+        (tmp_vault["INTAKE"] / "broken.md").write_text(
+            "---\ntype: note\ntags: [unclosed\n---\nbody\n", encoding="utf-8"
+        )
+        _make_intake(tmp_vault["INTAKE"], "good-bookmark", _good_meta("bookmark"))
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd, ["--no-reweave", "--no-health"], catch_exceptions=False
+        )
+        assert result.exit_code == 0, result.output
+        assert "skip (invalid)" in result.output
+        # the good file was still promoted and the run completed
+        assert (tmp_vault["ATLAS_REFERENCES"] / "good-bookmark.md").exists()
+        assert "tend complete" in result.output
+        assert "tend.completed" in [e.kind for e in ledger.replay()]
+
+    def test_llm_promote_of_invalid_file_reports_and_continues(self, tmp_vault, monkeypatch):
+        """M3: promote_file raising FrontmatterError (not RuntimeError) in
+        pass 2 must not kill the run before tend.completed."""
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        for i in range(4):
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note"))
+        bad_meta = _good_meta("note", description="too short")  # schema-invalid
+        bad = _make_intake(tmp_vault["INTAKE"], "bad-note", bad_meta)
+
+        batch = TriageBatch(
+            items=[
+                TriageItem(slug="bad-note", action="promote", atlas_type="concept", reason="r"),
+                *[
+                    TriageItem(slug=f"note-{i}", action="keep", atlas_type=None, reason="ok")
+                    for i in range(4)
+                ],
+            ]
+        )
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "promote failed" in result.output
+        assert bad.exists()  # nothing destructive happened to the source
+        assert "tend.completed" in [e.kind for e in ledger.replay()]
+
+    def test_promote_prompt_without_tty_keeps_and_completes(self, tmp_vault, monkeypatch):
+        """Non-tty without --yes (cron): skip/keep with a note, don't Abort."""
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        for i in range(5):
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note"))
+
+        batch = TriageBatch(
+            items=[
+                TriageItem(slug="note-0", action="promote", atlas_type="concept", reason="r"),
+                *[
+                    TriageItem(slug=f"note-{i}", action="keep", atlas_type=None, reason="ok")
+                    for i in range(1, 5)
+                ],
+            ]
+        )
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+
+        runner = CliRunner()
+        # no --yes and no input stream: click.confirm hits EOF
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "no interactive input" in result.output
+        assert (tmp_vault["INTAKE"] / "note-0.md").exists()  # kept, not promoted
+        assert "tend.completed" in [e.kind for e in ledger.replay()]
+
+    def test_threshold_zero_with_empty_queue_makes_no_llm_call(self, tmp_vault, monkeypatch):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        calls: list = []
+
+        def fake_llm(**kwargs):
+            calls.append(kwargs)
+            return TriageBatch(items=[])
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", fake_llm)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "0", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert calls == []  # zero deferred items → no LLM call, even at threshold 0
 
 
 # ---------------------------------------------------------------------------

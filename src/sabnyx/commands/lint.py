@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .. import fm
-from ..paths import DATA_ROOT, OBSERVATIONS, ROOT, SOURCES, VAULT
+from ..paths import DATA_ROOT, OBSERVATIONS, SOURCES, VAULT
 from ..util import walk_vault_md
 
 
@@ -63,15 +63,18 @@ def lint_cmd(files: tuple[Path, ...], staged: bool) -> None:
     if staged:
         import subprocess
 
+        # The vault lives in the DATA repo (SABNYX_DATA_DIR may point away
+        # from the code repo) — the pre-commit gate must query THAT index,
+        # not the code repo's, or it silently lints nothing.
         result = subprocess.run(
             ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
             capture_output=True,
             text=True,
-            cwd=ROOT,
+            cwd=DATA_ROOT,
         )
         targets = []
         for rel in result.stdout.splitlines():
-            p = ROOT / rel
+            p = DATA_ROOT / rel
             if p.is_file() and VAULT in p.parents and _lintable(p):
                 targets.append(p)
     elif files:
@@ -84,12 +87,18 @@ def lint_cmd(files: tuple[Path, ...], staged: bool) -> None:
         sys.exit(0)
 
     failures: list[tuple[Path, list[str]]] = []
+    skipped = 0
     for path in targets:
         errs: list[str] = []
         try:
             meta, _body, kind = fm.load(path)
         except fm.FrontmatterError as e:
             failures.append((path, e.errors))
+            continue
+        except ValueError:
+            # No schema tier applies (domains/ carries its own per-topic
+            # schema, SPEC §1) — skip with a note, like sources/ (ADR-0005).
+            skipped += 1
             continue
         except Exception as e:
             failures.append((path, [f"parse error: {e}"]))
@@ -104,6 +113,9 @@ def lint_cmd(files: tuple[Path, ...], staged: bool) -> None:
 
         if errs:
             failures.append((path, errs))
+
+    if skipped:
+        console.print(f"[dim]{skipped} file(s) skipped (no schema tier, e.g. domains/)[/dim]")
 
     if failures:
         table = Table(title="sabnyx lint — failures", show_lines=True)

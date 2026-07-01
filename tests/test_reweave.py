@@ -85,6 +85,21 @@ def test_pending_targets_skips_deleted_files(tmp_vault):
     assert rw._pending_targets() == []
 
 
+def test_pending_targets_requeue_after_completion(tmp_vault):
+    """Last event wins per subject: a historical completion must not mask a
+    later intent (delete → re-ingest → re-promote re-queues)."""
+    from sabnyx.commands import reweave as rw
+
+    target = _make_atlas_file(
+        tmp_vault["ATLAS_CONCEPTS"], "alpha", "a concept about alpha things, long enough to pass"
+    )
+    rel = str(target.relative_to(tmp_vault["DATA_ROOT"]))
+    _propose_reweave(rel)
+    ledger.append_event(kind="reweave.completed", actor="t", subject=rel, payload={})
+    _propose_reweave(rel)  # the file was re-promoted: a fresh intent
+    assert [str(p) for p in rw._pending_targets()] == [str(target)]
+
+
 # -- end-to-end (faked LLM) -----------------------------------------------------------------
 
 
@@ -191,6 +206,29 @@ def test_reweave_dry_run_writes_nothing(tmp_vault, monkeypatch):
     from sabnyx.commands import reweave as rw
 
     assert len(rw._pending_targets()) == 1
+
+
+def test_apply_links_dedups_within_one_addition(tmp_vault, monkeypatch):
+    """The same slug twice in ONE add_links list must yield one line."""
+    from sabnyx.commands import reweave as rw
+
+    concepts = tmp_vault["ATLAS_CONCEPTS"]
+    target = _make_atlas_file(concepts, "alpha", "a concept about alpha things, long enough yes")
+    _make_atlas_file(concepts, "beta", "a concept about beta things, also long enough to pass")
+    _propose_reweave(str(target.relative_to(tmp_vault["DATA_ROOT"])))
+
+    changeset = ReweaveChangeset(
+        summary="dup within one list",
+        related_additions=[RelatedAddition(file="alpha", add_links=["beta", "beta"], reason="dup")],
+        observations=[],
+    )
+    monkeypatch.setattr(rw.llm, "parse_structured", lambda **kw: changeset)
+    result = CliRunner().invoke(rw.reweave_cmd, ["--yes"])
+    assert result.exit_code == 0, result.output
+
+    _, body, _ = fm.load(concepts / "alpha.md")
+    assert util.get_marker_block(body, "related") == "- [[beta]]"
+    assert body.count("- [[beta]]") == 1
 
 
 def test_reweave_explicit_target_rejects_non_atlas(tmp_vault, monkeypatch, tmp_path):
