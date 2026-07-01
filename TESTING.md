@@ -4,7 +4,8 @@ How to exercise both projects, from fast/free to live. Two layers of
 confidence: the **automated suites** (no keys, safe anytime — this is the gate)
 and the **live smoke tests** (real LLM calls, small cost, need a provider key).
 
-Assumes the two repos are siblings:
+Assumes the two repos are siblings (skip the halbor blocks if you haven't
+cloned it):
 
 ```
 _px/
@@ -19,15 +20,15 @@ _px/
 ```sh
 # sabnyx — Python
 cd ../sabnyx
-uv run pytest -q                                  # expect: 151 passed
+uv run pytest -q                                  # all green (328 at last count)
 uv run ruff check . && uv run ruff format --check .
 
 # sabnyx — opsctl (Rust control plane) — NOT covered by pytest
-cd opsctl && cargo test                           # ledger.rs + supervise.rs
+cd opsctl && cargo test           # ledger, root, query, project, supervise, verify
 
 # halbor — Python
 cd ../halbor
-uv run pytest -q                                  # expect: 41 passed
+uv run pytest -q                                  # all green (41 at last count)
 uv run ruff check . && uv run ruff format --check .
 ```
 

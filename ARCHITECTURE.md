@@ -65,8 +65,7 @@ and why would I ever search for it?"* (30–200 characters).
 
 Why it matters: a vault of 1000+ files is too big to read end-to-end. So the
 assistant **reads only the descriptions** to decide what's relevant —
-"filter-before-read." Descriptions are the **index**. (This is exactly the field
-whose 200-char limit caused the recent `ask` bug — see `TESTING.md` notes.)
+"filter-before-read." Descriptions are the **index**.
 
 ### The logbook (the ledger)
 
@@ -105,7 +104,8 @@ One command runs the whole self-maintenance cycle, so the brain tidies *itself*:
 
 `opsctl` is a small, fast control plane that owns the logbook and **schedules**
 the heartbeat (run `tend` every 15 minutes, or once per cron tick). It speaks the
-exact same logbook format as the Python side, so they interoperate.
+exact same logbook format as the Python side, so they interoperate — and
+`opsctl verify` recomputes every entry's hash to prove the logbook is intact.
 
 ### Talking to the AI (the LLM boundary)
 
@@ -152,6 +152,9 @@ The answer is always the priority; a malformed capture never sinks it.
 ---
 
 ## halbor: the face
+
+halbor lives in its own sibling repo (`../halbor`) — if you only cloned
+sabnyx, it won't be on disk. Nothing in sabnyx depends on it.
 
 ### A one-way mirror
 
@@ -235,9 +238,9 @@ src/sabnyx/
   retrieval.py   the finder seam: GrepRetriever / VectorRetriever
   commands/      one file per CLI verb (ask, ingest, tend, verify, …)
   config.py      .env autoload, trusted sources
-opsctl/          the Rust clock: ledger, query, project, supervise
+opsctl/          the Rust clock: ledger, query, project, supervise, verify
 
-halbor/src/halbor/
+halbor/src/halbor/     (separate sibling repo)
   project.py     vault → staged markdown + llms.txt
   sensitivity.py the two publish gates (fail-closed)
   retrieval.py   grep / vector finder over the face
