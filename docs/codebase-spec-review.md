@@ -682,4 +682,10 @@ Deferred with reasons:
   `opsctl verify` flags them.
 - **Section 5 documentation-coherence items** (stale README Status,
   dangling AGENTS.md references, roadmap ADR numbering, TESTING.md
-  counts) — not code findings; left for a separate docs sweep.
+  counts) — fixed in the follow-up docs sweep on this branch: README
+  Status/layout/credits updated, AGENTS.md gained the r1 row and lost
+  the dangling reference and hardcoded paths, roadmap and the 2026-06
+  architecture review are marked historical with shipped items
+  annotated, build-out-plan is marked complete with a current
+  environment note, TESTING.md counts refreshed, and ARCHITECTURE.md
+  notes that halbor is a separate repo.

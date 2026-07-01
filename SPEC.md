@@ -148,6 +148,9 @@ numeric prefixes. Slugs should read like a phrase, not a title.
 Good:  `markdown-is-the-new-html.md`
 Bad:   `2026-04-22-thoughts-final-v2.md`
 
+Titles whose ASCII fold is empty (e.g. Japanese) slugify to
+`untitled-<8-hex content hash>` so distinct titles never collide.
+
 Observation files may include a date prefix because they are
 time-stamped signals: `2026-04-22-gap-oracle-technology.md`.
 
@@ -209,7 +212,8 @@ keys, no whitespace. This pre-commits the ledger to Lemma-style
 attestation without currently requiring it.
 
 The ledger is APPEND-ONLY. Never edit a past line. To correct,
-append a compensating event.
+append a compensating event — e.g. `atlas.removed` (subject = the
+file path) records a deliberate deletion, and `reconcile` honors it.
 
 ## 11. Gates (health checks)
 

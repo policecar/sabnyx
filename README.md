@@ -132,9 +132,11 @@ the Python side, it resolves the ledger from `SABNYX_DATA_DIR` (env or
 ```sh
 cd opsctl && cargo build --release      # binary: opsctl/target/release/opsctl
 
-opsctl query --kind atlas.promoted --limit 10   # filter the ledger (--json too)
+opsctl query --kind atlas.promoted --limit 10   # most recent 10 (--json too)
 opsctl project                                   # rebuild state from the log:
                                                  #  counts, pending reweave, atlas files
+opsctl verify                                    # recompute every content_hash;
+                                                 #  exit 1 on any mismatch or bad line
 opsctl supervise --label heartbeat --every 900 -- uv run sabnyx tend --yes
 opsctl supervise --label heartbeat --once    -- uv run sabnyx tend --yes   # for cron
 ```
@@ -190,18 +192,25 @@ src/sabnyx/            the Python package
                        scan, entities, lint, health, serve, serve-http, verify
   config.py            local .env autoload, trusted-source allowlist
 
-opsctl/                the Rust control plane (ledger, query, project, supervise)
+opsctl/                the Rust control plane (ledger, query, project,
+                       supervise, verify)
 recipes/               cron/launchd-ready scripts (heartbeat.sh)
 docs/                  decisions/ (ADRs), recon/, roadmap.md, build-out-plan.md
 ```
 
+`vault/` and the two `ops/` data files are gitignored here: in production they
+live in a separate private DATA repo pointed at by `SABNYX_DATA_DIR` (see
+`DEPLOYMENT.md`); without it they resolve under this repo (single-repo dev
+mode).
+
 ## Status
 
-Milestone 1 — *the self-maintaining brain* — in progress. Done: the LLM loop
-(ingest / ask / reweave / scan), the Kimi/Moonshot provider, the heartbeat
-(`tend`), and `opsctl`. Next: a lightweight entity layer, a pluggable retrieval
-seam, and **halbor** (the read-only projection/face). See
-`docs/build-out-plan.md`.
+Milestone 1 — *the self-maintaining brain* — complete: the LLM loop
+(ingest / ask / reweave / scan), the heartbeat (`tend`), `opsctl`, the entity
+layer (`entities`), the retrieval seam (grep default, opt-in vector), and
+**halbor** (the read-only face, a separate sibling repo). A full review
+against the jibot spec plus a hardening pass landed 2026-07-01 — see
+`docs/codebase-spec-review.md`. What's next: `docs/build-out-plan.md`.
 
 ## Credits
 
@@ -210,5 +219,6 @@ Architecture adapted from Joi Ito's jibot
 routing tree, the `description` field, the reweave pass, observations, the
 seven gates, the four-plane ledger, and the normalized envelope. A full local
 mirror of the source lives at
-`vault/atlas/references/switchboard-jibrain-jibot-architecture.md`. Recon notes
-on Joi's open-source repos are in `docs/recon/`.
+`vault/atlas/references/switchboard-jibrain-jibot-architecture.md` in the
+private vault repo (not in this clone). Recon notes on Joi's open-source repos
+are in `docs/recon/`.
