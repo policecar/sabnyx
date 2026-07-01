@@ -36,21 +36,36 @@ def allowlist() -> set[str]:
     return {s.strip() for s in raw.split(",") if s.strip()}
 
 
+def _redacted(e: httpx.HTTPError, method: str) -> RuntimeError:
+    """Rebuild an httpx error without the request URL — the URL embeds the
+    bot token, and serve.py prints/ledgers these exceptions on poll/send
+    failures. Keep only the status code (or error type) and the API method."""
+    status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
+    detail = f"HTTP {status}" if status is not None else type(e).__name__
+    return RuntimeError(f"telegram {method} failed: {detail}")
+
+
 def get_updates(offset: int | None, timeout: int = 30) -> list[dict]:
     """Long-poll for updates. Returns the raw `result` array."""
     params: dict = {"timeout": timeout}
     if offset is not None:
         params["offset"] = offset
-    # http timeout must outlast the long-poll window
-    resp = httpx.get(f"{API}/bot{token()}/getUpdates", params=params, timeout=timeout + 10)
-    resp.raise_for_status()
+    try:
+        # http timeout must outlast the long-poll window
+        resp = httpx.get(f"{API}/bot{token()}/getUpdates", params=params, timeout=timeout + 10)
+        resp.raise_for_status()
+    except httpx.HTTPError as e:
+        raise _redacted(e, "getUpdates") from None  # `from None`: no token in the chain
     return resp.json().get("result", [])
 
 
 def send_message(chat_id: int | str, text: str) -> None:
     """Send a reply. Telegram caps messages at 4096 chars; truncate."""
     body = {"chat_id": chat_id, "text": text[:4000]}
-    httpx.post(f"{API}/bot{token()}/sendMessage", json=body, timeout=30).raise_for_status()
+    try:
+        httpx.post(f"{API}/bot{token()}/sendMessage", json=body, timeout=30).raise_for_status()
+    except httpx.HTTPError as e:
+        raise _redacted(e, "sendMessage") from None  # `from None`: no token in the chain
 
 
 def envelope_for_update(update: dict) -> NormalizedEnvelope | None:
