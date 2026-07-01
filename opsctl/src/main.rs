@@ -11,6 +11,7 @@ mod project;
 mod query;
 mod root;
 mod supervise;
+mod verify;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -42,7 +43,7 @@ enum Commands {
         #[arg(long)]
         since: Option<String>,
 
-        /// Maximum number of events to show
+        /// Maximum number of events to show (keeps the most recent N matches)
         #[arg(long)]
         limit: Option<usize>,
 
@@ -57,6 +58,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Verify ledger integrity: recompute every content_hash, report parse
+    /// failures and mismatches with line numbers; exits nonzero on any failure
+    Verify,
 
     /// Run a command with supervision and ledger events
     Supervise {
@@ -82,15 +87,17 @@ enum Commands {
     },
 }
 
-fn events_path() -> PathBuf {
+fn events_path() -> anyhow::Result<PathBuf> {
     // Resolve the data root exactly like the Python side (SABNYX_DATA_DIR env /
     // <code-root>/.env / code root) so both writers share one ledger file.
-    root::data_root().join("ops").join("events.jsonl")
+    // Errors (no repo root found) surface as a clean nonzero exit from main,
+    // not a panic.
+    Ok(root::data_root()?.join("ops").join("events.jsonl"))
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let path = events_path();
+    let path = events_path()?;
 
     match cli.command {
         Commands::Query {
@@ -113,6 +120,13 @@ fn main() -> anyhow::Result<()> {
 
         Commands::Project { json } => {
             project::run(&path, json)?;
+        }
+
+        Commands::Verify => {
+            let clean = verify::run(&path)?;
+            if !clean {
+                std::process::exit(1);
+            }
         }
 
         Commands::Supervise {

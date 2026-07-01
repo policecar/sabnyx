@@ -3,7 +3,7 @@
 // Demonstrates "segments are authority; projections rebuild."
 // - Counts per kind
 // - Pending reweave intents (reweave.proposed minus later reweave.completed for same subject)
-// - Atlas files seen (atlas.promoted / atlas.created subjects)
+// - Atlas files seen (atlas.promoted subjects)
 // - Last tend.completed payload
 
 use crate::ledger::replay;
@@ -41,7 +41,9 @@ pub fn build(events_path: &Path) -> anyhow::Result<Projection> {
             "reweave.completed" => {
                 reweave_pending.insert(event.subject.clone(), false);
             }
-            "atlas.promoted" | "atlas.created" => {
+            // Only atlas.promoted exists — no producer anywhere emits an
+            // "atlas.created" kind, so it is not matched here.
+            "atlas.promoted" => {
                 atlas_files.insert(event.subject.clone());
             }
             "tend.completed" => {
@@ -134,5 +136,81 @@ fn print_human(proj: &Projection) {
     match &proj.last_tend_completed {
         None => println!("  (none)"),
         Some(v) => println!("  {}", serde_json::to_string_pretty(v).unwrap_or_default()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ledger::{append, new_event};
+    use serde_json::json;
+    use tempfile::NamedTempFile;
+
+    fn emit(path: &Path, kind: &str, subject: &str, payload: Value) {
+        let e = new_event("event", kind, "opsctl", subject, payload).expect("no floats");
+        append(path, &e).expect("append");
+    }
+
+    #[test]
+    fn test_pending_reweave_is_last_event_wins() {
+        // The pending-reweave semantics are last-event-wins per subject:
+        // a completed followed by a *later* proposed re-opens the subject
+        // (unlike a set difference, where any historical completed would
+        // permanently mask later proposals).
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path();
+
+        // a: proposed then completed → resolved.
+        emit(path, "reweave.proposed", "vault/atlas/a.md", json!({}));
+        emit(path, "reweave.completed", "vault/atlas/a.md", json!({}));
+        // b: proposed, completed, proposed again → pending again.
+        emit(path, "reweave.proposed", "vault/atlas/b.md", json!({}));
+        emit(path, "reweave.completed", "vault/atlas/b.md", json!({}));
+        emit(path, "reweave.proposed", "vault/atlas/b.md", json!({}));
+        // c: proposed only → pending.
+        emit(path, "reweave.proposed", "vault/atlas/c.md", json!({}));
+
+        let proj = build(path).expect("build");
+        assert_eq!(
+            proj.pending_reweave,
+            vec![
+                "vault/atlas/b.md".to_string(),
+                "vault/atlas/c.md".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_projection_counts_atlas_and_last_tend() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path();
+
+        emit(
+            path,
+            "atlas.promoted",
+            "vault/atlas/concepts/x.md",
+            json!({}),
+        );
+        emit(
+            path,
+            "atlas.promoted",
+            "vault/atlas/concepts/x.md",
+            json!({}),
+        );
+        emit(path, "tend.completed", "tend", json!({"run": 1}));
+        emit(path, "tend.completed", "tend", json!({"run": 2}));
+
+        let proj = build(path).expect("build");
+        assert_eq!(proj.counts_by_kind["atlas.promoted"], 2);
+        assert_eq!(
+            proj.atlas_files,
+            vec!["vault/atlas/concepts/x.md".to_string()]
+        );
+        assert_eq!(
+            proj.last_tend_completed,
+            Some(json!({"run": 2})),
+            "last tend.completed payload wins"
+        );
+        assert!(proj.pending_reweave.is_empty());
     }
 }
