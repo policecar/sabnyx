@@ -3,8 +3,8 @@
 Date: 2026-07-01
 Reviewed at: `03ae1ed` (main)
 Reference: *Switchboard / jibrain / Jibot: A Production Knowledge Architecture
-for AI Agents* (jibot-source.md, 1,346 lines), plus the repo's own SPEC.md,
-ROUTING.md, AGENTS.md, and ADRs 0001–0007.
+for AI Agents* (mirrored at `docs/spec/jibot.md`, 1,346 lines), plus the
+repo's own SPEC.md, ROUTING.md, AGENTS.md, and ADRs 0001–0007.
 
 Method: full read of the reference spec and all contract docs; line-level
 review of the Python package (`src/sabnyx/`), the Rust control plane

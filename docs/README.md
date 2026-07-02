@@ -11,6 +11,7 @@ Everything else lives here:
 | `testing.md` | test playbook: free suites → live smoke tests |
 | `deployment.md` | production playbook: two-repo split, systemd, Telegram, R1 |
 | `reserved-syntax.md` | ZK/x402 HTML-comment syntax, reserved for stage 3 |
+| `spec/jibot.md` | local-only (gitignored) copy of the jibot/Switchboard source spec sabnyx adapts |
 | `decisions/` | ADRs 0001–0007 — one decision each, immutable |
 | `plans/` | roadmap (historical stage 0–3 arc), build-out plan (milestone 1, complete) |
 | `reviews/` | dated reviews: architecture (2026-06), simplification (2026-06), codebase-vs-spec (2026-07) |

@@ -222,8 +222,7 @@ against the jibot spec plus a hardening pass landed 2026-07-01 — see
 Architecture adapted from Joi Ito's jibot
 (<https://jibot.md/learnings/architecture>) — three-tier discipline, the
 routing tree, the `description` field, the reweave pass, observations, the
-seven gates, the four-plane ledger, and the normalized envelope. A full local
-mirror of the source lives at
-`vault/atlas/references/switchboard-jibrain-jibot-architecture.md` in the
-private vault repo (not in this clone). Recon notes on Joi's open-source repos
-are in `docs/recon/`.
+seven gates, the four-plane ledger, and the normalized envelope. The source
+document is kept locally at `docs/spec/jibot.md` (gitignored) (the original is gated
+to anonymous fetchers). Recon notes on Joi's open-source repos are in
+`docs/recon/`.
