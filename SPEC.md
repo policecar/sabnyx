@@ -4,8 +4,8 @@ This document defines the rules every file in the vault must obey.
 Agents and humans alike. If this document and the code disagree,
 the code is wrong.
 
-Adapted from jibot.md/learnings/architecture. Deviations are noted
-inline with `DEVIATION:`.
+Adapted from jibot.md/learnings/architecture (local copy:
+docs/spec/jibot.md, gitignored). Deviations are noted inline with `DEVIATION:`.
 
 ## 1. Three tiers
 
