@@ -220,7 +220,7 @@ def test_ingest_declined_retains_and_reuses_capture(tmp_vault, monkeypatch, tmp_
     assert (tmp_vault["SOURCES"] / "declined.md").exists()
     assert not list(tmp_vault["INTAKE"].glob("*.md"))
     kinds = [e.kind for e in ledger.replay()]
-    assert "ingest.failed" in kinds  # the rollback is ledgered
+    assert "ingest.failed" in kinds  # the declined derivation is ledgered
     # and the same content can be re-ingested afterwards
     result2, _ = _run_ingest(tmp_vault, monkeypatch, [str(src), "--title", "Declined", "--yes"])
     assert result2.exit_code == 0, result2.output
