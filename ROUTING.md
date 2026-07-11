@@ -20,6 +20,13 @@ single source of truth; ad-hoc placement is a bug.
           (triage report, session state, scratch)
           +-- YES -> _review/ or don't persist at all
 
+DEVIATION: the existing-file branch is currently operator-driven. Ingest can
+detect overlap and file a connection/contradiction observation, but no command
+applies source-backed claim updates to atlas. The bounded experiment in
+`docs/plans/atlas-update-intents-experiment.md` must prove useful before this
+branch becomes automated; until then, update the existing page manually and
+use marker blocks only for agent-managed sections.
+
 ## Content-type routing table
 
     Content                         Destination                         Why
