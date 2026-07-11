@@ -72,6 +72,10 @@ def lint_cmd(files: tuple[Path, ...], staged: bool) -> None:
             text=True,
             cwd=DATA_ROOT,
         )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or "unknown git error"
+            console.print(f"[red]could not inspect staged files:[/red] {detail}")
+            sys.exit(1)
         targets = []
         for rel in result.stdout.splitlines():
             p = DATA_ROOT / rel

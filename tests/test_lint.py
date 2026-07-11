@@ -72,6 +72,68 @@ class TestStagedUsesDataRoot:
         assert result.exit_code == 1, result.output
         assert "failed lint" in result.output
 
+    def test_staged_fails_closed_when_git_diff_fails(self, tmp_vault, monkeypatch):
+        _patch_lint(monkeypatch, tmp_vault)
+
+        def failed(*args, **kwargs):
+            return subprocess.CompletedProcess(args[0], 128, "", "fatal: not a git repository")
+
+        monkeypatch.setattr(subprocess, "run", failed)
+        result = _run_lint(["--staged"])
+        assert result.exit_code == 1
+        assert "could not inspect staged files" in result.output
+
+
+def test_split_root_hook_checks_data_repo(tmp_path):
+    """The installed script may live in the code repo, but Git invokes it
+    while committing the split DATA repo; it must inspect and lint that index."""
+    import os
+
+    from sabnyx.paths import ROOT
+
+    data = tmp_path / "data"
+    intake = data / "vault" / "intake"
+    intake.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=data, check=True)
+    fm.write(intake / "invalid.md", _intake_meta(description="too short"), "# bad\n")
+    subprocess.run(["git", "add", "vault/intake/invalid.md"], cwd=data, check=True)
+
+    hook = data / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.symlink_to(ROOT / "ops" / "scripts" / "pre-commit.sh")
+    env = {**os.environ, "SABNYX_DATA_DIR": str(data)}
+    result = subprocess.run(
+        ["bash", str(hook)],
+        cwd=data,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "commit blocked" in result.stdout
+
+
+def test_install_hooks_targets_split_data_repo(tmp_path):
+    import os
+
+    from sabnyx.paths import ROOT
+
+    data = tmp_path / "data"
+    data.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=data, check=True)
+    env = {**os.environ, "SABNYX_DATA_DIR": str(data)}
+    result = subprocess.run(
+        ["bash", str(ROOT / "ops" / "scripts" / "install-hooks.sh")],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    hook = data / ".git" / "hooks" / "pre-commit"
+    assert hook.is_symlink()
+    assert hook.resolve() == ROOT / "ops" / "scripts" / "pre-commit.sh"
+
 
 class TestDomainsSkipped:
     def test_domains_file_does_not_fail_lint(self, tmp_vault, monkeypatch):
