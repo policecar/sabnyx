@@ -91,6 +91,28 @@ def test_capture_slug_collision_with_different_content_disambiguates(tmp_vault):
         sources.capture(text="the same opening phrase then B", slug="The Same", actor="pytest")
 
 
+def test_capture_reuses_identical_content_when_requested(tmp_vault):
+    first = sources.capture(text="same", slug="Same", actor="pytest")
+    reused = sources.capture(text="same", slug="Same", actor="pytest", reuse_existing=True)
+    assert reused == first
+    assert [e.kind for e in ledger.replay()] == ["source.captured"]
+
+
+def test_capture_preserves_distinct_provenance_variants(tmp_vault):
+    paths = [
+        sources.capture(
+            text="same text",
+            slug="same title",
+            actor=f"actor-{n}",
+            source_url=f"https://example.com/{n}",
+        )
+        for n in range(3)
+    ]
+    assert len(set(paths)) == 3
+    for n, path in enumerate(paths):
+        assert f"source-url: https://example.com/{n}" in path.read_text()
+
+
 def test_capture_records_url_header(tmp_vault):
     p = sources.capture(text="body", slug="x", actor="pytest", source_url="https://example.com/a")
     content = p.read_text()
@@ -183,9 +205,9 @@ def test_ingest_dry_run_writes_nothing(tmp_vault, monkeypatch):
     assert not list(tmp_vault["INTAKE"].glob("*.md"))
 
 
-def test_ingest_declined_rolls_back_capture(tmp_vault, monkeypatch, tmp_path):
-    # A declined run must not leave the write-once artifact behind — that would
-    # dead-end every later re-ingest of the same content (M11 consistency).
+def test_ingest_declined_retains_and_reuses_capture(tmp_vault, monkeypatch, tmp_path):
+    # Declining derived writes must not delete the immutable raw source. A later
+    # ingest reuses it rather than being dead-ended by write-once capture.
     src = tmp_path / "declined-input.txt"
     src.write_text("source text\n")
     result, _calls = _run_ingest(
@@ -195,7 +217,7 @@ def test_ingest_declined_rolls_back_capture(tmp_vault, monkeypatch, tmp_path):
         input_text="n\n",  # answer 'n' at the approval prompt
     )
     assert result.exit_code == 0, result.output
-    assert not (tmp_vault["SOURCES"] / "declined.md").exists()
+    assert (tmp_vault["SOURCES"] / "declined.md").exists()
     assert not list(tmp_vault["INTAKE"].glob("*.md"))
     kinds = [e.kind for e in ledger.replay()]
     assert "ingest.failed" in kinds  # the rollback is ledgered
@@ -205,9 +227,9 @@ def test_ingest_declined_rolls_back_capture(tmp_vault, monkeypatch, tmp_path):
     assert (tmp_vault["SOURCES"] / "declined.md").exists()
 
 
-def test_ingest_extraction_failure_rolls_back_capture(tmp_vault, monkeypatch):
-    """LLM failure after a fresh capture must not poison the slug: the artifact
-    is removed, ingest.failed is ledgered, and a retry can succeed."""
+def test_ingest_extraction_failure_retains_and_reuses_capture(tmp_vault, monkeypatch):
+    """An LLM failure retains the immutable artifact, ledgers the failed
+    derivation, and a retry reuses the same source."""
     from rich.console import Console
 
     from sabnyx import services
@@ -224,13 +246,13 @@ def test_ingest_extraction_failure_rolls_back_capture(tmp_vault, monkeypatch):
             source_url=None,
             console=Console(),
         )
-    assert not (tmp_vault["SOURCES"] / "poisoned-slug.md").exists()
+    assert (tmp_vault["SOURCES"] / "poisoned-slug.md").exists()
     events = list(ledger.replay())
     kinds = [e.kind for e in events]
     assert kinds == ["source.captured", "ingest.failed"]
     failed = events[-1]
     assert "provider exploded" in failed.payload["reason"]
-    assert failed.payload["capture_rolled_back"] is True
+    assert failed.payload["capture_retained"] is True
 
     # retry with a working model succeeds — the slug is not dead
     monkeypatch.setattr(services.llm, "parse_structured", lambda **kw: CANNED)
@@ -245,7 +267,7 @@ def test_ingest_extraction_failure_rolls_back_capture(tmp_vault, monkeypatch):
     assert written
 
 
-def test_ingest_cli_extraction_failure_rolls_back(tmp_vault, monkeypatch):
+def test_ingest_cli_extraction_failure_retains_capture(tmp_vault, monkeypatch):
     from sabnyx.commands import ingest as ingest_mod
 
     def boom(**kwargs):
@@ -258,8 +280,8 @@ def test_ingest_cli_extraction_failure_rolls_back(tmp_vault, monkeypatch):
         input="doomed source text\n",
     )
     assert result.exit_code == 1, result.output
-    assert "rolled back" in result.output
-    assert not (tmp_vault["SOURCES"] / "doomed.md").exists()
+    assert "retained" in result.output
+    assert (tmp_vault["SOURCES"] / "doomed.md").exists()
     assert "ingest.failed" in [e.kind for e in ledger.replay()]
 
 

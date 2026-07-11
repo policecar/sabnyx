@@ -94,7 +94,13 @@ def ingest_cmd(
     src_path: Path | None = None
     if not dry_run:
         try:
-            src_path = sources.capture(text=text, slug=src_title, actor=actor, source_url=url)
+            src_path = sources.capture(
+                text=text,
+                slug=src_title,
+                actor=actor,
+                source_url=url,
+                reuse_existing=True,
+            )
         except FileExistsError as e:
             console.print(f"[red]{e}[/red]")
             sys.exit(1)
@@ -115,12 +121,8 @@ def ingest_cmd(
         )
     except Exception as e:
         if src_path is not None:
-            # Roll back the fresh capture so a retry isn't dead-ended by the
-            # write-once sources layer (ingest.failed is ledgered).
-            services.rollback_capture(
-                src_path, src_rel, actor=actor, reason=f"{type(e).__name__}: {e}"
-            )
-            console.print(f"[red]extraction failed; captured source rolled back:[/red] {e}")
+            services.record_ingest_failure(src_rel, actor=actor, reason=f"{type(e).__name__}: {e}")
+            console.print(f"[red]extraction failed; captured source retained:[/red] {e}")
             sys.exit(1)
         raise
     console.print(
@@ -145,11 +147,8 @@ def ingest_cmd(
     if not changeset.intake_files and not changeset.observations:
         return
     if not yes and not click.confirm("\napply?", default=True):
-        # Roll back the capture this run made, like the extraction-failure
-        # path — a kept artifact would block re-ingesting the same content.
-        assert src_path is not None
-        services.rollback_capture(src_path, src_rel, actor=actor, reason="operator declined")
-        console.print("[dim]declined; captured source rolled back, nothing written[/dim]")
+        services.record_ingest_failure(src_rel, actor=actor, reason="operator declined")
+        console.print("[dim]declined; captured source retained, nothing written[/dim]")
         return
 
     # -- 6. apply through the validated writers --------------------------------------
