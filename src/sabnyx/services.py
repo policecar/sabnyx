@@ -555,17 +555,18 @@ def apply_ingest(
     return written
 
 
-def rollback_capture(src_path: Path, src_rel: str, *, actor: str, reason: str) -> None:
-    """Remove a source artifact captured by THIS run whose ingest didn't land
-    (extraction failure, operator decline) and ledger why. Without the
-    rollback, write-once capture permanently dead-ends every re-ingest of the
-    same content behind "already captured"."""
-    src_path.unlink(missing_ok=True)
+def record_ingest_failure(src_rel: str, *, actor: str, reason: str) -> None:
+    """Ledger an ingest that did not produce derived knowledge.
+
+    The raw artifact is retained: ADR 0005 makes sources immutable audit input
+    and promises they remain available for re-extraction. Retry paths reuse the
+    identical capture instead of deleting and recreating it.
+    """
     ledger.append_event(
         kind="ingest.failed",
         actor=actor,
         subject=src_rel,
-        payload={"reason": reason[:500], "capture_rolled_back": True},
+        payload={"reason": reason[:500], "capture_retained": True},
     )
 
 
@@ -581,15 +582,20 @@ def ingest_text(
     """Capture raw text, then build and apply an ingest proposal.
 
     The whole capture -> propose -> apply pipeline every channel shares. Returns
-    ``(summary, written_paths)``. Raises ``FileExistsError`` if the source was
-    already captured (sources are write-once); callers shape that into their own
-    "already captured" reply. If extraction fails after a fresh capture, the
-    artifact is rolled back (with an ``ingest.failed`` event) so re-ingest works.
+    ``(summary, written_paths)``. Identical retained sources are reused for
+    re-extraction. If extraction fails, the artifact remains intact and an
+    ``ingest.failed`` event records the failed derivation.
     """
     # The model must read exactly what was captured (Gate 3: the immutable
     # artifact is the audit record of the extraction input).
     text = text[: sources.MAX_SOURCE_CHARS]
-    src_path = sources.capture(text=text, slug=title, actor=actor, source_url=source_url)
+    src_path = sources.capture(
+        text=text,
+        slug=title,
+        actor=actor,
+        source_url=source_url,
+        reuse_existing=True,
+    )
     src_rel = str(src_path.relative_to(paths.DATA_ROOT))
     try:
         proposal = build_ingest_proposal(
@@ -601,7 +607,7 @@ def ingest_text(
             actor=actor,
         )
     except Exception as e:
-        rollback_capture(src_path, src_rel, actor=actor, reason=f"{type(e).__name__}: {e}")
+        record_ingest_failure(src_rel, actor=actor, reason=f"{type(e).__name__}: {e}")
         raise
     written = apply_ingest(
         proposal,

@@ -138,14 +138,15 @@ def capture(
     actor: str,
     source_url: str | None = None,
     suffix: str = ".md",
+    reuse_existing: bool = False,
 ) -> Path:
     """Write one immutable raw artifact to vault/sources/ and ledger it.
 
     Write-once per *content*: recapturing identical content raises
-    FileExistsError. A slug collision with DIFFERENT content (title-derived
-    slugs collide easily — first-8-words titles, non-Latin titles) gets a
-    short content-hash suffix instead of a refusal, so one earlier capture
-    can never dead-end a genuinely new source. Returns the path.
+    FileExistsError unless ``reuse_existing`` is true, in which case the
+    retained artifact is returned for re-extraction. A slug collision with
+    DIFFERENT stored content (including provenance headers) gets a content-hash
+    suffix instead of a refusal. Returns the path.
     """
     ensure_tree()
     if len(text) > MAX_SOURCE_CHARS:
@@ -156,15 +157,44 @@ def capture(
         header = f"<!-- source-url: {source_url} -->\n<!-- captured-by: {actor} -->\n\n"
     content = header + text
 
-    path = SOURCES / f"{slugify(slug)}{suffix}"
+    base = slugify(slug)
+    path = SOURCES / f"{base}{suffix}"
     if path.exists():
         if path.read_text(encoding="utf-8") == content:
+            if reuse_existing:
+                return path
             raise FileExistsError(f"source already captured: {path.relative_to(DATA_ROOT)}")
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
-        path = SOURCES / f"{slugify(slug)}-{digest}{suffix}"
-        if path.exists():
-            # the disambiguated name exists too -> this exact content is captured
-            raise FileExistsError(f"source already captured: {path.relative_to(DATA_ROOT)}")
+
+        # Provenance is part of the stored artifact, so hash the complete bytes,
+        # not only the raw text. Widen the suffix if a short-hash collision is
+        # already occupied by different content; at full width, use a numeric
+        # suffix defensively (e.g. if a file was manually replaced).
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        for width in range(8, len(digest) + 1, 8):
+            candidate = SOURCES / f"{base}-{digest[:width]}{suffix}"
+            if not candidate.exists():
+                path = candidate
+                break
+            if candidate.read_text(encoding="utf-8") == content:
+                if reuse_existing:
+                    return candidate
+                raise FileExistsError(
+                    f"source already captured: {candidate.relative_to(DATA_ROOT)}"
+                )
+        else:
+            serial = 2
+            while True:
+                candidate = SOURCES / f"{base}-{digest}-{serial}{suffix}"
+                if not candidate.exists():
+                    path = candidate
+                    break
+                if candidate.read_text(encoding="utf-8") == content:
+                    if reuse_existing:
+                        return candidate
+                    raise FileExistsError(
+                        f"source already captured: {candidate.relative_to(DATA_ROOT)}"
+                    )
+                serial += 1
     path.write_text(content, encoding="utf-8")
 
     ledger.append_event(
