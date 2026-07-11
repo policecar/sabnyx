@@ -20,7 +20,7 @@ _px/
 ```sh
 # sabnyx — Python
 cd ../sabnyx
-uv run pytest -q                                  # all green (328 at last count)
+uv run pytest -q                                  # all green (334 at last count)
 uv run ruff check . && uv run ruff format --check .
 
 # sabnyx — opsctl (Rust control plane) — NOT covered by pytest
