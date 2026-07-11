@@ -111,3 +111,24 @@ def test_slug_index_collision_keeps_first_and_warns(tmp_path, capsys):
     assert "duplicate slug 'dupe'" in err
     assert "shadowing" in err
     assert str(second) in err
+
+
+def test_vault_and_scoped_indexes_share_collision_policy(tmp_vault, capsys):
+    concepts = tmp_vault["ATLAS"] / "concepts"
+    references = tmp_vault["ATLAS"] / "references"
+    first = _atlas_file(
+        concepts,
+        "dupe",
+        description="a long enough description for the first duplicate",
+        body="first",
+    )
+    _atlas_file(
+        references,
+        "dupe",
+        description="a long enough description for the second duplicate",
+        body="second",
+    )
+
+    assert context.slug_index(tmp_vault["ATLAS"])["dupe"] == first
+    assert context.vault_slug_index()["dupe"] == first
+    assert capsys.readouterr().err.count("duplicate slug 'dupe'") == 2

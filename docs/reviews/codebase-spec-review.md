@@ -622,6 +622,10 @@ refuted. Fixes landed in four commits on this branch:
 Gates after the last commit: `pytest` 328 passed (was 258), `cargo test`
 50 passed (was 23), `ruff`/`ty`/`clippy`/`fmt` clean.
 
+Post-review hardening adds executable regressions for retained source reuse,
+split-root hook enforcement, compensating atlas removal, and shared slug
+collision semantics. Follow-up gates: 334 Python tests and 51 Rust tests.
+
 ### Critical and major findings
 
 | Finding | Verdict | Fixed in |
@@ -637,7 +641,7 @@ Gates after the last commit: `pytest` 328 passed (was 258), `cargo test`
 | M8 — root/.env resolution divergence (duplicate keys; cwd discovery panics under cron) | CONFIRMED (repro incl. cwd=/ panic) — fixed: last-match dotenv; exe-relative root discovery with clean error, no panic | `99f6898` |
 | M9 — one bad ledger line bricks all consumers; hash never verified | CONFIRMED — fixed both sides: line-numbered errors with snippet (Rust + Python), Python single-write append, new `opsctl verify` recomputing every `content_hash` | `99f6898`, `52e59b2` |
 | M10 — aliases never consulted; health/entities disagree on resolution | CONFIRMED (reproduced) — fixed: shared `link_resolution_index` (stems + slugified aliases) used by both | `c04fac4` |
-| M11 — capture-first ingest permanently poisons a slug | CONFIRMED — fixed: rollback + `ingest.failed` event on extraction failure or decline; content-hash suffix on different-content collisions | `52e59b2` |
+| M11 — capture-first ingest permanently poisons a slug | CONFIRMED — fixed, then hardened in follow-up: immutable captures are retained and reused after extraction failure or decline; different stored content uses a collision-safe full-content hash suffix | `52e59b2` + follow-up |
 | M12 — `source_url` rule lives outside the schema | CONFIRMED — fixed: model validator (bookmark/paper); LLM path downgrades urlless bookmark to note; manual check removed | `52e59b2` |
 
 ### Minor findings

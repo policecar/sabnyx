@@ -20,16 +20,10 @@ EXCERPT_CHARS = 2500
 TOTAL_CHARS = 300_000
 
 
-def slug_index(dir_: Path) -> dict[str, Path]:
-    """Lowercased slug -> path for every knowledge file under dir_.
-
-    Lowercased keys match vault_slug_index's canonical form (Foo.md and
-    foo.md must not be two different pages to one consumer and one page to
-    another). On a stem collision the FIRST file in the deterministic walk
-    order wins, loudly — silent last-wins shadowing hid files from ask and
-    reweave."""
+def _index_paths(files: list[Path]) -> dict[str, Path]:
+    """Build the one canonical lowercased, first-wins slug index."""
     out: dict[str, Path] = {}
-    for p in walk_vault_md(dir_):
+    for p in files:
         key = p.stem.lower()
         if key in out:
             Console(stderr=True).print(
@@ -41,6 +35,17 @@ def slug_index(dir_: Path) -> dict[str, Path]:
     return out
 
 
+def slug_index(dir_: Path) -> dict[str, Path]:
+    """Lowercased slug -> path for every knowledge file under dir_.
+
+    Lowercased keys match vault_slug_index's canonical form (Foo.md and
+    foo.md must not be two different pages to one consumer and one page to
+    another). On a stem collision the FIRST file in the deterministic walk
+    order wins, loudly — silent last-wins shadowing hid files from ask and
+    reweave."""
+    return _index_paths(walk_vault_md(dir_))
+
+
 def vault_slug_index() -> dict[str, Path]:
     """Lowercased slug -> path for every knowledge file under vault/, excluding
     observations. The lowercase key is the canonical form health/entities use
@@ -48,9 +53,8 @@ def vault_slug_index() -> dict[str, Path]:
 
     References ``paths`` by module attribute so tests can redirect the vault
     wholesale (matching writers.py)."""
-    return {
-        p.stem.lower(): p for p in walk_vault_md(paths.VAULT) if paths.OBSERVATIONS not in p.parents
-    }
+    files = [p for p in walk_vault_md(paths.VAULT) if paths.OBSERVATIONS not in p.parents]
+    return _index_paths(files)
 
 
 def link_resolution_index(idx: dict[str, Path]) -> dict[str, str]:

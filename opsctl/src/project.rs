@@ -3,7 +3,7 @@
 // Demonstrates "segments are authority; projections rebuild."
 // - Counts per kind
 // - Pending reweave intents (reweave.proposed minus later reweave.completed for same subject)
-// - Atlas files seen (atlas.promoted subjects)
+// - Current atlas files (atlas.promoted minus later atlas.removed subjects)
 // - Last tend.completed payload
 
 use crate::ledger::replay;
@@ -45,6 +45,10 @@ pub fn build(events_path: &Path) -> anyhow::Result<Projection> {
             // "atlas.created" kind, so it is not matched here.
             "atlas.promoted" => {
                 atlas_files.insert(event.subject.clone());
+            }
+            "atlas.removed" => {
+                atlas_files.remove(&event.subject);
+                reweave_pending.remove(&event.subject);
             }
             "tend.completed" => {
                 last_tend_completed = Some(event.payload.clone());
@@ -212,5 +216,21 @@ mod tests {
             "last tend.completed payload wins"
         );
         assert!(proj.pending_reweave.is_empty());
+    }
+
+    #[test]
+    fn test_atlas_removed_compensates_projection_state() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path();
+        let subject = "vault/atlas/concepts/gone.md";
+
+        emit(path, "atlas.promoted", subject, json!({}));
+        emit(path, "reweave.proposed", subject, json!({}));
+        emit(path, "atlas.removed", subject, json!({}));
+
+        let proj = build(path).expect("build");
+        assert!(proj.atlas_files.is_empty());
+        assert!(proj.pending_reweave.is_empty());
+        assert_eq!(proj.counts_by_kind["atlas.removed"], 1);
     }
 }
