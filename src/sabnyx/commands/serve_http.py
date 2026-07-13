@@ -161,16 +161,19 @@ def resolve_static(url_path: str, root: Path) -> Path | None:
         rel += "index.html"
     root = root.resolve()
     try:
-        # .resolve() itself can raise on hostile paths (ValueError for an
-        # embedded NUL byte, OSError for e.g. an over-long name) — this runs
-        # unauthenticated, so treat all of those as "no such file".
+        # .resolve() AND the final is_file() stat can raise on hostile paths
+        # (ValueError for an embedded NUL byte, OSError for an over-long name) —
+        # this runs unauthenticated, so treat all of those as "no such file".
+        # is_file() must stay inside the guard: .resolve() on a non-existent
+        # path resolves lexically without a stat, so the ENAMETOOLONG OSError
+        # surfaces at is_file(), not above.
         candidate = (root / rel).resolve()
         candidate.relative_to(root)
+        return candidate if candidate.is_file() else None
     except ValueError:
         return None  # escaped the static root, or unresolvable (NUL byte)
     except OSError:
-        return None
-    return candidate if candidate.is_file() else None
+        return None  # over-long or otherwise un-stat-able name
 
 
 def _make_handler(
