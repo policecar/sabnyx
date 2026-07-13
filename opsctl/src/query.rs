@@ -94,8 +94,10 @@ fn print_table(events: &[&Event]) {
         return;
     }
 
-    // Column widths
-    let ts_w = 26;
+    // Column widths. 27 = full RFC3339 with 6-digit micros and the trailing
+    // Z (e.g. 2026-04-22T19:55:00.000000Z); a narrower width would drop the Z
+    // and print an invalid instant.
+    let ts_w = 27;
     let plane_w = 10;
     let kind_w = events
         .iter()
@@ -127,8 +129,9 @@ fn print_table(events: &[&Event]) {
     );
 
     for e in events {
-        // Truncate ts to 26 chars (drop microseconds if present). Char-based,
-        // not a byte slice: a corrupt multibyte ts must not panic the table.
+        // Clamp ts to the column width (a full instant fits; anything longer
+        // is corrupt). Char-based, not a byte slice: a corrupt multibyte ts
+        // must not panic the table.
         let ts_display: String = e.ts.chars().take(ts_w).collect();
         println!(
             "{:<ts_w$}  {:<plane_w$}  {:<kind_w$}  {:<actor_w$}  {}",
