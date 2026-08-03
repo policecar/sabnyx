@@ -168,17 +168,52 @@ def test_telegram_http_errors_redact_token(monkeypatch):
         httpx, "post", lambda url, **kw: httpx.Response(500, request=httpx.Request("POST", url))
     )
 
+    def chain_text(e: BaseException) -> str:
+        parts, seen = [], set()
+        cur: BaseException | None = e
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            parts.append(str(cur))
+            cur = cur.__context__ or cur.__cause__
+        return "".join(parts)
+
     with pytest.raises(RuntimeError) as exc:
         telegram.get_updates(None)
     assert "HTTP 409" in str(exc.value)
     assert tok not in str(exc.value)
     assert tok not in "".join(traceback.format_exception(exc.value))
+    # __context__ must be severed: the token-bearing httpx error must not be
+    # reachable by a logger that walks the exception chain.
+    assert exc.value.__context__ is None
+    assert tok not in chain_text(exc.value)
 
     with pytest.raises(RuntimeError) as exc:
         telegram.send_message(999, "hi")
     assert "HTTP 500" in str(exc.value)
     assert tok not in str(exc.value)
     assert tok not in "".join(traceback.format_exception(exc.value))
+    assert exc.value.__context__ is None
+    assert tok not in chain_text(exc.value)
+
+
+def test_telegram_non_json_200_is_redacted(monkeypatch):
+    """A 200 with a non-JSON body (proxy/error page) makes resp.json() raise
+    ValueError; it must be redacted like an HTTP error, not leak raw out of the
+    poll loop (and the token-bearing URL must not reach __context__)."""
+    import httpx
+
+    tok = "1234567:SECRETTOKENVALUE"
+    monkeypatch.setenv("SABNYX_TELEGRAM_TOKEN", tok)
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda url, **kw: httpx.Response(200, request=httpx.Request("GET", url), content=b"<html>"),
+    )
+    with pytest.raises(RuntimeError) as exc:
+        telegram.get_updates(None)
+    assert "getUpdates failed" in str(exc.value)
+    assert tok not in str(exc.value)
+    assert exc.value.__context__ is None
 
 
 def test_telegram_transport_errors_redact_token(monkeypatch):
