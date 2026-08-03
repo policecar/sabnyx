@@ -73,6 +73,15 @@ def _pending_targets() -> list[Path]:
         if kind != "reweave.proposed":
             continue
         p = paths.DATA_ROOT / subj
+        # is_file() stands in for "not deleted" rather than consuming
+        # atlas.removed directly (unlike opsctl/src/project.rs and
+        # services.reconcile_atlas). Functionally equivalent today, with one
+        # low-probability edge case: delete this path (logging a compensating
+        # atlas.removed), then re-promote a *different* file to the exact
+        # same path with no intervening reweave.completed -- the stale
+        # pre-deletion reweave.proposed intent would resurface against the
+        # new file. If that bites, switch to consuming atlas.removed
+        # explicitly for parity with the Rust projection.
         if p.is_file():
             out.append(p)
     return out
