@@ -55,6 +55,15 @@ def write_intake(
     slug = slugify(pi.title)
     path = paths.INTAKE / f"{slug}.md"
 
+    if pi.type in ("bookmark", "paper") and not source_url:
+        # SPEC §3: bookmark/paper require a source_url. A model can propose
+        # type=bookmark for pasted text that has no URL — downgrade to note
+        # rather than write an invalid file (or crash on validation).
+        console.print(
+            f"  [yellow]downgrade[/yellow] {slug}: {pi.type} proposed without a source_url → note"
+        )
+        pi = pi.model_copy(update={"type": "note"})
+
     meta: dict = {
         "type": pi.type,
         "description": pi.description,

@@ -6,9 +6,11 @@ import sys
 from datetime import date as date_cls
 
 import click
+from pydantic import ValidationError
 
-from .. import fm, ledger
+from .. import fm, ledger, writers
 from ..paths import DATA_ROOT, INTAKE, OBSERVATIONS, ensure_tree
+from ..schemas import IntakeFrontmatter, ObservationFrontmatter
 from ..util import slugify
 
 
@@ -68,9 +70,8 @@ def new_cmd(
         }
         body = f"# {title}\n\n{description}\n"
     else:
-        if type_ in ("bookmark", "paper") and not source_url:
-            click.echo(f"--source-url is required for {type_}", err=True)
-            sys.exit(2)
+        # source_url-required-for-bookmark/paper is enforced by the
+        # IntakeFrontmatter schema (Gate 2), via the pre-write validation below.
         path = INTAKE / f"{slug}.md"
         meta: dict = {
             "type": type_,
@@ -86,6 +87,18 @@ def new_cmd(
         if source_date:
             meta["source_date"] = source_date
         body = f"# {title}\n\n"
+
+    # Validate the frontmatter BEFORE touching disk: an invalid dict (short
+    # description, urlless bookmark, ...) must never write-then-delete.
+    model = ObservationFrontmatter if type_ == "observation" else IntakeFrontmatter
+    try:
+        model.model_validate(meta)
+    except ValidationError as e:
+        errors = "; ".join(
+            f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
+        )
+        click.echo(f"invalid frontmatter, nothing written: {errors}", err=True)
+        sys.exit(3)
 
     if path.exists():
         click.echo(f"refusing to overwrite: {path}", err=True)
@@ -111,5 +124,9 @@ def new_cmd(
             "category": category,
             "slug": slug,
         },
+    )
+    # Provenance log (Gate 3): manual creation is an ingestion too.
+    writers.append_knowledge_log(
+        "new", title, {"file": str(path.relative_to(DATA_ROOT)), "type": meta["type"]}
     )
     click.echo(str(path))

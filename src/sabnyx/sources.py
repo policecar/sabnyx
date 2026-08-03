@@ -9,6 +9,7 @@ HTML-comment syntax:  <!-- source-id:sabnyx-sources:<filename> -->
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import socket
 import urllib.error
@@ -50,11 +51,20 @@ def classify_depth(text: str, source_url: str | None = None) -> ExtractionDepth:
     return "deep"
 
 
+# Carrier-grade NAT (RFC 6598). Not flagged by ipaddress.is_private, but it is
+# never a legitimate public destination — treat it like RFC-1918.
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+
+
 def _is_blocked_ip(ip: str) -> bool:
     """True for any address we refuse to connect to: loopback, RFC-1918
-    private, link-local (incl. cloud metadata 169.254.169.254), reserved,
-    multicast, or unspecified."""
+    private, link-local (incl. cloud metadata 169.254.169.254), CGNAT,
+    reserved, multicast, or unspecified."""
     addr = ipaddress.ip_address(ip)
+    # is_private/is_loopback/is_link_local already unwrap IPv4-mapped IPv6
+    # (::ffff:a.b.c.d) internally, but CGNAT has no stdlib predicate — unwrap
+    # it ourselves so an IPv4-mapped CGNAT address isn't missed.
+    v4 = addr.ipv4_mapped if isinstance(addr, ipaddress.IPv6Address) else addr
     return (
         addr.is_private
         or addr.is_loopback
@@ -62,6 +72,7 @@ def _is_blocked_ip(ip: str) -> bool:
         or addr.is_reserved
         or addr.is_multicast
         or addr.is_unspecified
+        or (v4 is not None and v4.version == 4 and v4 in _CGNAT_NET)
     )
 
 
@@ -131,23 +142,64 @@ def capture(
     actor: str,
     source_url: str | None = None,
     suffix: str = ".md",
+    reuse_existing: bool = False,
 ) -> Path:
     """Write one immutable raw artifact to vault/sources/ and ledger it.
 
-    Refuses to overwrite: sources are write-once. Returns the path.
+    Write-once per *content*: recapturing identical content raises
+    FileExistsError unless ``reuse_existing`` is true, in which case the
+    retained artifact is returned for re-extraction. A slug collision with
+    DIFFERENT stored content (including provenance headers) gets a content-hash
+    suffix instead of a refusal. Returns the path.
     """
     ensure_tree()
     if len(text) > MAX_SOURCE_CHARS:
         text = text[:MAX_SOURCE_CHARS]
 
-    path = SOURCES / f"{slugify(slug)}{suffix}"
-    if path.exists():
-        raise FileExistsError(f"source already captured: {path.relative_to(DATA_ROOT)}")
-
     header = ""
     if source_url:
         header = f"<!-- source-url: {source_url} -->\n<!-- captured-by: {actor} -->\n\n"
-    path.write_text(header + text, encoding="utf-8")
+    content = header + text
+
+    base = slugify(slug)
+    path = SOURCES / f"{base}{suffix}"
+    if path.exists():
+        if path.read_text(encoding="utf-8") == content:
+            if reuse_existing:
+                return path
+            raise FileExistsError(f"source already captured: {path.relative_to(DATA_ROOT)}")
+
+        # Provenance is part of the stored artifact, so hash the complete bytes,
+        # not only the raw text. Widen the suffix if a short-hash collision is
+        # already occupied by different content; at full width, use a numeric
+        # suffix defensively (e.g. if a file was manually replaced).
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        for width in range(8, len(digest) + 1, 8):
+            candidate = SOURCES / f"{base}-{digest[:width]}{suffix}"
+            if not candidate.exists():
+                path = candidate
+                break
+            if candidate.read_text(encoding="utf-8") == content:
+                if reuse_existing:
+                    return candidate
+                raise FileExistsError(
+                    f"source already captured: {candidate.relative_to(DATA_ROOT)}"
+                )
+        else:
+            serial = 2
+            while True:
+                candidate = SOURCES / f"{base}-{digest}-{serial}{suffix}"
+                if not candidate.exists():
+                    path = candidate
+                    break
+                if candidate.read_text(encoding="utf-8") == content:
+                    if reuse_existing:
+                        return candidate
+                    raise FileExistsError(
+                        f"source already captured: {candidate.relative_to(DATA_ROOT)}"
+                    )
+                serial += 1
+    path.write_text(content, encoding="utf-8")
 
     ledger.append_event(
         kind="source.captured",

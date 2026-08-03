@@ -26,6 +26,8 @@ This file is stable. Change it deliberately.
                      ops/events.jsonl, ops/knowledge-log.md     everything
     telegram-agent   (same as intake-agent; trusted senders only,
                      auto-applies to intake/ — see ADR 0007)        everything
+    r1-agent         (same as intake-agent; bearer-key allowlist,
+                     routes are fixed per path — see serve-http)    everything
     triage-agent     vault/_review/, vault/intake/ (frontmatter only),
                      ops/events.jsonl                           everything
     promote-agent    vault/atlas/, vault/intake/ (delete source),
@@ -38,7 +40,7 @@ This file is stable. Change it deliberately.
 
 Stage 0 runs everything under `operator`. Role separation is enforced
 by convention and audited by the ledger. Stage 3 introduces hard
-sandboxing (see docs/recon/nanoclaw-mirror.md).
+sandboxing (see ADR 0004).
 
 ## 3. Every mutation emits one ledger event
 
@@ -113,13 +115,14 @@ with `category: friction`, and hand the task back to the operator.
 
 At the top of any session that will mutate the vault:
 
-    git -C ~/src/sabnyx status           # confirm clean tree
+    git status                                # clean tree — the vault (DATA)
+                                              # repo if split, else this one
     uv run sabnyx lint                        # gates 1, 2, 4
     uv run sabnyx health --quick              # known state
     # read SPEC.md, ROUTING.md if not fresh
 
 At the end:
 
-    git -C ~/src/sabnyx diff --stat
+    git diff --stat                           # again: the repo the vault lives in
     uv run sabnyx lint
     git commit                                # pre-commit hook lints staged files

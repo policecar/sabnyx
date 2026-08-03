@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from click.testing import CliRunner
 
 from sabnyx import ledger
@@ -147,6 +148,91 @@ def test_envelope_for_update_ignores_non_text():
     assert telegram.envelope_for_update({"update_id": 2}) is None
 
 
+# -- token redaction (M5) -------------------------------------------------------------------
+
+
+def test_telegram_http_errors_redact_token(monkeypatch):
+    """httpx embeds the full URL — bot token included — in its exception text;
+    get_updates/send_message must re-raise with the token gone from the message
+    AND from the formatted traceback (serve prints these on poll/send errors)."""
+    import traceback
+
+    import httpx
+
+    tok = "1234567:SECRETTOKENVALUE"
+    monkeypatch.setenv("SABNYX_TELEGRAM_TOKEN", tok)
+    monkeypatch.setattr(
+        httpx, "get", lambda url, **kw: httpx.Response(409, request=httpx.Request("GET", url))
+    )
+    monkeypatch.setattr(
+        httpx, "post", lambda url, **kw: httpx.Response(500, request=httpx.Request("POST", url))
+    )
+
+    def chain_text(e: BaseException) -> str:
+        parts, seen = [], set()
+        cur: BaseException | None = e
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            parts.append(str(cur))
+            cur = cur.__context__ or cur.__cause__
+        return "".join(parts)
+
+    with pytest.raises(RuntimeError) as exc:
+        telegram.get_updates(None)
+    assert "HTTP 409" in str(exc.value)
+    assert tok not in str(exc.value)
+    assert tok not in "".join(traceback.format_exception(exc.value))
+    # __context__ must be severed: the token-bearing httpx error must not be
+    # reachable by a logger that walks the exception chain.
+    assert exc.value.__context__ is None
+    assert tok not in chain_text(exc.value)
+
+    with pytest.raises(RuntimeError) as exc:
+        telegram.send_message(999, "hi")
+    assert "HTTP 500" in str(exc.value)
+    assert tok not in str(exc.value)
+    assert tok not in "".join(traceback.format_exception(exc.value))
+    assert exc.value.__context__ is None
+    assert tok not in chain_text(exc.value)
+
+
+def test_telegram_non_json_200_is_redacted(monkeypatch):
+    """A 200 with a non-JSON body (proxy/error page) makes resp.json() raise
+    ValueError; it must be redacted like an HTTP error, not leak raw out of the
+    poll loop (and the token-bearing URL must not reach __context__)."""
+    import httpx
+
+    tok = "1234567:SECRETTOKENVALUE"
+    monkeypatch.setenv("SABNYX_TELEGRAM_TOKEN", tok)
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda url, **kw: httpx.Response(200, request=httpx.Request("GET", url), content=b"<html>"),
+    )
+    with pytest.raises(RuntimeError) as exc:
+        telegram.get_updates(None)
+    assert "getUpdates failed" in str(exc.value)
+    assert tok not in str(exc.value)
+    assert exc.value.__context__ is None
+
+
+def test_telegram_transport_errors_redact_token(monkeypatch):
+    """Transport-level httpx errors (no response) are redacted to the type name."""
+    import httpx
+
+    tok = "1234567:SECRETTOKENVALUE"
+    monkeypatch.setenv("SABNYX_TELEGRAM_TOKEN", tok)
+
+    def boom(url, **kw):
+        raise httpx.ConnectError(f"failed for {url}", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", boom)
+    with pytest.raises(RuntimeError) as exc:
+        telegram.get_updates(None)
+    assert "ConnectError" in str(exc.value)
+    assert tok not in str(exc.value)
+
+
 # -- dispatch end to end (faked network + LLM) --------------------------------------------
 
 INGEST_CS = IngestChangeset(
@@ -235,6 +321,104 @@ def test_dispatch_rejects_untrusted(tmp_vault, monkeypatch):
     kinds = [e.kind for e in ledger.replay()]
     assert "wire.rejected" in kinds
     assert "source.captured" not in kinds
+
+
+def test_dispatch_empty_allowlist_fails_closed(tmp_vault, monkeypatch):
+    """An empty trusted set rejects every sender — the dispatch primitive must
+    not trust-by-default even though serve_cmd refuses to start open."""
+    from sabnyx.commands import serve
+
+    _fake_llm(monkeypatch)
+    sent: list[tuple] = []
+    monkeypatch.setattr(telegram, "send_message", lambda chat, text: sent.append((chat, text)))
+
+    offset = serve._dispatch_batch([_update(1, "remember buy milk")], set())
+
+    assert offset == 2  # offset still advances past the rejected update
+    assert sent == []
+    assert not list(tmp_vault["INTAKE"].glob("*.md"))
+    kinds = [e.kind for e in ledger.replay()]
+    assert "wire.rejected" in kinds
+    assert "source.captured" not in kinds
+
+
+def test_dispatch_error_reply_is_generic(tmp_vault, monkeypatch):
+    """A failing handler replies generically; exception detail (paths, provider
+    errors) goes to the wire.errored ledger only — mirrors serve_http's 500."""
+    from sabnyx.commands import serve
+
+    sent: list[str] = []
+    monkeypatch.setattr(telegram, "send_message", lambda chat, text: sent.append(text))
+
+    def boom(env):
+        raise RuntimeError("/home/USER/sabnyx-vault leaked secret path")
+
+    monkeypatch.setattr(serve, "handle", boom)
+    offset = serve._dispatch_batch([_update(1, "hello")], {"555"})
+
+    assert offset == 2
+    assert len(sent) == 1
+    assert "leaked secret path" not in sent[0]  # nothing from the exception text
+    errs = [e for e in ledger.replay() if e.kind == "wire.errored"]
+    assert errs
+    assert "leaked secret path" in errs[-1].payload["error"]  # detail kept internally
+
+
+def test_fetch_failure_reply_is_generic_and_ledgered(tmp_vault, monkeypatch):
+    """A URL-fetch failure replies generically; the detail is ledgered."""
+    from sabnyx.commands import serve
+
+    sent: list[str] = []
+    monkeypatch.setattr(telegram, "send_message", lambda chat, text: sent.append(text))
+
+    def boom(url):
+        raise RuntimeError("connect to 10.0.0.5 failed: secret detail")
+
+    monkeypatch.setattr(serve, "telegram_fetch", boom)
+    serve._dispatch_batch([_update(1, "https://example.com/x")], {"555"})
+
+    assert sent == ["couldn't fetch that URL."]
+    errs = [e for e in ledger.replay() if e.kind == "wire.errored"]
+    assert errs
+    assert errs[-1].payload["action"] == "ingest_url"
+    assert "secret detail" in errs[-1].payload["error"]
+
+
+def test_dispatch_send_failure_does_not_stall_offset(tmp_vault, monkeypatch):
+    """One transient send_message failure must not unwind the batch: the offset
+    still advances (no re-fetch, no re-run of LLM calls) and later messages
+    still get their sends attempted; the failure is ledgered."""
+    from sabnyx.commands import serve
+
+    sent: list[tuple] = []
+    calls = {"n": 0}
+
+    def flaky_send(chat, text):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("network blip")
+        sent.append((chat, text))
+
+    monkeypatch.setattr(telegram, "send_message", flaky_send)
+    offset = serve._dispatch_batch([_update(1, "/status"), _update(2, "/status")], {"555"})
+
+    assert offset == 3  # offset advanced despite the first send failing
+    assert calls["n"] == 2  # the second send was still attempted
+    assert len(sent) == 1
+    errs = [e for e in ledger.replay() if e.kind == "wire.errored"]
+    assert errs
+    assert errs[-1].payload["action"] == "send"
+    assert "network blip" in errs[-1].payload["error"]
+
+
+def test_quiet_console_is_per_call():
+    """serve builds a fresh throwaway console per message (no shared StringIO
+    accumulating for the process lifetime) — same fix as serve_http._quiet."""
+    from sabnyx.commands import serve
+
+    a, b = serve._quiet(), serve._quiet()
+    assert a is not b
+    assert a.file is not b.file
 
 
 def test_dispatch_offset_advances(tmp_vault, monkeypatch):

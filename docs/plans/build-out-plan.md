@@ -1,6 +1,6 @@
 # Build-out plan — milestone 1: the self-maintaining brain
 
-Status: active · Started 2026-06-13
+Status: complete · 2026-06-13 → 2026-07-01
 
 ## Goal
 
@@ -71,7 +71,14 @@ direction only: vault → halbor.
 - Enterprise Onyx deployment (halbor is the single-user analogue)
 - Multi-machine Syncthing (git already syncs one user across machines)
 - NanoClaw container fleet / multi-channel gateway
+- GTD/task management — sabnyx preserves knowledge; it does not own reminders,
+  projects, or the operator's action system
+- Automated public emissions/editorial voice — halbor projects selected
+  knowledge but does not publish autonomous field notes
 - Payments (x402/USDC) — not even in jibot; ledger hashing covers integrity
+- Adversarial verification, confidence decay, cross-vault federation —
+  jibot lists these in its own "What We Don't Have Yet"; not planned here
+  either
 
 ## Deferred ideas (noted, gated on a real trigger)
 
@@ -87,7 +94,7 @@ direction only: vault → halbor.
   then git history + `reconcile` suffice. (Full event-sourcing the vault stays a
   non-goal: it reimplements git, worse, and breaks the plain-files contract.)
 
-## Progress & resume (last updated 2026-06-13)
+## Progress & resume (last updated 2026-07-01)
 
 **Done (committed on `feat/brain-buildout`):**
 - Phase 0 (pre-existing, from `feat/jibot-agent`): full LLM loop —
@@ -126,7 +133,7 @@ direction only: vault → halbor.
   Built ahead of the "grep demonstrably hurts" trigger by explicit request;
   the opt-in default keeps the YAGNI posture intact. 148 Python tests
   (4 new, model2vec stubbed); validated against the live model.
-- **Phase 5 — halbor v0 (the face), in progress**: sibling repo
+- **Phase 5 — halbor v0 (the face)**: sibling repo
   `/Users/USER/src/halbor`, branch `feat/projection-core` @ `7e4ff40` (off
   its `main`). Projection core shipped: `halbor project` reads the vault as a
   *data contract* (markdown+frontmatter, no sabnyx code dep) and emits staged
@@ -135,13 +142,19 @@ direction only: vault → halbor.
   (opt-out, fail-closed on odd values) — plus frontmatter redaction (allowlist
   `description`/`tags`) and a one-direction guard that refuses to write into
   the vault. Contract in halbor `docs/adr/0001-projection-contract.md`. 16
-  tests; verified against the live vault. **Deferred to v1:** the thin
-  persona/query interface over the projected face (reuses the retrieval seam).
-
-**Next: Phase 5 v1 — halbor persona/query interface.** A `halbor ask`-style
-conversational face over the *projected* vault (`build/site` + `llms.txt`),
-grounded + cited, reusing the Phase 4 retrieval pattern. Still one direction:
-vault → face → reader; the face never writes back.
+  tests; verified against the live vault.
+- **Phase 5 v1 — halbor persona/query interface**: `halbor ask` — grounded,
+  cited answers over the *projected* face (`build/site` + `llms.txt`),
+  reusing the Phase 4 retrieval pattern; grep default, opt-in vector. Still
+  one direction: vault → face → reader. See `../architecture.md` / `../testing.md`.
+- **Review + hardening pass (2026-07-01)**: full review against the jibot
+  spec (`../reviews/codebase-spec-review.md`), then every confirmed finding fixed —
+  including the critical tend-overwrites-atlas bug, domains/-tolerant lint
+  and health, alias-aware link resolution, retained/reusable ingest captures, the
+  cross-language DEL hash bug, atomic appends, exe-relative opsctl root
+  discovery, and a new `opsctl verify` integrity command. Independent follow-up
+  fixes aligned split-root hooks, atlas-removal projection, and slug collision
+  behavior. Tests: 334 Python + 51 Rust.
 
 Phase 4 as built (2026-06-13) — the surface below, with the grep impl
 keyword-ranked rather than query-blind:
@@ -170,13 +183,11 @@ keyword-ranked rather than query-blind:
   grep impl. Vector index is its own later phase once grep demonstrably
   hurts (the doc's own deferral rule).
 
-**Environment / resume checklist:**
-- Work in worktree `/Users/USER/src/sabnyx/.worktrees/brain` (branch
-  `feat/brain-buildout`, off `feat/jibot-agent`). `uv run pytest -q` → 144.
-- Other worktree: `.worktrees/kimi-agent` (branch `feat/jibot-agent`, the Kimi
-  agent; PR to `main` deprioritized but pending push by the operator).
-- `main` has an uncommitted `.gitignore` (the `moonshot` ignore fix) — folds in
-  when `feat/jibot-agent`/`feat/brain-buildout` merges, or commit it to main.
-- Kimi key lives in the gitignored `moonshot` file at each worktree root
-  (`MOONSHOT_API_KEY=...`); `SABNYX_LLM_PROVIDER=moonshot`. Use sparingly.
-- halbor repo: `/Users/USER/src/halbor` (sibling), currently empty.
+**Environment (current):**
+- Everything is merged to `main`; gates: `uv run pytest -q` (328) and
+  `cd opsctl && cargo test` (50), plus ruff/ty/clippy/fmt in CI.
+- Config lives in the gitignored `.env` at the repo root (the old `moonshot`
+  key-file convention was removed): `SABNYX_LLM_PROVIDER=moonshot` +
+  `MOONSHOT_API_KEY=...`, or an Anthropic/OpenRouter key. See `../deployment.md`
+  for the two-repo (code/DATA) production layout.
+- halbor is a sibling repo (`../halbor`), v1 shipped (`project` + `ask`).

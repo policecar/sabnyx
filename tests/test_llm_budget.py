@@ -59,6 +59,39 @@ def test_budget_does_not_leak_after_context(tmp_vault, stub_provider) -> None:
     _call()
 
 
+def test_repair_reask_is_charged_against_budget(tmp_vault, monkeypatch) -> None:
+    """The repair re-ask is a full-price completion; with a budget of 1 the
+    re-ask itself must trip the budget instead of running uncharged."""
+    import httpx
+
+    monkeypatch.setenv("SABNYX_LLM_PROVIDER", "moonshot")
+    monkeypatch.setenv("MOONSHOT_API_KEY", "sk-kimi")
+    posts = {"n": 0}
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                # `ok` as a string violates _Dummy -> triggers the repair re-ask
+                "choices": [{"message": {"content": '{"ok": "nope"}'}, "finish_reason": "stop"}],
+                "usage": {},
+            }
+
+    def fake_post(*a, **k):
+        posts["n"] += 1
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    with llm.call_budget(max_calls=1), pytest.raises(llm.LLMBudgetError, match="repair"):
+        _call()
+    assert posts["n"] == 1  # the repair re-ask was refused BEFORE posting
+
+
 def test_default_max_calls_env(monkeypatch) -> None:
     monkeypatch.delenv("SABNYX_MAX_LLM_CALLS", raising=False)
     assert llm._default_max_calls() == llm._DEFAULT_MAX_CALLS

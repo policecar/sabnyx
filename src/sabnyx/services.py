@@ -79,21 +79,29 @@ def promote_file(
     Contains the core logic extracted from commands/promote.py.
     Callers are responsible for the guards:
       - source must be under INTAKE
-      - dest must not exist
       - kind must be "intake"
     This function writes, validates, rolls back on failure, unlinks the
     source, appends the knowledge log, and emits ledger events.
 
     Returns the destination Path.
-    Raises RuntimeError on validation failure (destination is rolled back).
+    Raises RuntimeError when the destination already exists (never
+    overwrites the atlas tier) or on validation failure (the file this
+    call wrote — and only that file — is rolled back).
     """
     from . import fm
-    from .paths import ATLAS_TYPE_DIRS, DATA_ROOT, KNOWLEDGE_LOG
+    from .paths import ATLAS_TYPE_DIRS, DATA_ROOT
 
     meta, body, _kind = fm.load(source)
 
     dest_dir = ATLAS_TYPE_DIRS[atlas_type]
     dest = dest_dir / source.name
+    # Refuse to overwrite: a duplicate slug reaching this point (e.g. an
+    # LLM-triaged gate-5 deferral) must never replace a durable atlas file,
+    # and the rollback below may only unlink what THIS call created.
+    if dest.exists():
+        raise RuntimeError(
+            f"destination already exists: {dest.relative_to(DATA_ROOT)} — refusing to overwrite"
+        )
     today = date_cls.today().isoformat()
 
     new_meta = {
@@ -169,14 +177,11 @@ def promote_file(
     # Remove the intake source (the move is now committed on the ledger).
     source.unlink()
 
-    # Provenance log (Gate 3 materia)
-    KNOWLEDGE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    if not KNOWLEDGE_LOG.exists():
-        KNOWLEDGE_LOG.write_text(
-            "# Knowledge log\n\nAppend-only provenance trail.\n\n", encoding="utf-8"
-        )
-    with KNOWLEDGE_LOG.open("a", encoding="utf-8") as f:
-        f.write(f"- {today} promote: `{src_rel}` -> `{dest_rel}` ({atlas_type})\n")
+    # Provenance log (Gate 3 materia) — through the one shared writer so every
+    # operation keeps the same grep contract: `grep "^# \[" knowledge-log.md`.
+    writers.append_knowledge_log(
+        "promote", source.stem, {"from": src_rel, "to": dest_rel, "type": atlas_type}
+    )
 
     return dest
 
@@ -206,8 +211,18 @@ def reconcile_atlas() -> Reconciliation:
 
     Read-only: replays the ledger and walks the filesystem, mutating nothing.
     Both sides use DATA_ROOT-relative paths so the comparison is apples-to-apples.
+
+    An `atlas.removed` event (subject = the DATA_ROOT-relative file path) is
+    the compensating record for a legitimate deletion (SPEC §10) — it takes
+    the file back out of the expected set, in ledger order, so a deliberate
+    removal doesn't stay red forever.
     """
-    promoted: set[str] = {e.subject for e in ledger.replay() if e.kind == "atlas.promoted"}
+    promoted: set[str] = set()
+    for e in ledger.replay():
+        if e.kind == "atlas.promoted":
+            promoted.add(e.subject)
+        elif e.kind == "atlas.removed":
+            promoted.discard(e.subject)
     actual: set[str] = {
         str(p.relative_to(paths.DATA_ROOT)) for p in paths.ATLAS.rglob("*.md") if p.is_file()
     }
@@ -540,6 +555,21 @@ def apply_ingest(
     return written
 
 
+def record_ingest_failure(src_rel: str, *, actor: str, reason: str) -> None:
+    """Ledger an ingest that did not produce derived knowledge.
+
+    The raw artifact is retained: ADR 0005 makes sources immutable audit input
+    and promises they remain available for re-extraction. Retry paths reuse the
+    identical capture instead of deleting and recreating it.
+    """
+    ledger.append_event(
+        kind="ingest.failed",
+        actor=actor,
+        subject=src_rel,
+        payload={"reason": reason[:500], "capture_retained": True},
+    )
+
+
 def ingest_text(
     *,
     text: str,
@@ -552,20 +582,33 @@ def ingest_text(
     """Capture raw text, then build and apply an ingest proposal.
 
     The whole capture -> propose -> apply pipeline every channel shares. Returns
-    ``(summary, written_paths)``. Raises ``FileExistsError`` if the source was
-    already captured (sources are write-once); callers shape that into their own
-    "already captured" reply.
+    ``(summary, written_paths)``. Identical retained sources are reused for
+    re-extraction. If extraction fails, the artifact remains intact and an
+    ``ingest.failed`` event records the failed derivation.
     """
-    src_path = sources.capture(text=text, slug=title, actor=actor, source_url=source_url)
-    src_rel = str(src_path.relative_to(paths.DATA_ROOT))
-    proposal = build_ingest_proposal(
+    # The model must read exactly what was captured (Gate 3: the immutable
+    # artifact is the audit record of the extraction input).
+    text = text[: sources.MAX_SOURCE_CHARS]
+    src_path = sources.capture(
         text=text,
-        title=title,
-        source_kind=source_kind,
-        source_url=source_url,
-        src_rel=src_rel,
+        slug=title,
         actor=actor,
+        source_url=source_url,
+        reuse_existing=True,
     )
+    src_rel = str(src_path.relative_to(paths.DATA_ROOT))
+    try:
+        proposal = build_ingest_proposal(
+            text=text,
+            title=title,
+            source_kind=source_kind,
+            source_url=source_url,
+            src_rel=src_rel,
+            actor=actor,
+        )
+    except Exception as e:
+        record_ingest_failure(src_rel, actor=actor, reason=f"{type(e).__name__}: {e}")
+        raise
     written = apply_ingest(
         proposal,
         title=title,
@@ -609,15 +652,21 @@ def _salvage_ask_answer(error: llm.StructuredOutputError) -> AskAnswer:
         raise error from None
 
 
-def _clean_citations(cited: list[str], answer_text: str) -> list[str]:
+def _clean_citations(
+    cited: list[str], answer_text: str, index: dict[str, Path] | None = None
+) -> list[str]:
     """Make `cited` trustworthy regardless of how the model filled it.
 
     Models (especially smaller ones) sometimes return blank citation slots or
     cite inline but leave `cited` empty. Drop blanks, dedupe order-preserving,
-    and fall back to the [[wikilinks]] actually present in the answer prose."""
+    and fall back to the [[wikilinks]] actually present in the answer prose —
+    filtered against the vault ``index`` (lowercased slugs) when given, so a
+    hallucinated inline link never lands in an ask.answered payload."""
     candidates = [c.strip() for c in cited if c and c.strip()]
     if not candidates:
         candidates = extract_wikilinks(answer_text)
+        if index is not None:
+            candidates = [c for c in candidates if c.strip().lower() in index]
     seen: set[str] = set()
     cleaned: list[str] = []
     for c in candidates:
@@ -657,7 +706,7 @@ def answer_question(
         # salvaging the answer without its optional capture.
         answer = _salvage_ask_answer(e)
         capture_dropped = True
-    answer.cited = _clean_citations(answer.cited, answer.answer)
+    answer.cited = _clean_citations(answer.cited, answer.answer, index)
     ledger.append_event(
         plane="projection",
         kind="ask.answered",

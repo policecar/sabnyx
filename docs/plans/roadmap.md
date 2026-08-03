@@ -1,5 +1,9 @@
 # Roadmap
 
+> **Historical** — the original stage 0–3 arc (2026-04). Current state
+> and next steps live in `build-out-plan.md` (this directory); items below marked
+> *shipped* have since been built.
+
 Stage 0 through stage 3, with ZK provenance and x402 slotted in.
 Each stage is independently valuable; sabnyx works if you stop at any
 stage.
@@ -52,37 +56,34 @@ stage.
 
   Major moves, each independently opt-in:
 
-  - Agent daemon: a single-process scheduler that runs triage,
-    reweave, and health on cron. Data shapes mirror nanoclaw
-    (SQLite scheduled_tasks, file-IPC) so we can lift its core
-    scheduler if we want later. See
-    docs/decisions/0004-mirror-nanoclaw-contracts.md.
+  - Agent daemon (*shipped differently*: `opsctl supervise` + a
+    systemd timer run `tend` on schedule — see docs/deployment.md).
 
-  - Telegram adapter: the second NormalizedEnvelope source. New
-    intake by message: "sabnyx, remember this: ..."
+  - Telegram adapter (*shipped* — ADR 0007, `sabnyx serve`): the
+    second NormalizedEnvelope source. New intake by message:
+    "sabnyx, remember this: ..."
 
-  - Web surface (markdown-first site): serve `vault/atlas/` as
-    llms.txt-indexed markdown to bots, HTML to browsers.
-    Cloudflare Pages Functions, jibot style.
+  - Web surface (*projection half shipped* as halbor, a sibling
+    repo): serve `vault/atlas/` as llms.txt-indexed markdown to
+    bots, HTML to browsers.
 
   - ZK provenance (Lemma): every published atlas file gets a
     docHash + selective-disclosure proof. The `proof:` field in
     frontmatter finally becomes non-null. Events.jsonl gets Merkle
-    roots committed daily. See
-    docs/decisions/0005-zk-provenance-lemma.md (to be written).
+    roots committed daily. (ADR to be written — 0005/0006 have since
+    been taken by raw-sources and the LLM boundary.)
 
   - x402 wallet: sabnyx gets a USDC-on-Base address. Agents calling
     the public API pay for premium endpoints (deep search, reweave
     across large corpora). Receipts embedded as
-    `<!-- x402-tx:0x... -->` comments. See
-    docs/decisions/0006-x402-wallet.md (to be written).
+    `<!-- x402-tx:0x... -->` comments. (ADR to be written.)
 
   - People graph: if scale warrants, adapt the 7-pass cross-linker
     from jibot, scoped to whatever people have accumulated
     organically.
 
-  - Vector search: only if grep stops finding things. At that
-    point, QMD-style local index over `vault/` is the move.
+  - Vector search (*shipped opt-in* — `SABNYX_RETRIEVER=vector`,
+    static embeddings, grep stays the default).
 
 ## What we explicitly will not do
 

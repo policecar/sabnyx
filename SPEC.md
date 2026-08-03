@@ -4,8 +4,8 @@ This document defines the rules every file in the vault must obey.
 Agents and humans alike. If this document and the code disagree,
 the code is wrong.
 
-Adapted from jibot.md/learnings/architecture. Deviations are noted
-inline with `DEVIATION:`.
+Adapted from jibot.md/learnings/architecture (local copy:
+docs/spec/jibot.md, gitignored). Deviations are noted inline with `DEVIATION:`.
 
 ## 1. Three tiers
 
@@ -56,6 +56,14 @@ DEVIATION from jibot: we use `person`/`org`/`project` rather than jibot's
 `person`/`organization`. Un-deferred in Phase 3 as the lightweight entity
 layer above (stage 0 dropped them until the vault was big enough to need
 one); large-scale entity resolution remains out of scope.
+
+DEVIATION from jibot: intake `type` records observable source form
+(`bookmark`/`paper`/`note`/`thought`), while atlas `type` records durable
+knowledge meaning (`concept`/`reference`/`idea`/entities). Jibot uses knowledge
+meaning in both tiers. Sabnyx keeps them separate so an LLM classification
+cannot silently widen deterministic auto-promotion. Model-proposed destination
+types may inform triage; unattended promotion remains limited to explicit
+form mappings plus provenance trust.
 
 ## 3. Frontmatter schemas
 
@@ -134,7 +142,8 @@ are the index. This is why Gate 1 exists.
     operational (_review) MUST NOT be treated as knowledge
     raw (sources)        MUST NOT be treated as knowledge; write-once,
                          no frontmatter schema, excluded from lint (ADR 0005)
-    private              out of scope at stage 0 (solo user)
+    private              repo-level boundary: every data-repo clone receives
+                         the whole vault and must be equally trusted
 
 Small boundary violations compound silently until the system is too
 degraded to trust. The `lint` script enforces containment (Gate 4).
@@ -147,6 +156,9 @@ numeric prefixes. Slugs should read like a phrase, not a title.
 
 Good:  `markdown-is-the-new-html.md`
 Bad:   `2026-04-22-thoughts-final-v2.md`
+
+Titles whose ASCII fold is empty (e.g. Japanese) slugify to
+`untitled-<8-hex content hash>` so distinct titles never collide.
 
 Observation files may include a date prefix because they are
 time-stamped signals: `2026-04-22-gap-oracle-technology.md`.
@@ -209,7 +221,8 @@ keys, no whitespace. This pre-commits the ledger to Lemma-style
 attestation without currently requiring it.
 
 The ledger is APPEND-ONLY. Never edit a past line. To correct,
-append a compensating event.
+append a compensating event — e.g. `atlas.removed` (subject = the
+file path) records a deliberate deletion, and `reconcile` honors it.
 
 ## 11. Gates (health checks)
 

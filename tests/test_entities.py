@@ -236,6 +236,15 @@ class TestEntitiesGaps:
         assert result.exit_code == 0, result.output
         assert not list(tmp_vault["OBSERVATIONS"].glob("*-gap-real-person.md"))
 
+    def test_alias_reference_is_not_a_gap(self, tmp_vault):
+        # [[JD]] resolves via jane-doe's `aliases` — no false gap observation.
+        _make_entity(tmp_vault["ATLAS_PEOPLE"], "jane-doe", "person", aliases=["JD"])
+        self._seed_referrers(tmp_vault, "JD", 4)
+
+        result = _run(["gaps", "--threshold", "2"])
+        assert result.exit_code == 0, result.output
+        assert not list(tmp_vault["OBSERVATIONS"].glob("*-gap-*.md"))
+
     def test_dedup_across_runs(self, tmp_vault):
         self._seed_referrers(tmp_vault, "missing-person", 3)
 

@@ -14,36 +14,62 @@ from ..paths import ATLAS, DATA_ROOT, INTAKE, OBSERVATIONS
 from ..util import age_days, extract_wikilinks
 
 # Gate 5: jibot flags time-sensitive content whose last_verified is absent
-# or older than 180 days. references are the time-sensitive type at stage 0.
+# or older than 180 days. references are the time-sensitive type at stage 0;
+# concepts/ideas/entities don't go stale on a clock, so they are exempt.
 CURRENCY_DAYS = 180
+CURRENCY_TYPES = frozenset({"reference"})
 
 
 def scan_wikilinks(
     idx: dict[str, Path],
-) -> tuple[list[tuple[Path, str]], set[str], list[tuple[Path, str]]]:
-    """One pass over the index → (broken_links, linked_slugs, schema_drift).
+) -> tuple[list[tuple[Path, str]], set[str], list[tuple[Path, str]], set[str]]:
+    """One pass over the index → (broken_links, linked_slugs, schema_drift,
+    has_outgoing).
 
-    broken_links: (file, raw target) per wikilink whose lowercased target is
-    not a known slug. linked_slugs: targets that resolved (for orphan
-    detection). schema_drift: (file, errors) for files that fail to parse.
-    Shared by `health` and `tend` so the scan lives in one place.
+    Targets resolve through context.link_resolution_index, so slugified
+    spaced names and `aliases` frontmatter both count. broken_links: (file,
+    raw target) per unresolvable wikilink. linked_slugs: canonical slugs
+    that received a link. has_outgoing: slugs whose body links to at least
+    one resolving target (dead-end detection). Files no schema tier covers
+    (domains/ has its own per-topic schema) are skipped — they still count
+    as link targets via ``idx``, but are not schema drift. Shared by
+    `health` and `tend` so the scan lives in one place.
     """
+    resolution = context.link_resolution_index(idx)
     broken_links: list[tuple[Path, str]] = []
     linked_slugs: set[str] = set()
     schema_drift: list[tuple[Path, str]] = []
-    for path in idx.values():
+    has_outgoing: set[str] = set()
+    for slug, path in idx.items():
         try:
             _meta, body, _kind = fm.load(path)
         except fm.FrontmatterError as e:
             schema_drift.append((path, str(e.errors)))
             continue
+        except ValueError:
+            continue  # unclassifiable (e.g. domains/): its own schema, not drift
         for target in extract_wikilinks(body):
-            tslug = target.lower().strip()
-            if tslug in idx:
-                linked_slugs.add(tslug)
+            resolved = context.resolve_wikilink(target, resolution)
+            if resolved is not None:
+                linked_slugs.add(resolved)
+                has_outgoing.add(slug)
             else:
                 broken_links.append((path, target))
-    return broken_links, linked_slugs, schema_drift
+    return broken_links, linked_slugs, schema_drift, has_outgoing
+
+
+def pending_observation_count() -> int:
+    """Observations with status == "pending" — the same filter `scan` uses,
+    so health, tend, and scan agree on what an open observation is."""
+    n = 0
+    for p in OBSERVATIONS.glob("*.md"):
+        try:
+            meta, _body, _kind = fm.load(p)
+        except Exception:
+            continue
+        if meta.get("status") == "pending":
+            n += 1
+    return n
 
 
 @click.command("health")
@@ -54,16 +80,24 @@ def health_cmd(quick: bool) -> None:
     idx = context.vault_slug_index()
 
     orphans: list[Path] = []
+    dead_ends: list[Path] = []
     stale_intake: list[tuple[Path, int]] = []
 
-    broken_links, linked_slugs, schema_drift = scan_wikilinks(idx)
+    broken_links, linked_slugs, schema_drift, has_outgoing = scan_wikilinks(idx)
 
     if not quick:
         for slug, p in idx.items():
-            # An orphan has no incoming links AND is in atlas/ (intake orphans
-            # are expected and uninteresting until promotion).
-            if "atlas" in p.parts and slug not in linked_slugs:
+            # Atlas files only: intake orphans are expected and uninteresting
+            # until promotion. jibot: orphan = no links in either direction;
+            # dead-end = receives links but links nowhere.
+            if "atlas" not in p.parts:
+                continue
+            incoming = slug in linked_slugs
+            outgoing = slug in has_outgoing
+            if not incoming and not outgoing:
                 orphans.append(p)
+            elif incoming and not outgoing:
+                dead_ends.append(p)
 
     # Stale intake: > 60 days in intake/ is a stagnation signal.
     for p in INTAKE.glob("*.md"):
@@ -90,9 +124,10 @@ def health_cmd(quick: bool) -> None:
             continue
         atlas_count += 1
 
-        age = age_days(meta.get("last_verified"))
-        if age is None or age > CURRENCY_DAYS:
-            stale_atlas.append((p, age))
+        if meta.get("type") in CURRENCY_TYPES:
+            age = age_days(meta.get("last_verified"))
+            if age is None or age > CURRENCY_DAYS:
+                stale_atlas.append((p, age))
 
         if not meta.get("promoted_from") and "<!-- source-" not in body:
             untracked.append(p)
@@ -102,7 +137,7 @@ def health_cmd(quick: bool) -> None:
     cost_ratio = intake_count / atlas_count if atlas_count else float(intake_count)
 
     # Observations
-    pending_obs = sum(1 for _ in OBSERVATIONS.glob("*.md"))
+    pending_obs = pending_observation_count()
 
     # Report
     table = Table(title="sabnyx health")
@@ -117,6 +152,7 @@ def health_cmd(quick: bool) -> None:
     table.add_row("broken wikilinks", str(len(broken_links)))
     if not quick:
         table.add_row("atlas orphans", str(len(orphans)))
+        table.add_row("atlas dead ends", str(len(dead_ends)))
     table.add_row("stale intake (>60d)", str(len(stale_intake)))
     table.add_row(f"stale atlas (Gate 5, >{CURRENCY_DAYS}d/unverified)", str(len(stale_atlas)))
     table.add_row("untracked provenance (Gate 3)", str(len(untracked)))
@@ -167,6 +203,7 @@ def health_cmd(quick: bool) -> None:
             "observations": pending_obs,
             "broken_links": len(broken_links),
             "orphans": len(orphans) if not quick else None,
+            "dead_ends": len(dead_ends) if not quick else None,
             "stale_intake": len(stale_intake),
             "stale_atlas": len(stale_atlas),
             "untracked_provenance": len(untracked),

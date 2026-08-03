@@ -81,3 +81,39 @@ def test_bools_are_allowed() -> None:
 def test_append_event_rejects_float_payload(tmp_vault) -> None:
     with pytest.raises(TypeError, match="float"):
         ledger.append_event(kind="test.event", actor="t", subject="s", payload={"ratio": 0.5})
+
+
+# -- replay error reporting (parity with opsctl read_events) ------------------------
+
+
+def test_replay_error_names_line_number_and_snippet(tmp_vault) -> None:
+    ledger.append_event(kind="ok.one", actor="t", subject="s", payload={})
+    with ledger.EVENTS_JSONL.open("a", encoding="utf-8") as f:
+        f.write('{"this is": "not a ledger event"}\n')
+    ledger.append_event(kind="ok.three", actor="t", subject="s", payload={})
+
+    with pytest.raises(ledger.LedgerError, match=r"ledger line 2:") as ei:
+        list(ledger.replay())
+    assert "line starts:" in str(ei.value)
+    assert "not a ledger event" in str(ei.value)
+
+
+def test_replay_error_is_not_skipped_silently(tmp_vault) -> None:
+    ledger.EVENTS_JSONL.parent.mkdir(parents=True, exist_ok=True)
+    ledger.EVENTS_JSONL.write_text("garbage\n", encoding="utf-8")
+    with pytest.raises(ledger.LedgerError, match="ledger line 1"):
+        ledger.count()
+
+
+# -- append atomicity: one line, even for large events -------------------------------
+
+
+def test_append_large_event_is_one_line_and_replays(tmp_vault) -> None:
+    big = "x" * 10_000  # well over PIPE_BUF-ish sizes a buffered writer may split
+    ledger.append_event(kind="big.event", actor="t", subject="s", payload={"blob": big})
+    data = ledger.EVENTS_JSONL.read_bytes()
+    assert data.endswith(b"\n")
+    assert data.count(b"\n") == 1  # exactly one line
+    events = list(ledger.replay())
+    assert len(events) == 1
+    assert events[0].payload["blob"] == big
