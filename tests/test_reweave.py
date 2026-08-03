@@ -231,6 +231,30 @@ def test_apply_links_dedups_within_one_addition(tmp_vault, monkeypatch):
     assert body.count("- [[beta]]") == 1
 
 
+def test_apply_links_dedup_reported_in_drop_message(tmp_vault, monkeypatch):
+    """A literal duplicate in add_links (["beta", "beta"]) must show up in
+    the console's dropped-links message, not vanish silently. Regression:
+    `dropped = [l for l in add_links if l not in new_links]` is a membership
+    check, so the second "beta" -- which IS in new_links -- was invisible to
+    the drop tally even though it was never applied."""
+    from sabnyx.commands import reweave as rw
+
+    concepts = tmp_vault["ATLAS_CONCEPTS"]
+    target = _make_atlas_file(concepts, "alpha", "a concept about alpha things, long enough yes")
+    _make_atlas_file(concepts, "beta", "a concept about beta things, also long enough to pass")
+    _propose_reweave(str(target.relative_to(tmp_vault["DATA_ROOT"])))
+
+    changeset = ReweaveChangeset(
+        summary="dup reporting",
+        related_additions=[RelatedAddition(file="alpha", add_links=["beta", "beta"], reason="dup")],
+        observations=[],
+    )
+    monkeypatch.setattr(rw.llm, "parse_structured", lambda **kw: changeset)
+    result = CliRunner().invoke(rw.reweave_cmd, ["--yes"])
+    assert result.exit_code == 0, result.output
+    assert "drop (unknown/self/duplicate): beta" in result.output
+
+
 def test_apply_links_skips_half_open_marker_block(tmp_vault, monkeypatch):
     """A file with only one of BEGIN/END (manual edit damage) is reported and
     skipped — never given a duplicate/nested block (SPEC §8)."""

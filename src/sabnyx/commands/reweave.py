@@ -133,12 +133,18 @@ def _apply_links(
 
         existing = {link.lower() for link in extract_wikilinks(body)}
         new_links: list[str] = []
+        dropped: list[str] = []
         for link in add.add_links:
             key = link.lower()
             if key in index and key != add.file.lower() and key not in existing:
                 new_links.append(link)
                 existing.add(key)  # dedup repeats within one add_links list
-        dropped = [link for link in add.add_links if link not in new_links]
+            else:
+                # Classified inline (not via `link not in new_links` after the
+                # fact) so an exact duplicate in add_links -- e.g. ["Foo",
+                # "Foo"] -- is still reported: the first "Foo" is kept, the
+                # second is dropped as a duplicate, not silently uncounted.
+                dropped.append(link)
         if dropped:
             console.print(f"  [dim]drop (unknown/self/duplicate): {', '.join(dropped)}[/dim]")
         if not new_links:
