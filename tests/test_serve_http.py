@@ -262,6 +262,17 @@ def test_resolve_static_rejects_nul_byte(tmp_path):
     assert serve_http.resolve_static("/js/\x00api.js", root) is None
 
 
+def test_resolve_static_rejects_overlong_name(tmp_path):
+    """A path component over the filesystem name limit raises OSError
+    (ENAMETOOLONG) from is_file()'s stat, not resolve() — the guard must catch
+    it so an unauthenticated GET can't traceback and reset the connection."""
+    from sabnyx.commands import serve_http
+
+    root = _make_creations(tmp_path / "creations")
+    assert serve_http.resolve_static("/" + "a" * 256, root) is None
+    assert serve_http.resolve_static("/js/" + "a" * 512 + ".js", root) is None
+
+
 def test_static_public_while_api_gated_over_socket(tmp_vault):
     """End to end over a real socket: static is served unauthenticated, the API
     still requires the bearer key, and traversal can't escape the root."""
@@ -403,6 +414,10 @@ def test_hostile_bytes_get_clean_errors_over_socket(tmp_vault):
         # raw NUL byte in a static path -> clean 404, not an embedded-null crash
         assert b"404" in status_line(
             b"GET /\x00evil HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+        )
+        # over-long static path -> clean 404, not an is_file() ENAMETOOLONG reset
+        assert b"404" in status_line(
+            b"GET /" + b"a" * 300 + b" HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
         )
     finally:
         srv.shutdown()
