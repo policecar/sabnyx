@@ -61,6 +61,10 @@ def _is_blocked_ip(ip: str) -> bool:
     private, link-local (incl. cloud metadata 169.254.169.254), CGNAT,
     reserved, multicast, or unspecified."""
     addr = ipaddress.ip_address(ip)
+    # is_private/is_loopback/is_link_local already unwrap IPv4-mapped IPv6
+    # (::ffff:a.b.c.d) internally, but CGNAT has no stdlib predicate — unwrap
+    # it ourselves so an IPv4-mapped CGNAT address isn't missed.
+    v4 = addr.ipv4_mapped if isinstance(addr, ipaddress.IPv6Address) else addr
     return (
         addr.is_private
         or addr.is_loopback
@@ -68,7 +72,7 @@ def _is_blocked_ip(ip: str) -> bool:
         or addr.is_reserved
         or addr.is_multicast
         or addr.is_unspecified
-        or (addr.version == 4 and addr in _CGNAT_NET)
+        or (v4 is not None and v4.version == 4 and v4 in _CGNAT_NET)
     )
 
 
