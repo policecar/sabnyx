@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Literal
 
 import frontmatter
+import yaml
 from pydantic import ValidationError
 
+from . import paths
 from .schemas import AtlasFrontmatter, IntakeFrontmatter, ObservationFrontmatter
 
 FileKind = Literal["intake", "atlas", "observation"]
@@ -27,8 +29,19 @@ class FrontmatterError(Exception):
 
 
 def classify(path: Path) -> FileKind:
-    """Classify a vault file by its location."""
-    parts = path.parts
+    """Classify a vault file by its tier relative to paths.VAULT.
+
+    Classification keys off the VAULT-relative path, never the absolute one
+    (a data root like /home/user/intake/... must not misclassify the whole
+    vault). Files outside the vault (explicitly-passed lint targets) fall
+    back to a component scan. Raises ValueError for paths no schema tier
+    covers — e.g. domains/, which carries its own per-topic schema (SPEC §1);
+    vault-walking callers skip those, they don't crash.
+    """
+    try:
+        parts = path.resolve().relative_to(paths.VAULT.resolve()).parts
+    except ValueError:
+        parts = path.parts
     if ".observations" in parts:
         return "observation"
     if "intake" in parts:
@@ -41,12 +54,19 @@ def classify(path: Path) -> FileKind:
 def load(path: Path) -> tuple[dict, str, FileKind]:
     """Load and validate a file. Returns (frontmatter_dict, body, kind).
 
-    Raises FrontmatterError on schema violations.
+    Raises FrontmatterError on schema violations or malformed YAML, and
+    ValueError (from classify) for files no schema tier covers.
     """
-    post = frontmatter.load(str(path))
+    kind = classify(path)
+    try:
+        post = frontmatter.load(str(path))
+    except yaml.YAMLError as e:
+        # Malformed YAML (unclosed bracket, a tab in the block, ...) must be
+        # the same recoverable error as a schema violation, not a raw parser
+        # exception that aborts a whole tend run.
+        raise FrontmatterError(path, kind, [f"malformed YAML: {e}"]) from e
     meta = dict(post.metadata)
     body = post.content
-    kind = classify(path)
 
     model = {
         "intake": IntakeFrontmatter,
@@ -66,5 +86,8 @@ def load(path: Path) -> tuple[dict, str, FileKind]:
 def write(path: Path, meta: dict, body: str) -> None:
     """Write a file with frontmatter. Does NOT validate — use after load/build."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    post = frontmatter.Post(body, **meta)
+    # Assign .metadata rather than passing **meta: a frontmatter key named
+    # "content" or "handler" would collide with Post's own parameters.
+    post = frontmatter.Post(body)
+    post.metadata = dict(meta)
     path.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")

@@ -48,12 +48,16 @@ def check_bearer(authorization: str | None, trusted: set[str]) -> bool:
     token = parts[1].strip()
     if not token:
         return False
+    # Compare bytes, not str: `hmac.compare_digest` raises TypeError on
+    # non-ASCII str input, and this runs pre-auth on attacker-controlled
+    # headers — a stray "Bearer café" must be a clean deny, not a crash.
+    token_b = token.encode("utf-8")
     # Check every key without short-circuiting: `any(...)` would return on the
     # first match, so a valid token would run fewer comparisons than an invalid
     # one — a small timing tell on which token is valid. Fold instead.
     matched = False
     for k in trusted:
-        if hmac.compare_digest(token, k):
+        if hmac.compare_digest(token_b, k.encode("utf-8")):
             matched = True
     return matched
 

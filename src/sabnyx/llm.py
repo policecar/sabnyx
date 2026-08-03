@@ -309,26 +309,46 @@ def parse_structured(
         },
     )
 
-    if prov == "anthropic":
-        parsed, usage = _call_anthropic(
-            model=model,
-            role=role,
-            task_system=task_system,
-            user=user,
-            output_format=output_format,
-            max_tokens=max_tokens,
-            purpose=purpose,
+    try:
+        if prov == "anthropic":
+            parsed, usage = _call_anthropic(
+                model=model,
+                role=role,
+                task_system=task_system,
+                user=user,
+                output_format=output_format,
+                max_tokens=max_tokens,
+                purpose=purpose,
+            )
+        else:
+            parsed, usage = _call_openai_compatible(
+                prov=prov,
+                model=model,
+                task_system=task_system,
+                user=user,
+                output_format=output_format,
+                max_tokens=max_tokens,
+                purpose=purpose,
+            )
+    except Exception as e:
+        # Compensate the llm.requested intent: an auditor must be able to tell
+        # a failed call from one still in flight — failed runs are the ones
+        # that most need auditing.
+        ledger.append_event(
+            plane="action",
+            kind="llm.failed",
+            actor=actor,
+            subject=purpose,
+            payload={
+                "provider": prov,
+                "model": model,
+                "role": role,
+                "prompt_hash": prompt_hash,
+                "error": type(e).__name__,
+                "message": str(e)[:200],
+            },
         )
-    else:
-        parsed, usage = _call_openai_compatible(
-            prov=prov,
-            model=model,
-            task_system=task_system,
-            user=user,
-            output_format=output_format,
-            max_tokens=max_tokens,
-            purpose=purpose,
-        )
+        raise
 
     ledger.append_event(
         plane="action",
@@ -358,8 +378,9 @@ def anthropic_params(
     output_format: type[T],
     max_tokens: int,
 ) -> dict:
-    """The exact kwargs sent to messages.parse. Pure, so the request shape
-    is verifiable offline (test_verify)."""
+    """The request shape for the Anthropic backend (``output_format`` is
+    translated to an ``output_config`` in _call_anthropic). Pure, so the
+    request shape is verifiable offline (test_verify)."""
     params: dict = {
         "model": model,
         "max_tokens": max_tokens,
@@ -388,9 +409,19 @@ def _call_anthropic(
     max_tokens: int,
     purpose: str,
 ) -> tuple[T, dict]:
-    """Native Anthropic API: structured outputs via messages.parse,
-    prompt caching on the stable contract block, adaptive thinking."""
+    """Native Anthropic API: structured outputs, prompt caching on the stable
+    contract block, adaptive thinking.
+
+    Uses messages.create + output_config rather than messages.parse: the SDK's
+    parse validates the output itself and raises a bare ValidationError that
+    discards the raw text, which killed StructuredOutputError-based salvage on
+    the default provider. We send the same strict schema the SDK would, then
+    validate here so a failure carries raw_content."""
     import anthropic
+
+    # The SDK's own strict-schema transform — exactly what messages.parse sends.
+    # Private path, but the SDK is pinned and test_llm_boundary pins the import.
+    from anthropic.lib._parse._transform import transform_schema
 
     client = anthropic.Anthropic()
     params = anthropic_params(
@@ -401,10 +432,17 @@ def _call_anthropic(
         output_format=output_format,
         max_tokens=max_tokens,
     )
+    params.pop("output_format")
+    params["output_config"] = {
+        "format": {
+            "type": "json_schema",
+            "schema": transform_schema(output_format.model_json_schema()),
+        }
+    }
     retries = _max_retries()
     for attempt in range(retries + 1):
         try:
-            response = client.messages.parse(**params)
+            response = client.messages.create(**params)
             break
         except anthropic.APIStatusError as e:
             # RateLimitError (429) and InternalServerError (5xx) subclass this.
@@ -417,11 +455,28 @@ def _call_anthropic(
                 raise
             time.sleep(_backoff_seconds(attempt))
 
+    raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text")
     if response.stop_reason == "refusal":
-        raise RuntimeError(f"model declined the request ({purpose})")
-    parsed = response.parsed_output
-    if parsed is None:
-        raise RuntimeError(f"model returned no parseable {output_format.__name__} ({purpose})")
+        raise StructuredOutputError(
+            f"model declined the request ({purpose})",
+            raw_content=raw or None,
+            output_format=output_format,
+        )
+    if not raw.strip():
+        raise StructuredOutputError(
+            f"model returned no parseable {output_format.__name__} ({purpose})",
+            output_format=output_format,
+        )
+    try:
+        parsed = output_format.model_validate_json(_extract_json(raw))
+    except ValidationError as e:
+        # Carry the raw text so callers (e.g. _salvage_ask_answer) can attempt
+        # a best-effort salvage instead of losing the whole response.
+        raise StructuredOutputError(
+            f"model output failed {output_format.__name__} validation ({purpose}): {e}",
+            raw_content=raw,
+            output_format=output_format,
+        ) from e
 
     u = response.usage
     return parsed, {
@@ -580,6 +635,11 @@ def _call_openai_compatible(
         return r.json()
 
     for attempt in range(_MAX_REPAIR_ATTEMPTS + 1):
+        if attempt:
+            # The repair re-ask is an additional full-price completion — charge
+            # it against the run budget like any other call. (Transport retries
+            # of the SAME request inside _post stay uncharged by design.)
+            _charge_budget(f"{purpose}:repair")
         data = _post(body)
         choice = data["choices"][0]
         content = choice["message"]["content"] or ""

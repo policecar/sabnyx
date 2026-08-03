@@ -5,7 +5,7 @@ Status: accepted
 
 ## Context
 
-Phase 1 of the implementation plan (docs/architecture-review-and-plan.md)
+Phase 1 of the implementation plan (docs/reviews/architecture-review-and-plan.md)
 adds the first LLM calls to sabnyx. Three pressures shape the boundary:
 
 1. Auditability — the vault's whole premise is that every mutation is

@@ -73,7 +73,11 @@ def ask_cmd(question: str, role: ModelRole | None, capture_flag: bool | None, ye
         )
 
     # -- capture: the answer becomes a page ------------------------------------------
-    if answer.capture is None or capture_flag is False:
+    if answer.capture is None:
+        if capture_flag is True:
+            console.print("[dim]--capture requested, but the model proposed no capture[/dim]")
+        return
+    if capture_flag is False:
         return
 
     pi = answer.capture

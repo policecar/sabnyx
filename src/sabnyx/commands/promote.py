@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date as date_cls
 from pathlib import Path
 
 import click
@@ -31,6 +32,18 @@ def promote_cmd(source: Path, atlas_type: str, last_verified: str | None) -> Non
     """Promote an intake file to atlas/<atlas_type>/<slug>.md."""
     ensure_tree()
     console = Console()
+
+    # Validate at the CLI boundary: a bad date must fail here, not surface
+    # post-write as an opaque rollback from promote_file.
+    if last_verified is not None:
+        try:
+            date_cls.fromisoformat(last_verified)
+        except ValueError:
+            console.print(
+                f"[red]--last-verified must be an ISO date (YYYY-MM-DD), "
+                f"got {last_verified!r}[/red]"
+            )
+            sys.exit(2)
 
     source = source.resolve()
     if INTAKE not in source.parents:

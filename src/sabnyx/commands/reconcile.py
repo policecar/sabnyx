@@ -9,6 +9,10 @@ vault?" — by comparing `atlas.promoted` events against the files under atlas/.
 Read-only: it mutates nothing. Exits non-zero only when the ledger references
 a promoted file that no longer exists (a real inconsistency), so it is safe to
 wire into a health check.
+
+A deliberate deletion is acknowledged with a compensating event (SPEC §10):
+append kind `atlas.removed` with subject = the DATA_ROOT-relative file path,
+and reconcile stops expecting that file.
 """
 
 from __future__ import annotations
@@ -25,7 +29,11 @@ from ..paths import DATA_ROOT
 
 @click.command("reconcile")
 def reconcile_cmd() -> None:
-    """Report atlas files with no promote event, and promote events whose file is gone."""
+    """Report atlas files with no promote event, and promote events whose file is gone.
+
+    Acknowledge a deliberate deletion by appending a compensating
+    `atlas.removed` event (subject = the DATA_ROOT-relative file path).
+    """
     console = Console()
     r = services.reconcile_atlas()
 

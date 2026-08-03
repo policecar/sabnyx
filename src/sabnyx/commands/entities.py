@@ -66,12 +66,14 @@ def _entity_pages() -> list[tuple[str, str, dict]]:
 def _broken_link_counts() -> dict[str, list[str]]:
     """Map canonical missing-target slug -> sorted distinct referrer rels.
 
-    A target is "missing" when its slugified form resolves to no file under
-    vault/. Each referencing file counts once per target (distinct referrers,
-    not raw occurrences — N different files naming a target is the real
-    "this entity matters" signal). Observation files are not scanned (so a
-    gap observation's own `[[target]]` never re-counts itself)."""
-    existing = set(context.vault_slug_index())
+    A target is "missing" when it resolves to no page via the shared
+    resolution index (file stems, slugified spaced names, and `aliases`
+    frontmatter — the same rules health uses). Each referencing file counts
+    once per target (distinct referrers, not raw occurrences — N different
+    files naming a target is the real "this entity matters" signal).
+    Observation files are not scanned (so a gap observation's own
+    `[[target]]` never re-counts itself)."""
+    resolution = context.link_resolution_index(context.vault_slug_index())
     counts: dict[str, set[str]] = {}
     for p in walk_vault_md(paths.VAULT):
         if paths.OBSERVATIONS in p.parents:
@@ -80,11 +82,13 @@ def _broken_link_counts() -> dict[str, list[str]]:
             _meta, body, _kind = fm.load(p)
         except fm.FrontmatterError:
             continue
+        except ValueError:
+            continue  # no schema tier (domains/): its slug still resolves via the index
         rel = str(p.relative_to(paths.DATA_ROOT))
         # canonicalize + dedup targets within this file
         targets = {slugify(t) for t in extract_wikilinks(body) if t.strip()}
         for key in targets:
-            if key and key not in existing:
+            if key and context.resolve_wikilink(key, resolution) is None:
                 counts.setdefault(key, set()).add(rel)
     return {key: sorted(refs) for key, refs in counts.items()}
 

@@ -88,10 +88,10 @@ def _health_summary(console: Console) -> None:
     from . import health as health_mod
 
     idx = context.vault_slug_index()
-    broken_links, _linked, _drift = health_mod.scan_wikilinks(idx)
+    broken_links, _linked, _drift, _outgoing = health_mod.scan_wikilinks(idx)
     intake_count = len(list(INTAKE.glob("*.md")))
     atlas_count = sum(1 for p in ATLAS.rglob("*.md") if p.is_file())
-    pending_obs = sum(1 for _ in (INTAKE / ".observations").glob("*.md"))
+    pending_obs = health_mod.pending_observation_count()
 
     t = Table(title="health summary")
     t.add_column("Check")
@@ -149,6 +149,11 @@ def tend_cmd(dry_run: bool, yes: bool, threshold: int, no_reweave: bool, no_heal
             console.print(f"  [red]skip (invalid)[/red] {p.name}: {e.errors}")
             deferred.append(p)
             continue
+        except Exception as e:
+            # Per-file robustness: one unreadable file must not abort the run.
+            console.print(f"  [red]skip (unreadable)[/red] {p.name}: {e}")
+            deferred.append(p)
+            continue
 
         decision: AutoPromoteDecision = auto_promote_decision(
             meta,
@@ -171,7 +176,7 @@ def tend_cmd(dry_run: bool, yes: bool, threshold: int, no_reweave: bool, no_heal
                     # Update atlas_slugs so subsequent files in this run don't
                     # get false-positive "no duplicate" passes.
                     atlas_slugs.add(p.stem.lower())
-                except RuntimeError as e:
+                except Exception as e:
                     console.print(f"  [red]promote failed:[/red] {e}")
                     deferred.append(p)
             else:
@@ -197,7 +202,7 @@ def tend_cmd(dry_run: bool, yes: bool, threshold: int, no_reweave: bool, no_heal
             f"\n[bold]pass 2: LLM triage[/bold]  ({len(deferred)} deferred, threshold {threshold})"
         )
 
-        if len(deferred) >= threshold:
+        if deferred and len(deferred) >= threshold:
             console.print(f"  calling LLM triage for {len(deferred)} item(s)…")
             if not dry_run:
                 batch = triage_batch(deferred, role="standard")
@@ -210,23 +215,59 @@ def tend_cmd(dry_run: bool, yes: bool, threshold: int, no_reweave: bool, no_heal
                         continue
 
                     if item.action == "promote" and item.atlas_type:
+                        # Gate 5 re-check: the deferred queue systematically
+                        # contains duplicate-slug deferrals, and the triage
+                        # prompt never sees the atlas index — never let the
+                        # LLM overwrite an existing atlas file.
+                        if path.stem.lower() in atlas_slugs:
+                            console.print(
+                                f"  [yellow]skip promote[/yellow] {item.slug}: slug already "
+                                f"exists in atlas (kept in intake)"
+                            )
+                            continue
                         console.print(
                             f"  [bold]LLM promote[/bold] {item.slug} → {item.atlas_type}  "
                             f"[dim]({item.reason})[/dim]"
                         )
-                        if yes or click.confirm(f"  apply promote for {item.slug}?", default=True):
-                            try:
-                                promote_file(path, item.atlas_type, actor=ACTOR_TEND)
-                                llm_triaged += 1
-                                atlas_slugs.add(path.stem.lower())
-                            except RuntimeError as e:
-                                console.print(f"  [red]promote failed:[/red] {e}")
-                    elif item.action == "keep":
-                        console.print(f"  [dim]keep[/dim] {item.slug}  ({item.reason})")
-                    elif item.action == "discard":
-                        console.print(
-                            f"  [yellow]discard (noted, not deleted)[/yellow] {item.slug}  "
-                            f"({item.reason})"
+                        try:
+                            apply = yes or click.confirm(
+                                f"  apply promote for {item.slug}?", default=True
+                            )
+                        except click.Abort:
+                            # non-tty without --yes (cron): keep, don't crash the run
+                            console.print(
+                                "  [yellow]no interactive input; kept in intake "
+                                "(use --yes for unattended runs)[/yellow]"
+                            )
+                            apply = False
+                        if not apply:
+                            continue
+                        try:
+                            promote_file(path, item.atlas_type, actor=ACTOR_TEND)
+                            llm_triaged += 1
+                            atlas_slugs.add(path.stem.lower())
+                        except Exception as e:
+                            console.print(f"  [red]promote failed:[/red] {e}")
+                    elif item.action in ("keep", "discard"):
+                        if item.action == "keep":
+                            console.print(f"  [dim]keep[/dim] {item.slug}  ({item.reason})")
+                        else:
+                            console.print(
+                                f"  [yellow]discard (noted, not deleted)[/yellow] {item.slug}  "
+                                f"({item.reason})"
+                            )
+                        # Persist the decision (DEC-02: note it, do not delete) so
+                        # unattended runs leave a record, not just console output.
+                        ledger.append_event(
+                            plane="projection",
+                            kind="triage.decided",
+                            actor=ACTOR_TEND,
+                            subject=str(path.relative_to(DATA_ROOT)),
+                            payload={
+                                "slug": item.slug,
+                                "action": item.action,
+                                "reason": item.reason,
+                            },
                         )
             else:
                 console.print("  [dim]dry run: skipping LLM call[/dim]")

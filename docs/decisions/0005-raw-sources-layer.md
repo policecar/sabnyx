@@ -18,7 +18,8 @@ quality improves, and nothing to verify claims against.
 
 Add `vault/sources/` for retained immutable artifacts:
 
-  - Write-once. `sources.capture()` refuses to overwrite.
+  - Write-once. `sources.capture()` refuses to overwrite. Ingest retries may
+    reuse an identical retained artifact; they never delete and recreate it.
   - No frontmatter schema. Excluded from lint and the vault walk;
     provenance is carried by a leading HTML comment
     (`<!-- source-url: ... -->`) and the ledger `source.captured` event.

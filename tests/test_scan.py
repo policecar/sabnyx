@@ -10,9 +10,11 @@ from sabnyx import fm, ledger
 from sabnyx.schemas import ContradictionScan, ProposedObservation
 
 
-def _atlas(dir_, slug, description, *, last_verified="2026-06-12", promoted=True, body=""):
+def _atlas(
+    dir_, slug, description, *, type_="concept", last_verified="2026-06-12", promoted=True, body=""
+):
     meta = {
-        "type": "concept",
+        "type": type_,
         "description": description,
         "tags": [],
         "status": "final",
@@ -102,9 +104,14 @@ def test_scan_dry_run_writes_nothing(tmp_vault, monkeypatch):
     c = tmp_vault["ATLAS_CONCEPTS"]
     _atlas(c, "alpha", "a concept about alpha, long enough to satisfy the schema")
     _atlas(c, "beta", "a concept about beta, also long enough to satisfy the schema")
+    events_before = ledger.count()
     result, _ = _run_scan(monkeypatch, ["--dry-run"])
     assert result.exit_code == 0, result.output
     assert not list(tmp_vault["OBSERVATIONS"].glob("*-contradiction-*.md"))
+    # ledger-write-free: no scan.completed on a dry run (the LLM is faked here;
+    # in real runs only the honest llm.* call events would appear).
+    assert "scan.completed" not in [e.kind for e in ledger.replay()]
+    assert ledger.count() == events_before
 
 
 def test_scan_skips_tiny_atlas(tmp_vault, monkeypatch):
@@ -122,9 +129,19 @@ def test_health_currency_and_materia_gates(tmp_vault):
     from sabnyx.commands import health as health_mod
 
     c = tmp_vault["ATLAS_CONCEPTS"]
+    r = tmp_vault["ATLAS_REFERENCES"]
     old = (datetime.now(UTC) - timedelta(days=400)).date().isoformat()
-    _atlas(c, "fresh", "a recently verified concept, long enough for the schema")
-    _atlas(c, "stale", "a long-unverified concept, long enough for the schema", last_verified=old)
+    # Gate 5 applies to time-sensitive types (references) only.
+    _atlas(r, "fresh", "a recently verified reference, long enough for schema", type_="reference")
+    _atlas(
+        r,
+        "stale",
+        "a long-unverified reference, long enough for the schema",
+        type_="reference",
+        last_verified=old,
+    )
+    # A never-verified concept is NOT stale: concepts don't go stale on a clock.
+    _atlas(c, "timeless", "a concept never verified, long enough for schema", last_verified=None)
     # provenance via source comment instead of promoted_from
     _atlas(
         c,
@@ -141,8 +158,8 @@ def test_health_currency_and_materia_gates(tmp_vault):
     assert result.exit_code == 0, result.output
 
     audit = [e for e in ledger.replay() if e.kind == "health.audited"][-1]
-    assert audit.payload["atlas"] == 4
-    assert audit.payload["stale_atlas"] == 1  # only "stale"
+    assert audit.payload["atlas"] == 5
+    assert audit.payload["stale_atlas"] == 1  # only "stale" (Gate 5 is reference-only)
     assert audit.payload["untracked_provenance"] == 1  # only "untracked"
     # cost_ratio is a fixed-precision string (hashed payloads forbid floats).
     assert audit.payload["cost_ratio"] == "0.000"  # no intake files

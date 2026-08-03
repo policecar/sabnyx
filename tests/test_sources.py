@@ -45,12 +45,38 @@ def test_guard_rejects_non_http_schemes(url: str) -> None:
         "169.254.169.254",  # link-local / cloud metadata (IMDS)
         "0.0.0.0",  # unspecified
         "224.0.0.1",  # multicast
+        "100.64.0.1",  # CGNAT (RFC 6598) — not is_private, blocked explicitly
+        "100.127.255.254",  # CGNAT upper edge
+        "::ffff:100.64.1.1",  # IPv4-mapped IPv6 CGNAT — must unwrap, not skip
+        "::ffff:127.0.0.1",  # IPv4-mapped IPv6 loopback (stdlib unwraps this one)
+        "::ffff:169.254.169.254",  # IPv4-mapped IPv6 IMDS
     ],
 )
 def test_guard_rejects_internal_addresses(monkeypatch, ip: str) -> None:
     _stub_dns(monkeypatch, ip)
     with pytest.raises(ValueError, match="internal/reserved"):
         sources._guard_url(f"http://attacker.example/{ip}")
+
+
+@pytest.mark.parametrize(
+    "ip",
+    [
+        "100.64.1.1",
+        "::ffff:100.64.1.1",
+    ],
+)
+def test_is_blocked_ip_cgnat_v4_and_mapped_v6(ip: str) -> None:
+    # Regression: the CGNAT branch used to check `addr.version == 4` directly,
+    # so an IPv4-mapped IPv6 CGNAT address (::ffff:100.64.x.x) sailed through
+    # even though the stdlib is_private/is_loopback/is_link_local predicates
+    # already unwrap ipv4_mapped for the other blocked ranges.
+    assert sources._is_blocked_ip(ip) is True
+
+
+def test_is_blocked_ip_allows_genuine_public_v6() -> None:
+    # A real public IPv6 address (not IPv4-mapped) must not be swept up by
+    # the CGNAT unwrap logic.
+    assert sources._is_blocked_ip("2001:4860:4860::8888") is False
 
 
 def test_guard_allows_public_address(monkeypatch) -> None:
