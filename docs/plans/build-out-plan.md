@@ -71,6 +71,10 @@ direction only: vault → halbor.
 - Enterprise Onyx deployment (halbor is the single-user analogue)
 - Multi-machine Syncthing (git already syncs one user across machines)
 - NanoClaw container fleet / multi-channel gateway
+- GTD/task management — sabnyx preserves knowledge; it does not own reminders,
+  projects, or the operator's action system
+- Automated public emissions/editorial voice — halbor projects selected
+  knowledge but does not publish autonomous field notes
 - Payments (x402/USDC) — not even in jibot; ledger hashing covers integrity
 - Adversarial verification, confidence decay, cross-vault federation —
   jibot lists these in its own "What We Don't Have Yet"; not planned here
@@ -146,10 +150,11 @@ direction only: vault → halbor.
 - **Review + hardening pass (2026-07-01)**: full review against the jibot
   spec (`../reviews/codebase-spec-review.md`), then every confirmed finding fixed —
   including the critical tend-overwrites-atlas bug, domains/-tolerant lint
-  and health, alias-aware link resolution, ingest capture rollback, the
+  and health, alias-aware link resolution, retained/reusable ingest captures, the
   cross-language DEL hash bug, atomic appends, exe-relative opsctl root
-  discovery, and a new `opsctl verify` integrity command. Tests: 328 Python
-  + 50 Rust.
+  discovery, and a new `opsctl verify` integrity command. Independent follow-up
+  fixes aligned split-root hooks, atlas-removal projection, and slug collision
+  behavior. Tests: 334 Python + 51 Rust.
 
 Phase 4 as built (2026-06-13) — the surface below, with the grep impl
 keyword-ranked rather than query-blind:
