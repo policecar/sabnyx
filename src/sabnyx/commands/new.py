@@ -100,6 +100,11 @@ def new_cmd(
         click.echo(f"invalid frontmatter, nothing written: {errors}", err=True)
         sys.exit(3)
 
+    # Runs after the frontmatter check above, so a request that is BOTH
+    # invalid AND targets an existing path exits 3 ("invalid frontmatter"),
+    # not 1 ("refusing to overwrite"). Intentional precedence -- validation
+    # must never depend on what's already on disk -- but callers relying on
+    # exit code 1 to detect collisions should validate first.
     if path.exists():
         click.echo(f"refusing to overwrite: {path}", err=True)
         sys.exit(1)

@@ -73,6 +73,15 @@ def _pending_targets() -> list[Path]:
         if kind != "reweave.proposed":
             continue
         p = paths.DATA_ROOT / subj
+        # is_file() stands in for "not deleted" rather than consuming
+        # atlas.removed directly (unlike opsctl/src/project.rs and
+        # services.reconcile_atlas). Functionally equivalent today, with one
+        # low-probability edge case: delete this path (logging a compensating
+        # atlas.removed), then re-promote a *different* file to the exact
+        # same path with no intervening reweave.completed -- the stale
+        # pre-deletion reweave.proposed intent would resurface against the
+        # new file. If that bites, switch to consuming atlas.removed
+        # explicitly for parity with the Rust projection.
         if p.is_file():
             out.append(p)
     return out
@@ -133,12 +142,18 @@ def _apply_links(
 
         existing = {link.lower() for link in extract_wikilinks(body)}
         new_links: list[str] = []
+        dropped: list[str] = []
         for link in add.add_links:
             key = link.lower()
             if key in index and key != add.file.lower() and key not in existing:
                 new_links.append(link)
                 existing.add(key)  # dedup repeats within one add_links list
-        dropped = [link for link in add.add_links if link not in new_links]
+            else:
+                # Classified inline (not via `link not in new_links` after the
+                # fact) so an exact duplicate in add_links -- e.g. ["Foo",
+                # "Foo"] -- is still reported: the first "Foo" is kept, the
+                # second is dropped as a duplicate, not silently uncounted.
+                dropped.append(link)
         if dropped:
             console.print(f"  [dim]drop (unknown/self/duplicate): {', '.join(dropped)}[/dim]")
         if not new_links:

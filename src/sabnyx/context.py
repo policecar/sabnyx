@@ -19,6 +19,8 @@ from .util import slugify, walk_vault_md
 EXCERPT_CHARS = 2500
 TOTAL_CHARS = 300_000
 
+_WARN_CONSOLE = Console(stderr=True)
+
 
 def _index_paths(files: list[Path]) -> dict[str, Path]:
     """Build the one canonical lowercased, first-wins slug index."""
@@ -26,7 +28,7 @@ def _index_paths(files: list[Path]) -> dict[str, Path]:
     for p in files:
         key = p.stem.lower()
         if key in out:
-            Console(stderr=True).print(
+            _WARN_CONSOLE.print(
                 f"[yellow]warning:[/yellow] duplicate slug {key!r}: keeping {out[key]}, "
                 f"shadowing {p}"
             )
