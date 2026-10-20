@@ -283,6 +283,10 @@ def auto_promote_decision(
       4. len(description) >= 30.
       5. source_slug not already in atlas_slugs (no duplicate).
       6. meta.get("source_agent") in trusted.
+
+    Gate 6 is also honoured by the LLM triage tier (commands/tend.py's
+    "promote" branch): an LLM "promote" verdict for an untrusted
+    source_agent is deferred for operator review, never auto-applied.
     """
     intake_type = meta.get("type", "")
     reasons: list[str] = []

@@ -215,6 +215,45 @@ def tend_cmd(dry_run: bool, yes: bool, threshold: int, no_reweave: bool, no_heal
                         continue
 
                     if item.action == "promote" and item.atlas_type:
+                        # Provenance gate: Gate 6 (services.auto_promote_decision)
+                        # blocks auto-promotion for an untrusted source_agent in
+                        # the deterministic pass; the LLM tier must honour the
+                        # same trust boundary (config.trusted_sources), or a
+                        # prompt-injected telegram/web/r1 intake could ride an
+                        # LLM "promote" verdict straight into atlas/ unattended.
+                        try:
+                            meta, _body, _kind = fm.load(path)
+                            source_agent = meta.get("source_agent", "")
+                            trusted_provenance = source_agent in trusted
+                        except Exception:
+                            # Can't determine provenance from unparseable
+                            # frontmatter; fall through to the existing path
+                            # so promote_file's own validation (and M3's
+                            # "promote failed, run continues" contract)
+                            # still applies rather than silently swallowing it.
+                            source_agent = ""
+                            trusted_provenance = True
+                        if not trusted_provenance and yes:
+                            console.print(
+                                f"  [yellow]skip promote[/yellow] {item.slug}: untrusted "
+                                f"provenance (source_agent={source_agent!r}; operator review "
+                                f"needed)"
+                            )
+                            ledger.append_event(
+                                plane="projection",
+                                kind="triage.decided",
+                                actor=ACTOR_TEND,
+                                subject=str(path.relative_to(DATA_ROOT)),
+                                payload={
+                                    "slug": item.slug,
+                                    "action": item.action,
+                                    "reason": item.reason,
+                                    "decision": "deferred_untrusted",
+                                    "source_agent": source_agent,
+                                },
+                            )
+                            continue
+
                         # Gate 5 re-check: the deferred queue systematically
                         # contains duplicate-slug deferrals, and the triage
                         # prompt never sees the atlas index — never let the
@@ -230,9 +269,16 @@ def tend_cmd(dry_run: bool, yes: bool, threshold: int, no_reweave: bool, no_heal
                             f"[dim]({item.reason})[/dim]"
                         )
                         try:
-                            apply = yes or click.confirm(
-                                f"  apply promote for {item.slug}?", default=True
-                            )
+                            if trusted_provenance:
+                                apply = yes or click.confirm(
+                                    f"  apply promote for {item.slug}?", default=True
+                                )
+                            else:
+                                apply = click.confirm(
+                                    f"  untrusted provenance (source_agent={source_agent!r}) "
+                                    f"— apply promote for {item.slug} anyway?",
+                                    default=False,
+                                )
                         except click.Abort:
                             # non-tty without --yes (cron): keep, don't crash the run
                             console.print(
