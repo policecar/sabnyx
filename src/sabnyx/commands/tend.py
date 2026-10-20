@@ -223,16 +223,14 @@ def tend_cmd(dry_run: bool, yes: bool, threshold: int, no_reweave: bool, no_heal
                         # LLM "promote" verdict straight into atlas/ unattended.
                         try:
                             meta, _body, _kind = fm.load(path)
-                            source_agent = meta.get("source_agent", "")
-                            trusted_provenance = source_agent in trusted
-                        except Exception:
-                            # Can't determine provenance from unparseable
-                            # frontmatter; fall through to the existing path
-                            # so promote_file's own validation (and M3's
-                            # "promote failed, run continues" contract)
-                            # still applies rather than silently swallowing it.
-                            source_agent = ""
-                            trusted_provenance = True
+                        except fm.FrontmatterError as e:
+                            # Fail closed: provenance can't be established from
+                            # invalid frontmatter, and promote_file would refuse
+                            # the file anyway. Report and continue (M3 contract).
+                            console.print(f"  [red]promote failed:[/red] {e}")
+                            continue
+                        source_agent = meta.get("source_agent", "")
+                        trusted_provenance = source_agent in trusted
                         if not trusted_provenance and yes:
                             console.print(
                                 f"  [yellow]skip promote[/yellow] {item.slug}: untrusted "
