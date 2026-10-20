@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -832,6 +833,179 @@ class TestTendLLMProvenanceGate:
         for i in range(3):
             assert not (tmp_vault["ATLAS_CONCEPTS"] / f"untrusted-{i}.md").exists()
             assert (tmp_vault["INTAKE"] / f"untrusted-{i}.md").exists()
+
+
+def _keep_all_from_call(**kwargs) -> TriageBatch:
+    """Fake parse_structured: 'keep' every slug actually sent in this call.
+
+    Parses the slugs out of the rendered `user` prompt rather than hardcoding
+    a fixed batch, so it stays correct across re-triage runs that send a
+    shrinking subset of the original deferred queue.
+    """
+    slugs = re.findall(r"- slug: (\S+)", kwargs["user"])
+    return TriageBatch(
+        items=[TriageItem(slug=s, action="keep", atlas_type=None, reason="ok") for s in slugs]
+    )
+
+
+class TestTendRetriageMemory:
+    """Pass 2 must remember prior triage.decided verdicts by content hash so
+    an unattended tend loop doesn't re-roll a settled 'keep' every run."""
+
+    def test_unchanged_items_skip_llm_on_rerun(self, tmp_vault, monkeypatch):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        for i in range(5):
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note"))
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", _keep_all_from_call)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        decided = [e for e in ledger.replay() if e.kind == "triage.decided"]
+        assert len(decided) == 5
+        for e in decided:
+            assert e.payload["content_hash"].startswith("sha256:")
+
+        def fail_if_called(**kwargs):
+            pytest.fail("LLM triage must not be called when nothing changed since last decision")
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", fail_if_called)
+
+        result2 = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result2.exit_code == 0, result2.output
+        assert "skipped 5 already-triaged item(s)" in result2.output
+
+        # no new triage.decided events were appended
+        decided_after = [e for e in ledger.replay() if e.kind == "triage.decided"]
+        assert len(decided_after) == 5
+
+    def test_only_changed_file_is_sent_on_rerun(self, tmp_vault, monkeypatch):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        paths = [
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note")) for i in range(5)
+        ]
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", _keep_all_from_call)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        # change note-0's content -> its content_hash no longer matches memory
+        meta, body, _kind = fm.load(paths[0])
+        fm.write(paths[0], meta, body + "\nedited after triage\n")
+
+        calls: list = []
+
+        def recording(**kwargs):
+            calls.append(kwargs)
+            return _keep_all_from_call(**kwargs)
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", recording)
+
+        # threshold=1 so the single remaining (changed) item still clears the
+        # LLM-tier gate even though 4 of the 5 deferred items were filtered.
+        result2 = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "1", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result2.exit_code == 0, result2.output
+        assert "skipped 4 already-triaged item(s)" in result2.output
+        assert len(calls) == 1
+        assert re.findall(r"- slug: (\S+)", calls[0]["user"]) == ["note-0"]
+
+    def test_retriage_flag_forces_full_resend(self, tmp_vault, monkeypatch):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        for i in range(5):
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note"))
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", _keep_all_from_call)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        calls: list = []
+
+        def recording(**kwargs):
+            calls.append(kwargs)
+            return _keep_all_from_call(**kwargs)
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", recording)
+
+        result2 = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health", "--retriage"],
+            catch_exceptions=False,
+        )
+        assert result2.exit_code == 0, result2.output
+        assert "already-triaged" not in result2.output
+        assert len(calls) == 1
+        assert len(re.findall(r"- slug: (\S+)", calls[0]["user"])) == 5
+
+    def test_legacy_decision_without_content_hash_does_not_suppress(self, tmp_vault, monkeypatch):
+        """A triage.decided event predating this feature (no content_hash in
+        its payload) must count as 'no memory', never as a suppressing match."""
+        from sabnyx.commands import tend as tend_mod
+
+        paths = [
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note")) for i in range(5)
+        ]
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        ledger.append_event(
+            plane="projection",
+            kind="triage.decided",
+            actor="sabnyx-tend",
+            subject=str(paths[0].relative_to(tmp_vault["DATA_ROOT"])),
+            payload={"slug": "note-0", "action": "keep", "reason": "legacy decision, pre-hash"},
+        )
+
+        calls: list = []
+
+        def recording(**kwargs):
+            calls.append(kwargs)
+            return _keep_all_from_call(**kwargs)
+
+        from sabnyx import services as svc_mod
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", recording)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "already-triaged" not in result.output
+        assert len(calls) == 1
+        assert len(re.findall(r"- slug: (\S+)", calls[0]["user"])) == 5
 
 
 class TestTendRobustness:
