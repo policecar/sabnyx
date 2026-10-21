@@ -49,6 +49,16 @@ def slugify(text: str, max_len: int = 80) -> str:
     return t
 
 
+def file_hash(path: Path) -> str:
+    """``"sha256:" + hex digest`` of a file's raw bytes.
+
+    Used by tend's re-triage memory (has this intake file changed since its
+    last triage.decided ledger event?). Distinct from ledger.content_hash,
+    which hashes a canonicalized JSON *payload*, not file bytes.
+    """
+    return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+
+
 def walk_vault_md(root: Path) -> list[Path]:
     """Yield all .md files under root, skipping .git, _review/ (operational),
     and sources/ (raw immutable artifacts; no frontmatter schema applies)."""
