@@ -39,6 +39,9 @@ vault/_review/scratch/
 *.tmp
 *.swp
 
+# Third-party text kept locally, never committed (Joi's, no license)
+/docs/spec/jibot.md
+
 # Secrets
 .env
 .env.local
