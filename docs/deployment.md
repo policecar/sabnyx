@@ -10,8 +10,8 @@ on the server (chmod 600).
 ## Architecture: two repos + a bare hub
 
 The **code** and the **personal vault/ledger** live in separate git repos so the
-always-on `tend` loop (which commits vault changes every 15 min) never pollutes
-code history.
+always-on `tend` loop (which runs every 15 min and commits when content
+changed, else at most once a day) never pollutes code history.
 
 ```
 github.com/policecar/sabnyx            ← CODE (this repo)
@@ -98,6 +98,11 @@ set -a; . ~/sabnyx/.env; set +a
 curl -s "https://api.telegram.org/bot$SABNYX_TELEGRAM_TOKEN/getMe"   # → "username":"your-bot"
 uv run sabnyx verify          # LLM door answers
 uv run sabnyx health          # vault resolves under ~/sabnyx-vault
+
+# install the vault's pre-commit lint hook (gate: a crash-truncated atlas
+# file must not be committable by `git add -A`). Reads SABNYX_DATA_DIR from
+# ~/sabnyx/.env (just populated above) to find the DATA repo to hook into.
+bash ~/sabnyx/ops/scripts/install-hooks.sh
 ```
 
 ### 5. Smoke-test the bot before daemonizing
@@ -113,30 +118,18 @@ sudo loginctl enable-linger "$USER"     # services survive logout + reboot
 mkdir -p ~/.config/systemd/user
 ```
 
-`~/sabnyx-sync-tend.sh` (the heartbeat: pull → tend → commit → push):
-```bash
-cat > ~/sabnyx-sync-tend.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-export PATH="$HOME/.local/bin:$PATH"
-cd "$HOME/sabnyx-vault" && git pull --rebase --autostash origin main
-cd "$HOME/sabnyx"       && uv run sabnyx tend --yes
-cd "$HOME/sabnyx-vault" && git add -A
+The heartbeat (pull → tend → commit → push) is tracked at
+`ops/scripts/sabnyx-sync-tend.sh` in this repo — it is **not** pasted onto the
+server. The unit below runs it straight from the CODE clone: edit it in the
+repo and `git pull` on the server — never hand-edit it on the server. git
+tracks only the executable bit (644/755) on that file. It is as readable as
+the rest of the repo, and that is fine: it holds no secrets — credentials
+reach it only through the unit's `EnvironmentFile=`.
 
-# tend.completed is ledgered every run (opsctl's liveness signal) — a
-# ledger-only diff isn't "nothing changed", but committing it every 15 min
-# is pure churn. Commit only if something else changed too, or the last
-# commit is >24h old (bounds hub staleness); else leave it staged for next run.
-if git diff --cached --quiet -- . ':(exclude)ops/events.jsonl'; then
-  last_commit_ts=$(git log -1 --format=%ct 2>/dev/null || echo 0)
-  now_ts=$(date -u +%s)
-  if [ $(( now_ts - last_commit_ts )) -le 86400 ]; then
-    exit 0
-  fi
-fi
-git diff --cached --quiet || { git commit -m "tend $(date -u +%FT%TZ)"; git push origin main; }
-EOF
-chmod 700 ~/sabnyx-sync-tend.sh
+Syntax-check it before wiring it into systemd, so a typo doesn't run half a
+script once the timer is live:
+```bash
+bash -n ~/sabnyx/ops/scripts/sabnyx-sync-tend.sh
 ```
 
 `~/.config/systemd/user/sabnyx-serve.service`:
@@ -172,7 +165,7 @@ Description=sabnyx tend (sync + heartbeat)
 [Service]
 Type=oneshot
 EnvironmentFile=%h/sabnyx/.env
-ExecStart=%h/sabnyx-sync-tend.sh
+ExecStart=%h/sabnyx/ops/scripts/sabnyx-sync-tend.sh
 # hardening (same namespace-free set as serve)
 NoNewPrivileges=yes
 RestrictRealtime=yes
@@ -181,6 +174,19 @@ LockPersonality=yes
 MemoryMax=2G
 TasksMax=256
 ```
+
+**Migrating an existing install** (the script used to be pasted at
+`~/sabnyx-sync-tend.sh`; now it's tracked in the repo): edit `ExecStart` in
+`~/.config/systemd/user/sabnyx-tend.service` to the path above, then:
+```bash
+systemctl --user daemon-reload
+systemctl --user start sabnyx-tend.service          # prove the new path runs…
+systemctl --user status sabnyx-tend.service --no-pager | tail -5   # …exit 0, no errors
+rm ~/sabnyx-sync-tend.sh                            # only then drop the old copy
+```
+Don't just trust that you edited it right — the "Is it alive?" checklist
+below has a one-line command to *detect* whether `ExecStart` still points
+at the old pasted path or the tracked one.
 
 `~/.config/systemd/user/sabnyx-tend.timer`:
 ```ini
@@ -203,6 +209,28 @@ systemctl --user enable --now sabnyx-serve.service sabnyx-tend.timer
 systemctl --user status sabnyx-serve.service --no-pager
 systemctl --user list-timers --no-pager | grep sabnyx
 ```
+
+Manual smoke run (once the unit is installed): trigger it through systemd
+rather than invoking the script directly — `start` runs the oneshot unit
+exactly once and systemd serialises it against the timer, so this run
+cannot race a timer-fired one.
+```bash
+systemctl --user start sabnyx-tend.service
+systemctl --user status sabnyx-tend.service --no-pager | tail -20
+```
+Running the script directly is fine too — e.g. on a box where the timer is
+disabled — but unlike the unit (which loads the env file via
+`EnvironmentFile=`) a bare shell has not read it, so source it first or a
+relocated vault silently falls back to the default path:
+```bash
+set -a; . ~/sabnyx/.env; set +a
+~/sabnyx/ops/scripts/sabnyx-sync-tend.sh
+```
+The script's own lock
+(`.sync-tend.lock` in the DATA clone) protects against overlap **where
+`flock(1)` exists** (Linux util-linux — i.e. the server); where it doesn't
+(macOS, minimal containers) the script says so on stderr and runs unlocked,
+so there prefer `systemctl --user start` or make sure the timer is stopped.
 
 ---
 
@@ -307,6 +335,11 @@ Then open `https://sabnyx.example.net/install.html` and scan the QR on the R1.
 cd ~/sabnyx && git pull && uv sync
 systemctl --user restart sabnyx-serve.service
 ```
+The timer invokes `ops/scripts/sabnyx-sync-tend.sh` straight from the CODE
+clone, so a `git pull` alone picks up a fixed heartbeat script on its next
+15-min run — no restart needed. Don't hand-edit `sabnyx-tend.service` or the
+script on the server; it's a tracked file, so a hand-edit is just local drift
+that `git pull` will silently overwrite (or conflict with) later.
 
 ## Logs / troubleshooting
 ```bash
@@ -314,12 +347,35 @@ journalctl --user -u sabnyx-serve.service -f         # live bot logs
 journalctl --user -u sabnyx-tend.service --since today
 systemctl --user list-timers | grep sabnyx           # next tend run
 ```
+`journalctl --user` needs the invoking user in the `systemd-journal` group
+(`sudo usermod -aG systemd-journal "$USER"`, then re-login); without it, use
+`systemctl --user status <unit> --no-pager`, which works regardless.
+
+### Is it alive? (after a restart)
+Seven checks, cheapest first:
+```bash
+loginctl show-user "$USER" -p Linger                            # Linger=yes
+systemctl --user list-timers --no-pager | grep sabnyx           # NEXT within 15 min
+systemctl --user status sabnyx-serve.service --no-pager | head -3   # active (running)
+systemctl --user cat sabnyx-tend.service | grep ExecStart       # expected below
+git -C ~/sabnyx-vault log -1 --format='%cI %s'                  # recent tend commit or content commit
+git -C ~/sabnyx-vault status --short
+git -C ~/sabnyx-vault status -sb | head -1                      # expected below
+```
+- `Linger=no` means services stop at logout — rerun `sudo loginctl enable-linger "$USER"`.
+- No `NEXT` line or one far in the past means the timer isn't enabled — `systemctl --user enable --now sabnyx-tend.timer`.
+- Anything but `active (running)` for `sabnyx-serve.service` means the bot is down.
+- `ExecStart=%h/sabnyx/ops/scripts/sabnyx-sync-tend.sh` is the tracked path — any other value (e.g. the old pasted `~/sabnyx-sync-tend.sh`) means the migration above didn't take; this detects stale `ExecStart` drift, not just the migration step itself.
+- A `tend …` or content commit from more than ~20 min ago (one run + margin) means the loop has stalled.
+- `M  ops/events.jsonl` in `git status --short` is the **normal idle state**, not a problem: the ledger line is staged but deliberately left uncommitted until real content changes or 24h pass — see the gating block in the script. Anything else staged or untracked there is worth investigating.
+- `git status -sb | head -1` showing `## main...origin/main` (no suffix) is good; a `[ahead N]` suffix means there are commits the hub never received — the last push failed. Check `journalctl --user -u sabnyx-tend.service` for the "push failed after rebase retry" message and whether the repo is still mid-rebase (see Gotchas).
 
 ## `.env` reference
 
 | Var | Purpose | Secret |
 |-----|---------|--------|
 | `SABNYX_DATA_DIR` | path to the DATA working clone (`~/sabnyx-vault`) | no |
+| `SABNYX_CODE_DIR` | path to the CODE clone, read only by the heartbeat script (`~/sabnyx`) | no |
 | `SABNYX_LLM_PROVIDER` | `moonshot` (Kimi) \| `anthropic` \| … | no |
 | `MOONSHOT_API_KEY` / `ANTHROPIC_API_KEY` | LLM provider key | **yes** |
 | `SABNYX_TELEGRAM_TOKEN` | bot token from BotFather | **yes** |
@@ -329,6 +385,10 @@ systemctl --user list-timers | grep sabnyx           # next tend run
 | `SABNYX_TRUSTED_SOURCES` | `source_agent`s trusted for auto-promote (default `sabnyx-ingest`) | no |
 | `SABNYX_MAX_LLM_CALLS` | per-run LLM call ceiling for `tend` (default `50`; `0` = unlimited) | no |
 | `SABNYX_LLM_MAX_RETRIES` | retries on transient provider 429/5xx (default `3`) | no |
+
+`sabnyx-sync-tend.sh` reads `SABNYX_DATA_DIR` too, with the same precedence
+(real env var over `.env`) — relocating the vault via this variable moves
+the heartbeat script's target along with everything else.
 
 ---
 
@@ -362,6 +422,13 @@ systemctl --user list-timers | grep sabnyx           # next tend run
   sync is bidirectional (laptop edits + server tend both commit to the hub), so the
   branches legitimately diverge; `--ff-only` would wedge the loop. The ledger's
   union-merge driver resolves the only file that concurrently appends.
+- **The script never leaves the clone mid-rebase.** Both the initial
+  `git pull --rebase --autostash` and the push-retry's own `git pull --rebase`
+  run `git rebase --abort` before exiting non-zero on failure (a real content
+  conflict, not the ledger — that auto-merges). If you ever find
+  `ls ~/sabnyx-vault/.git/rebase-merge` or `.../rebase-apply` existing, the
+  script crashed before this guard ran (or was hand-interrupted); run
+  `git -C ~/sabnyx-vault rebase --abort` yourself before the next tick.
 - **systemd hardening is namespace-free by necessity.** Mount-namespace directives
   (`ProtectSystem`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernel*`,
   `ProtectControlGroups`) require **unprivileged user namespaces**, which Debian
@@ -373,3 +440,9 @@ systemctl --user list-timers | grep sabnyx           # next tend run
   under cgroup v1 — harmless.) Also note several newer directives
   (`ProtectHostname` 242, `RestrictSUIDSGID` 242, `ProtectClock` 245) don't exist on
   systemd 241 and would be ignored.
+- **Don't paste multi-line heredocs into a shell.** An unterminated `<<'EOF'`
+  (one missed keystroke) silently swallows every following command into the
+  target file instead of erroring — cost ten minutes re-pasting
+  `sabnyx-sync-tend.sh` once. Prefer a tracked script (this file now ships
+  one) and, when you must paste a heredoc, run `bash -n` on the result before
+  trusting it.
