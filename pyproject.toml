@@ -44,6 +44,13 @@ ignore = ["E501"]  # line-length handled by formatter
 [tool.ruff.format]
 quote-style = "double"
 
+[tool.pytest.ini_options]
+# A bare `pytest` from the repo root must only ever collect tests/ — without
+# this, it also walks tmp/ (gitignored scratch) and anything else lying
+# around the working tree, which on a dirty tree produces dozens of
+# unrelated collection errors (see the 2026-10-20 test-hygiene review).
+testpaths = ["tests"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
