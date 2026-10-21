@@ -28,7 +28,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from .. import context, fm, ledger, llm
+from .. import context, fm, ledger, llm, util
 from ..paths import ATLAS, DATA_ROOT, INTAKE, ensure_tree
 from ..services import (
     ACTOR_TEND,
@@ -46,6 +46,49 @@ def _atlas_slugs() -> set[str]:
 
 def _intake_files() -> list[Path]:
     return sorted(p for p in INTAKE.glob("*.md") if p.is_file())
+
+
+def _last_triage_hashes() -> dict[str, str | None]:
+    """Last triage.decided content_hash per subject, keyed by vault-relative path.
+
+    None means the last recorded decision for that subject predates the
+    content_hash field (a legacy event) — treated as "no memory" so it never
+    suppresses re-triage.
+    """
+    hashes: dict[str, str | None] = {}
+    for e in ledger.replay():
+        if e.kind == "triage.decided":
+            hashes[e.subject] = e.payload.get("content_hash")
+    return hashes
+
+
+def _filter_already_triaged(
+    deferred: list[Path], *, retriage: bool, console: Console
+) -> list[Path]:
+    """Drop intake files unchanged since their last triage.decided decision.
+
+    Without this, every tend run re-sends the whole deferred queue to the LLM
+    triage tier, re-rolling a settled "keep" on every heartbeat. --retriage
+    bypasses the filter (forces a fresh LLM pass over everything deferred).
+    """
+    if retriage:
+        return deferred
+    remembered = _last_triage_hashes()
+    kept: list[Path] = []
+    skipped = 0
+    for p in deferred:
+        subject = str(p.relative_to(DATA_ROOT))
+        last_hash = remembered.get(subject)
+        if last_hash is not None and last_hash == util.file_hash(p):
+            skipped += 1
+            continue
+        kept.append(p)
+    if skipped:
+        console.print(
+            f"  skipped {skipped} already-triaged item(s) (unchanged since last "
+            f"decision; --retriage to force)"
+        )
+    return kept
 
 
 def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
@@ -116,7 +159,19 @@ def _health_summary(console: Console) -> None:
 )
 @click.option("--no-reweave", is_flag=True, help="Skip the reweave pass.")
 @click.option("--no-health", is_flag=True, help="Skip the health summary.")
-def tend_cmd(dry_run: bool, yes: bool, threshold: int, no_reweave: bool, no_health: bool) -> None:
+@click.option(
+    "--retriage",
+    is_flag=True,
+    help="re-send already-triaged intakes to the LLM even if unchanged",
+)
+def tend_cmd(
+    dry_run: bool,
+    yes: bool,
+    threshold: int,
+    no_reweave: bool,
+    no_health: bool,
+    retriage: bool,
+) -> None:
     """Heartbeat: auto-promote → LLM triage → reweave → health.
 
     Runs the full self-maintenance cycle in one schedulable command.
@@ -202,11 +257,13 @@ def tend_cmd(dry_run: bool, yes: bool, threshold: int, no_reweave: bool, no_heal
             f"\n[bold]pass 2: LLM triage[/bold]  ({len(deferred)} deferred, threshold {threshold})"
         )
 
-        if deferred and len(deferred) >= threshold:
-            console.print(f"  calling LLM triage for {len(deferred)} item(s)…")
+        to_triage = _filter_already_triaged(deferred, retriage=retriage, console=console)
+
+        if to_triage and len(to_triage) >= threshold:
+            console.print(f"  calling LLM triage for {len(to_triage)} item(s)…")
             if not dry_run:
-                batch = triage_batch(deferred, role="standard")
-                slug_to_path = {p.stem.lower(): p for p in deferred}
+                batch = triage_batch(to_triage, role="standard")
+                slug_to_path = {p.stem.lower(): p for p in to_triage}
 
                 for item in batch.items:
                     path = slug_to_path.get(item.slug.lower())
@@ -248,6 +305,7 @@ def tend_cmd(dry_run: bool, yes: bool, threshold: int, no_reweave: bool, no_heal
                                     "reason": item.reason,
                                     "decision": "deferred_untrusted",
                                     "source_agent": source_agent,
+                                    "content_hash": util.file_hash(path),
                                 },
                             )
                             continue
@@ -311,13 +369,14 @@ def tend_cmd(dry_run: bool, yes: bool, threshold: int, no_reweave: bool, no_heal
                                 "slug": item.slug,
                                 "action": item.action,
                                 "reason": item.reason,
+                                "content_hash": util.file_hash(path),
                             },
                         )
             else:
                 console.print("  [dim]dry run: skipping LLM call[/dim]")
         else:
             console.print(
-                f"  [dim]below threshold ({len(deferred)} < {threshold}); skipping LLM tier[/dim]"
+                f"  [dim]below threshold ({len(to_triage)} < {threshold}); skipping LLM tier[/dim]"
             )
 
         # -- pass 3: reweave --
