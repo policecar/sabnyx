@@ -221,8 +221,15 @@ cannot race a timer-fired one.
 systemctl --user start sabnyx-tend.service
 systemctl --user status sabnyx-tend.service --no-pager | tail -20
 ```
-Running the script directly (`~/sabnyx/ops/scripts/sabnyx-sync-tend.sh`) is
-fine too — e.g. on a box where the timer is disabled. The script's own lock
+Running the script directly is fine too — e.g. on a box where the timer is
+disabled — but unlike the unit (which loads the env file via
+`EnvironmentFile=`) a bare shell has not read it, so source it first or a
+relocated vault silently falls back to the default path:
+```bash
+set -a; . ~/sabnyx/.env; set +a
+~/sabnyx/ops/scripts/sabnyx-sync-tend.sh
+```
+The script's own lock
 (`.sync-tend.lock` in the DATA clone) protects against overlap **where
 `flock(1)` exists** (Linux util-linux — i.e. the server); where it doesn't
 (macOS, minimal containers) the script says so on stderr and runs unlocked,
@@ -371,6 +378,7 @@ git -C ~/sabnyx-vault status -sb | head -1                      # expected below
 | Var | Purpose | Secret |
 |-----|---------|--------|
 | `SABNYX_DATA_DIR` | path to the DATA working clone (`~/sabnyx-vault`) | no |
+| `SABNYX_CODE_DIR` | path to the CODE clone, read only by the heartbeat script (`~/sabnyx`) | no |
 | `SABNYX_LLM_PROVIDER` | `moonshot` (Kimi) \| `anthropic` \| … | no |
 | `MOONSHOT_API_KEY` / `ANTHROPIC_API_KEY` | LLM provider key | **yes** |
 | `SABNYX_TELEGRAM_TOKEN` | bot token from BotFather | **yes** |

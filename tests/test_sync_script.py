@@ -515,3 +515,15 @@ def test_detached_head_is_refused(tmp_path):
     assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "detached HEAD" in result.stderr
     assert _hub_log(hub) == hub_before
+
+
+def test_tilde_in_code_dir_is_expanded_too(tmp_path):
+    """Same as the data-dir case, for the sibling variable — review #22 round 3."""
+    ctx = _setup(tmp_path)
+    (tmp_path / "home-code").mkdir()
+    env = {**ctx["env"], "HOME": str(tmp_path), "SABNYX_CODE_DIR": "~/home-code"}
+
+    result = _run_script(env)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "code dir not found" not in result.stderr

@@ -7,6 +7,7 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 
 SABNYX_CODE_DIR="${SABNYX_CODE_DIR:-$HOME/sabnyx}"
+SABNYX_CODE_DIR="${SABNYX_CODE_DIR/#\~/$HOME}"   # ~ expansion, same as paths.py (systemd EnvironmentFile does none)
 # Same variable src/sabnyx/paths.py reads (SABNYX_DATA_DIR), same precedence:
 # a real env var wins over `.env`. The systemd unit's EnvironmentFile=%h/sabnyx/.env
 # supplies it for timer runs.
@@ -55,7 +56,8 @@ if ! git pull --rebase --autostash origin "$BRANCH"; then
   exit 1
 fi
 
-cd "$SABNYX_CODE_DIR" && uv run sabnyx tend --yes
+# 9>&- : don't let tend (or anything it spawns) inherit the lock fd.
+cd "$SABNYX_CODE_DIR" && uv run sabnyx tend --yes 9>&-
 cd "$SABNYX_DATA_DIR" && git add -A -- . ':(exclude).sync-tend.lock'
 
 # tend.completed is ledgered every run (opsctl's liveness signal) — a
