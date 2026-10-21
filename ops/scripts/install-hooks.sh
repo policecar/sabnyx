@@ -10,7 +10,11 @@ HOOK_SRC="$SCRIPT_DIR/pre-commit.sh"
 # application. Running from CODE_ROOT makes this work regardless of caller cwd.
 DATA_ROOT="$(cd "$CODE_ROOT" && uv run python -c 'from sabnyx.paths import DATA_ROOT; print(DATA_ROOT)')"
 git -C "$DATA_ROOT" rev-parse --git-dir >/dev/null
-HOOK_DST="$(git -C "$DATA_ROOT" rev-parse --path-format=absolute --git-path hooks/pre-commit)"
+# --git-path is relative to the repo when run via -C; make it absolute ourselves
+# instead of --path-format=absolute, which needs git >= 2.31 (older git echoes
+# the unknown flag through and the mkdir below gets garbage).
+HOOK_DST="$(git -C "$DATA_ROOT" rev-parse --git-path hooks/pre-commit)"
+case "$HOOK_DST" in /*) ;; *) HOOK_DST="$DATA_ROOT/$HOOK_DST" ;; esac
 
 chmod +x "$HOOK_SRC"
 mkdir -p "$(dirname -- "$HOOK_DST")"
