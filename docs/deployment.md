@@ -3,7 +3,9 @@
 How to run sabnyx as a 24/7 service that ingests + answers over Telegram and tidies
 the vault on a timer. Companion to `architecture.md` (what the system is) and
 `README.md` (the CLI). Secrets never live in this repo — only in `~/sabnyx/.env`
-on the server (chmod 600).
+on the server (chmod 600). Nor does anything instance-specific: your domain,
+bot, keys and paths live in `.env`, the nginx site and the systemd units on the
+server. Examples here use placeholders (`sabnyx.example.net`, user `p`).
 
 ---
 
@@ -48,17 +50,11 @@ the only inbound surface.
 
 ## One-time bring-up
 
-### 1. DATA hub (bare repo) + GitHub deploy key — on the server
+### 1. DATA hub (bare repo) — on the server
 ```bash
 mkdir -p ~/git
 git init --bare ~/git/sabnyx-vault.git
 git -C ~/git/sabnyx-vault.git symbolic-ref HEAD refs/heads/main   # git <2.28 has no --initial-branch
-
-# read-only deploy key so the server can pull the private CODE repo
-ssh-keygen -t ed25519 -f ~/.ssh/sabnyx_deploy -N "" -C "sabnyx-server"
-printf 'Host github.com\n  IdentityFile ~/.ssh/sabnyx_deploy\n  IdentitiesOnly yes\n' >> ~/.ssh/config
-cat ~/.ssh/sabnyx_deploy.pub      # → add to GitHub repo → Settings → Deploy keys (READ-ONLY)
-ssh -T git@github.com             # expect: Hi policecar/sabnyx! ...authenticated
 ```
 
 ### 2. Publish the DATA repo to the hub — from the laptop
@@ -71,7 +67,7 @@ git push -u origin main
 ### 3. Clone both repos — on the server
 ```bash
 git clone ~/git/sabnyx-vault.git ~/sabnyx-vault           # DATA (local, no auth)
-git clone git@github.com:policecar/sabnyx.git ~/sabnyx    # CODE (deploy key)
+git clone https://github.com/policecar/sabnyx.git ~/sabnyx  # CODE (public, no auth)
 git -C ~/sabnyx-vault config user.name  "sabnyx-server"   # so tend can commit
 git -C ~/sabnyx-vault config user.email "sabnyx@$(hostname)"
 ```
