@@ -122,12 +122,9 @@ The heartbeat (pull → tend → commit → push) is tracked at
 `ops/scripts/sabnyx-sync-tend.sh` in this repo — it is **not** pasted onto the
 server. The unit below runs it straight from the CODE clone: edit it in the
 repo and `git pull` on the server — never hand-edit it on the server. git
-tracks only the executable bit (644/755) on that file; if the server's
-deployment policy wants a tighter mode, set it after checkout — the repo
-itself doesn't (and can't) store that; git won't report it as a change:
-```bash
-chmod 700 ~/sabnyx/ops/scripts/sabnyx-sync-tend.sh
-```
+tracks only the executable bit (644/755) on that file. It is as readable as
+the rest of the repo, and that is fine: it holds no secrets — credentials
+reach it only through the unit's `EnvironmentFile=`.
 
 Syntax-check it before wiring it into systemd, so a typo doesn't run half a
 script once the timer is live:
