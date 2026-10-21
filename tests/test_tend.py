@@ -702,6 +702,138 @@ class TestTendLLMTriage:
         assert by_slug["note-1"].payload["action"] == "keep"
 
 
+class TestTendLLMProvenanceGate:
+    """The LLM triage tier must honour the same source_agent trust gate as
+    the deterministic auto-promote pass (Gate 6) — an LLM "promote" verdict
+    for an untrusted intake (telegram/web/r1 provenance) must never reach
+    atlas/ unattended."""
+
+    def test_untrusted_batch_all_deferred_not_promoted(self, tmp_vault, monkeypatch):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        for i in range(5):
+            meta = _good_meta("note", source_agent="sabnyx-telegram")
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", meta)
+
+        batch = TriageBatch(
+            items=[
+                TriageItem(
+                    slug=f"note-{i}", action="promote", atlas_type="concept", reason="looks durable"
+                )
+                for i in range(5)
+            ]
+        )
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        # nothing promoted; every file remains in intake
+        assert not any(tmp_vault["ATLAS_CONCEPTS"].glob("*.md"))
+        for i in range(5):
+            assert (tmp_vault["INTAKE"] / f"note-{i}.md").exists()
+        assert "atlas.promoted" not in [e.kind for e in ledger.replay()]
+
+        # a ledger event per file records the untrusted deferral
+        deferred_events = [
+            e
+            for e in ledger.replay()
+            if e.kind == "triage.decided" and e.payload.get("decision") == "deferred_untrusted"
+        ]
+        assert len(deferred_events) == 5
+        for e in deferred_events:
+            assert e.payload["source_agent"] == "sabnyx-telegram"
+
+    def test_trusted_batch_promotes(self, tmp_vault, monkeypatch):
+        """Positive twin: trusted source_agent still promotes via the LLM tier."""
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        for i in range(5):
+            meta = _good_meta("note", source_agent="sabnyx-ingest")
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", meta)
+
+        batch = TriageBatch(
+            items=[
+                TriageItem(
+                    slug=f"note-{i}", action="promote", atlas_type="concept", reason="looks durable"
+                )
+                for i in range(5)
+            ]
+        )
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        for i in range(5):
+            assert (tmp_vault["ATLAS_CONCEPTS"] / f"note-{i}.md").exists()
+            assert not (tmp_vault["INTAKE"] / f"note-{i}.md").exists()
+        assert [e.kind for e in ledger.replay()].count("atlas.promoted") == 5
+
+    def test_mixed_batch_only_trusted_promote(self, tmp_vault, monkeypatch):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        for i in range(3):
+            meta = _good_meta("note", source_agent="sabnyx-ingest")
+            _make_intake(tmp_vault["INTAKE"], f"trusted-{i}", meta)
+        for i in range(3):
+            meta = _good_meta("note", source_agent="sabnyx-r1")
+            _make_intake(tmp_vault["INTAKE"], f"untrusted-{i}", meta)
+
+        batch = TriageBatch(
+            items=[
+                TriageItem(
+                    slug=f"trusted-{i}",
+                    action="promote",
+                    atlas_type="concept",
+                    reason="durable",
+                )
+                for i in range(3)
+            ]
+            + [
+                TriageItem(
+                    slug=f"untrusted-{i}",
+                    action="promote",
+                    atlas_type="concept",
+                    reason="durable",
+                )
+                for i in range(3)
+            ]
+        )
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        for i in range(3):
+            assert (tmp_vault["ATLAS_CONCEPTS"] / f"trusted-{i}.md").exists()
+            assert not (tmp_vault["INTAKE"] / f"trusted-{i}.md").exists()
+        for i in range(3):
+            assert not (tmp_vault["ATLAS_CONCEPTS"] / f"untrusted-{i}.md").exists()
+            assert (tmp_vault["INTAKE"] / f"untrusted-{i}.md").exists()
+
+
 class TestTendRobustness:
     def test_malformed_yaml_intake_does_not_abort_run(self, tmp_vault, monkeypatch):
         """M3: one unparseable file defers; the rest of the run proceeds."""
