@@ -123,8 +123,11 @@ The heartbeat (pull → tend → commit → push) is tracked at
 server. The unit below runs it straight from the CODE clone: edit it in the
 repo and `git pull` on the server — never hand-edit it on the server. git
 tracks only the executable bit (644/755) on that file; if the server's
-deployment policy wants a tighter mode (e.g. 700), set it explicitly after
-checkout — the repo itself doesn't (and can't) store that.
+deployment policy wants a tighter mode, set it after checkout — the repo
+itself doesn't (and can't) store that; git won't report it as a change:
+```bash
+chmod 700 ~/sabnyx/ops/scripts/sabnyx-sync-tend.sh
+```
 
 Syntax-check it before wiring it into systemd, so a typo doesn't run half a
 script once the timer is live:
@@ -180,7 +183,9 @@ TasksMax=256
 `~/.config/systemd/user/sabnyx-tend.service` to the path above, then:
 ```bash
 systemctl --user daemon-reload
-rm ~/sabnyx-sync-tend.sh
+systemctl --user start sabnyx-tend.service          # prove the new path runs…
+systemctl --user status sabnyx-tend.service --no-pager | tail -5   # …exit 0, no errors
+rm ~/sabnyx-sync-tend.sh                            # only then drop the old copy
 ```
 Don't just trust that you edited it right — the "Is it alive?" checklist
 below has a one-line command to *detect* whether `ExecStart` still points
@@ -217,9 +222,11 @@ systemctl --user start sabnyx-tend.service
 systemctl --user status sabnyx-tend.service --no-pager | tail -20
 ```
 Running the script directly (`~/sabnyx/ops/scripts/sabnyx-sync-tend.sh`) is
-fine too — e.g. on a box where the timer is disabled — since the script's
-own lock (`.sync-tend.lock` in the DATA clone) protects against overlap
-either way.
+fine too — e.g. on a box where the timer is disabled. The script's own lock
+(`.sync-tend.lock` in the DATA clone) protects against overlap **where
+`flock(1)` exists** (Linux util-linux — i.e. the server); where it doesn't
+(macOS, minimal containers) the script says so on stderr and runs unlocked,
+so there prefer `systemctl --user start` or make sure the timer is stopped.
 
 ---
 
