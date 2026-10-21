@@ -373,7 +373,7 @@ def test_push_retry_gives_up_cleanly_on_a_conflicting_hub_update(tmp_path):
     assert result.returncode != 0, (
         f"stdout={result.stdout!r} stderr={result.stderr!r}\nhub log:\n{_hub_log(hub)}"
     )
-    assert "push failed after rebase retry" in result.stderr, result.stderr
+    assert "push rejected and the rebase-retry failed" in result.stderr, result.stderr
 
     head_after = _git("rev-parse", "HEAD", cwd=vault).stdout.strip()
     assert head_after != head_before, "the local tend commit should still exist locally"
@@ -460,3 +460,58 @@ def test_script_is_executable_and_strict():
         line for line in lines[1:] if line.strip() and not line.strip().startswith("#")
     )
     assert first_code_line == "set -euo pipefail"
+
+
+def test_tilde_in_data_dir_is_expanded_like_paths_py(tmp_path):
+    """`SABNYX_DATA_DIR=~/...` works for the Python CLI (paths.py expanduser);
+    the script must accept the same spelling — review #22 round 2, finding 2."""
+    ctx = _setup(tmp_path)
+    vault, hub, flag_file = ctx["vault"], ctx["hub"], ctx["flag_file"]
+    flag_file.write_text("touch", encoding="utf-8")
+    env = {**ctx["env"], "HOME": str(tmp_path), "SABNYX_DATA_DIR": "~/vault"}
+
+    result = _run_script(env)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "data dir not found" not in result.stderr
+    head = _git("rev-parse", "HEAD", cwd=vault).stdout.strip()
+    hub_head = _git("rev-parse", "main", cwd=hub).stdout.strip()
+    assert hub_head == head, f"hub did not receive the push; hub log:\n{_hub_log(hub)}"
+
+
+def test_syncs_the_checked_out_branch_not_a_hardcoded_main(tmp_path):
+    """A clone on a branch other than `main` must pull from and push to *that*
+    branch; previously `push origin main` could exit 0 while the new commit
+    never reached the hub — review #22 round 2, finding 1."""
+    ctx = _setup(tmp_path)
+    vault, hub, flag_file = ctx["vault"], ctx["hub"], ctx["flag_file"]
+    _git("checkout", "-q", "-b", "work", cwd=vault)
+    _git("push", "-q", "-u", "origin", "work", cwd=vault)
+    flag_file.write_text("touch", encoding="utf-8")
+    main_before = _git("rev-parse", "main", cwd=hub).stdout.strip()
+
+    result = _run_script(ctx["env"])
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    head = _git("rev-parse", "HEAD", cwd=vault).stdout.strip()
+    assert _git("rev-parse", "work", cwd=hub).stdout.strip() == head, (
+        f"hub 'work' did not receive the commit; hub log:\n{_hub_log(hub)}"
+    )
+    assert _git("rev-parse", "main", cwd=hub).stdout.strip() == main_before, (
+        f"hub 'main' moved although the clone was on 'work'; hub log:\n{_hub_log(hub)}"
+    )
+    status = _git("status", "-sb", cwd=vault).stdout.splitlines()[0]
+    assert "[ahead" not in status, status
+
+
+def test_detached_head_is_refused(tmp_path):
+    ctx = _setup(tmp_path)
+    vault, hub = ctx["vault"], ctx["hub"]
+    _git("checkout", "-q", "--detach", cwd=vault)
+    hub_before = _hub_log(hub)
+
+    result = _run_script(ctx["env"])
+
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "detached HEAD" in result.stderr
+    assert _hub_log(hub) == hub_before

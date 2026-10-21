@@ -11,6 +11,8 @@ SABNYX_CODE_DIR="${SABNYX_CODE_DIR:-$HOME/sabnyx}"
 # a real env var wins over `.env`. The systemd unit's EnvironmentFile=%h/sabnyx/.env
 # supplies it for timer runs.
 SABNYX_DATA_DIR="${SABNYX_DATA_DIR:-$HOME/sabnyx-vault}"
+# paths.py applies expanduser(); mirror it so `~/...` in the env file works here too.
+SABNYX_DATA_DIR="${SABNYX_DATA_DIR/#\~/$HOME}"
 
 [ -d "$SABNYX_CODE_DIR" ] || { echo "sabnyx code dir not found: $SABNYX_CODE_DIR" >&2; exit 1; }
 [ -d "$SABNYX_DATA_DIR" ] || { echo "sabnyx data dir not found: $SABNYX_DATA_DIR" >&2; exit 1; }
@@ -29,22 +31,25 @@ fi
 # failure means a real conflict or outage — surface it loudly so the systemd
 # unit fails and is visible, rather than silently dropping the push.
 push_with_retry() {
-  if git push origin main; then
+  if git push origin "$BRANCH"; then
     return 0
   fi
   echo "sabnyx-sync-tend: push rejected; pulling --rebase and retrying once" >&2
-  if git pull --rebase origin main && git push origin main; then
+  if git pull --rebase origin "$BRANCH" && git push origin "$BRANCH"; then
     return 0
   fi
   # The retry's own rebase can conflict too (another writer's push collided
   # with ours) — never leave that mid-rebase either.
   git rebase --abort 2>/dev/null || true
-  echo "sabnyx-sync-tend: push failed after rebase retry — inspect $SABNYX_DATA_DIR" >&2
+  echo "sabnyx-sync-tend: push rejected and the rebase-retry failed (conflict or hub unreachable) — inspect $SABNYX_DATA_DIR" >&2
   return 1
 }
 
 cd "$SABNYX_DATA_DIR"
-if ! git pull --rebase --autostash origin main; then
+# Sync whatever branch the clone is on (normally main); refuse a detached HEAD
+# rather than silently pushing a ref that is not what was just committed.
+BRANCH=$(git symbolic-ref --short -q HEAD) || { echo "sabnyx-sync-tend: $SABNYX_DATA_DIR is on a detached HEAD; refusing to sync" >&2; exit 1; }
+if ! git pull --rebase --autostash origin "$BRANCH"; then
   git rebase --abort 2>/dev/null || true
   echo "sabnyx-sync-tend: pull/rebase failed; aborted rebase, local changes kept in stash or index — inspect $SABNYX_DATA_DIR" >&2
   exit 1
