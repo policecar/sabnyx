@@ -8,8 +8,8 @@ Status: accepted
 Nanoclaw (github.com/Joi/nanoclaw) is Joi's lightweight alternative
 to Clawdbot — a TypeScript orchestrator that runs containerized
 agents, has per-group memory, a scheduled-task system, and
-file-based IPC. Recon (docs/recon/nanoclaw-mirror.md — to be
-written; findings in the stage 0 session log) found:
+file-based IPC. Recon (findings in the stage 0 session log; no
+standalone recon doc was written for this one) found:
 
   - ~24k LOC total; the reusable core is ~2.4k LOC
   - WhatsApp/Signal/Slack transport is ~3.6k LOC we don't want

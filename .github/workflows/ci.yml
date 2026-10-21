@@ -11,8 +11,14 @@ concurrency:
 
 jobs:
   python:
-    name: Python (ruff · ty · pytest)
+    name: Python ${{ matrix.python-version }} (ruff · ty · pytest)
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Lower bound of `requires-python` (pyproject.toml) + the version the
+        # package is actually developed/run on. Catches a 3.11-incompatible
+        # change (e.g. a 3.12+-only stdlib feature) before it ships.
+        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
@@ -20,6 +26,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          python-version: ${{ matrix.python-version }}
 
       - name: Sync dependencies
         run: uv sync
