@@ -1534,6 +1534,85 @@ class TestTendRobustness:
         assert (tmp_vault["INTAKE"] / "note-0.md").exists()  # kept, not promoted
         assert "tend.completed" in [e.kind for e in ledger.replay()]
 
+        # A non-tty abort must NOT settle the item as "declined" — the
+        # operator was never actually asked, so nothing is ledgered for
+        # note-0, and it must be re-offered on the next run (PR #25
+        # re-review), unlike the 4 settled "keep" decisions.
+        decided = [e for e in ledger.replay() if e.kind == "triage.decided"]
+        assert {e.payload["slug"] for e in decided} == {"note-1", "note-2", "note-3", "note-4"}
+
+        calls: list = []
+
+        def recording(**kwargs):
+            calls.append(kwargs)
+            return TriageBatch(
+                items=[
+                    TriageItem(slug="note-0", action="promote", atlas_type="concept", reason="r")
+                ]
+            )
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", recording)
+
+        # note-1..4 are now filtered as already-triaged, so note-0 alone
+        # clears a lowered threshold — proving it's still in the deferred
+        # pool, not quietly settled.
+        result2 = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "1", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result2.exit_code == 0, result2.output
+        assert len(calls) == 1
+        assert re.findall(r"- slug: (\S+)", calls[0]["user"]) == ["note-0"]
+
+    def test_declined_promote_is_recorded_and_not_resent(self, tmp_vault, monkeypatch):
+        """Contrast with the non-tty-abort case above: an explicit
+        interactive 'no' DOES settle the item as declined (PR #25
+        re-review)."""
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        for i in range(5):
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note"))
+
+        batch = TriageBatch(
+            items=[
+                TriageItem(slug="note-0", action="promote", atlas_type="concept", reason="r"),
+                *[
+                    TriageItem(slug=f"note-{i}", action="keep", atlas_type=None, reason="ok")
+                    for i in range(1, 5)
+                ],
+            ]
+        )
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+        # An explicit interactive "no" (not a non-tty EOF/Abort).
+        monkeypatch.setattr(tend_mod.click, "confirm", lambda *a, **k: False)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert (tmp_vault["INTAKE"] / "note-0.md").exists()  # declined, not promoted
+
+        decided = {e.payload["slug"]: e for e in ledger.replay() if e.kind == "triage.decided"}
+        assert decided["note-0"].payload["decision"] == "declined"
+
+        def fail_if_called(**kwargs):
+            pytest.fail("a declined item must not be resent until content changes or --retriage")
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", fail_if_called)
+
+        result2 = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "1", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result2.exit_code == 0, result2.output
+
     def test_threshold_zero_with_empty_queue_makes_no_llm_call(self, tmp_vault, monkeypatch):
         from sabnyx import services as svc_mod
         from sabnyx.commands import tend as tend_mod
