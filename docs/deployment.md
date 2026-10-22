@@ -39,7 +39,7 @@ laptop:~/src/_px/sabnyx                ← CODE clone (development)
   No system Python needed — `uv` brings its own (3.12+).
 - Network egress to `api.telegram.org` and your LLM provider
   (`api.moonshot.ai` for Kimi, or `api.anthropic.com`).
-- A non-root user (examples use `p`, home `/home/p`); `sudo` only for one
+- A non-root user (examples use `USER`, home `/home/USER`); `sudo` only for one
   `loginctl enable-linger` call.
 - Works on old distros (git ≥ 2.20, systemd ≥ 241) — see **Gotchas**.
 
@@ -406,7 +406,7 @@ the heartbeat script's target along with everything else.
   commit fails with "Please tell me who you are."
 - **No inline `# comments`** after a value in `.env` — both systemd and the loader
   keep the rest of the line literally.
-- **EOL OS**: no security updates. Acceptable for the *Telegram*
+- **EOL OS**: a release past end-of-life gets no security updates. Acceptable for the *Telegram*
   setup because its attack surface is outbound-only (long-poll, git, LLM API).
   Reprovision to a supported release when convenient.
 - **The R1 ingress is the one *inbound* surface** — enabling `serve-http` opens
@@ -439,7 +439,7 @@ the heartbeat script's target along with everything else.
   privesc tradeoff) or run these as system units. (`MemoryMax` may also be a no-op
   under cgroup v1 — harmless.) Also note several newer directives
   (`ProtectHostname` 242, `RestrictSUIDSGID` 242, `ProtectClock` 245) don't exist on
-  systemd 241 and would be ignored.
+  older systemd (e.g. 241) and would be ignored.
 - **Don't paste multi-line heredocs into a shell.** An unterminated `<<'EOF'`
   (one missed keystroke) silently swallows every following command into the
   target file instead of erroring — cost ten minutes re-pasting
