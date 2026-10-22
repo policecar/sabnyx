@@ -373,6 +373,7 @@ git -C ~/sabnyx-vault status -sb | head -1                      # expected below
 - `M  ops/events.jsonl` in `git status --short` is the **normal idle state**, not a problem: the ledger line is staged but deliberately left uncommitted until real content changes or 24h pass — see the gating block in the script. Anything else staged or untracked there is worth investigating.
 - `git status -sb | head -1` showing `## main...origin/main` (no suffix) is good; a `[ahead N]` suffix means there are commits the hub never received — the last push failed. Check `journalctl --user -u sabnyx-tend.service` for the "push failed after rebase retry" message and whether the repo is still mid-rebase (see Gotchas).
 - `$SABNYX_DATA_DIR/.sync-tend.lock` is held (via `flock`) by whichever side is currently writing: the heartbeat script for the duration of a `tend` run, or `serve`/`serve-http` for the duration of one capture/promote write (`util.vault_lock`, same file, same `flock(2)` semantics). A lock stuck held long after its holder should have finished means a hung writer — find and inspect it with `fuser $SABNYX_DATA_DIR/.sync-tend.lock` or `lsof $SABNYX_DATA_DIR/.sync-tend.lock`.
+- An `ingress.capped` event in the ledger (`grep '"kind":"ingress.capped"' $SABNYX_DATA_DIR/ops/events.jsonl`) means the rolling ingress LLM-call cap (`SABNYX_INGRESS_MAX_CALLS`/`_WINDOW_MINUTES`, spend.py) fired for Telegram or the R1 ingress — raise the cap if the traffic is legitimate, or investigate who's sending if it isn't.
 
 ## `.env` reference
 
@@ -389,6 +390,8 @@ git -C ~/sabnyx-vault status -sb | head -1                      # expected below
 | `SABNYX_TRUSTED_SOURCES` | `source_agent`s trusted for auto-promote (default `sabnyx-ingest`) | no |
 | `SABNYX_MAX_LLM_CALLS` | per-run LLM call ceiling for `tend` (default `50`; `0` = unlimited) | no |
 | `SABNYX_LLM_MAX_RETRIES` | retries on transient provider 429/5xx (default `3`) | no |
+| `SABNYX_INGRESS_MAX_CALLS` | rolling-window LLM call cap shared by `serve` + `serve-http` (default `60`; `<= 0` disables it) | no |
+| `SABNYX_INGRESS_WINDOW_MINUTES` | window size (minutes) for the above (default `60`) | no |
 
 `sabnyx-sync-tend.sh` reads `SABNYX_DATA_DIR` too, with the same precedence
 (real env var over `.env`) — relocating the vault via this variable moves
