@@ -161,7 +161,7 @@ def test_serve_http_ingest_returns_503_on_vault_locked(tmp_vault, monkeypatch):
 
     monkeypatch.setattr(serve_http, "vault_lock", _always_busy)
 
-    status, body = serve_http.route(
+    status, body, _ = serve_http.route(
         "POST", "/ingest", b'{"text":"remember buy milk"}', "Bearer k1", {"k1"}
     )
 

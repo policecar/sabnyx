@@ -99,7 +99,9 @@ def test_route_rejects_missing_or_bad_auth(tmp_vault, monkeypatch):
     from sabnyx.commands import serve_http
 
     _fake_llm(monkeypatch)
-    status, body = serve_http.route("POST", "/ingest", b'{"text":"secret"}', "Bearer nope", TRUSTED)
+    status, body, _ = serve_http.route(
+        "POST", "/ingest", b'{"text":"secret"}', "Bearer nope", TRUSTED
+    )
     assert status == 401
     assert body["error"] == "unauthorized"
     # nothing written, nothing ledgered
@@ -111,7 +113,7 @@ def test_route_ingest_writes_and_ledgers(tmp_vault, monkeypatch):
     from sabnyx.commands import serve_http
 
     _fake_llm(monkeypatch)
-    status, body = serve_http.route(
+    status, body, _ = serve_http.route(
         "POST", "/ingest", b'{"text":"remember buy milk"}', AUTH, TRUSTED
     )
     assert status == 200
@@ -128,7 +130,9 @@ def test_route_ask_returns_answer_and_citations(tmp_vault, monkeypatch):
     from sabnyx.commands import serve_http
 
     _fake_llm(monkeypatch)
-    status, body = serve_http.route("POST", "/ask", b'{"text":"is the sky blue?"}', AUTH, TRUSTED)
+    status, body, _ = serve_http.route(
+        "POST", "/ask", b'{"text":"is the sky blue?"}', AUTH, TRUSTED
+    )
     assert status == 200
     assert "sky is blue" in body["text"]
     assert body["cited"] == ["sky"]
@@ -138,7 +142,7 @@ def test_route_ask_returns_answer_and_citations(tmp_vault, monkeypatch):
 def test_route_status(tmp_vault):
     from sabnyx.commands import serve_http
 
-    status, body = serve_http.route("GET", "/status", b"", AUTH, TRUSTED)
+    status, body, _ = serve_http.route("GET", "/status", b"", AUTH, TRUSTED)
     assert status == 200
     assert set(body) == {"intake", "atlas", "observations"}
     assert all(isinstance(v, int) for v in body.values())
@@ -147,14 +151,14 @@ def test_route_status(tmp_vault):
 def test_route_status_trailing_slash(tmp_vault):
     from sabnyx.commands import serve_http
 
-    status, _ = serve_http.route("GET", "/status/", b"", AUTH, TRUSTED)
+    status, _, _ = serve_http.route("GET", "/status/", b"", AUTH, TRUSTED)
     assert status == 200
 
 
 def test_route_missing_text_is_400(tmp_vault):
     from sabnyx.commands import serve_http
 
-    status, body = serve_http.route("POST", "/ingest", b"{}", AUTH, TRUSTED)
+    status, body, _ = serve_http.route("POST", "/ingest", b"{}", AUTH, TRUSTED)
     assert status == 400
     assert "text" in body["error"]
 
@@ -162,7 +166,7 @@ def test_route_missing_text_is_400(tmp_vault):
 def test_route_bad_json_is_400(tmp_vault):
     from sabnyx.commands import serve_http
 
-    status, _ = serve_http.route("POST", "/ask", b"not json", AUTH, TRUSTED)
+    status, _, _ = serve_http.route("POST", "/ask", b"not json", AUTH, TRUSTED)
     assert status == 400
 
 
@@ -170,7 +174,7 @@ def test_route_non_string_text_is_400(tmp_vault):
     from sabnyx.commands import serve_http
 
     # a JSON number/list/object for `text` must not reach `.strip()` and crash
-    status, body = serve_http.route("POST", "/ingest", b'{"text": 123}', AUTH, TRUSTED)
+    status, body, _ = serve_http.route("POST", "/ingest", b'{"text": 123}', AUTH, TRUSTED)
     assert status == 400
     assert "string" in body["error"]
 
@@ -184,7 +188,7 @@ def test_route_action_failure_returns_generic_error(tmp_vault, monkeypatch):
         raise RuntimeError("/home/USER/sabnyx-vault leaked secret path")
 
     monkeypatch.setattr(serve_http, "_ask", boom)
-    status, body = serve_http.route("POST", "/ask", b'{"text":"hi"}', AUTH, TRUSTED)
+    status, body, _ = serve_http.route("POST", "/ask", b'{"text":"hi"}', AUTH, TRUSTED)
     assert status == 500
     assert body == {"error": "internal error"}  # nothing from the exception text
     errs = [e for e in ledger.replay() if e.kind == "wire.errored"]
@@ -195,14 +199,14 @@ def test_route_action_failure_returns_generic_error(tmp_vault, monkeypatch):
 def test_route_unknown_path_is_404(tmp_vault):
     from sabnyx.commands import serve_http
 
-    status, _ = serve_http.route("GET", "/nope", b"", AUTH, TRUSTED)
+    status, _, _ = serve_http.route("GET", "/nope", b"", AUTH, TRUSTED)
     assert status == 404
 
 
 def test_route_wrong_method_is_404(tmp_vault):
     from sabnyx.commands import serve_http
 
-    status, _ = serve_http.route("GET", "/ask", b"", AUTH, TRUSTED)
+    status, _, _ = serve_http.route("GET", "/ask", b"", AUTH, TRUSTED)
     assert status == 404
 
 

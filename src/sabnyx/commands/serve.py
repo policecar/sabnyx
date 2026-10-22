@@ -32,6 +32,7 @@ from .. import ledger, services
 from ..adapters import telegram
 from ..paths import ensure_tree
 from ..schemas import NormalizedEnvelope
+from ..spend import SpendCapExceeded
 from ..util import VaultLocked, vault_lock
 
 ACTOR = "sabnyx-telegram"
@@ -103,7 +104,10 @@ def handle(env: NormalizedEnvelope) -> str:
     if action == "ask":
         if not arg:
             return "ask what? send a question, or '/ask <question>'."
-        result = services.answer_question(question=arg, actor=ACTOR)  # writes nothing
+        try:
+            result = services.answer_question(question=arg, actor=ACTOR)  # writes nothing
+        except SpendCapExceeded as e:
+            return str(e)
         reply = result.answer.answer
         if result.answer.cited:
             reply += "\n\ncited: " + ", ".join(f"[[{s}]]" for s in result.answer.cited)
@@ -167,6 +171,8 @@ def _ingest(text: str, *, title: str, source_kind: str, source_url: str | None) 
     except FileExistsError:
         return f"already captured something titled '{title}'."
     except VaultLocked as e:
+        return str(e)
+    except SpendCapExceeded as e:
         return str(e)
     if written:
         return f"{head}\n\nfiled {len(written)}: " + ", ".join(written)

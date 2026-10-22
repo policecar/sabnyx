@@ -24,6 +24,10 @@ _DEFAULT_TRUSTED_SOURCES = {"sabnyx-ingest"}
 # Default retrieval implementation behind the Retriever seam (retrieval.py).
 _DEFAULT_RETRIEVER = "grep"
 
+# Defaults for the ingress rolling-window LLM spend cap (spend.py).
+_DEFAULT_INGRESS_MAX_CALLS = 60
+_DEFAULT_INGRESS_WINDOW_MINUTES = 60
+
 
 def retriever_name() -> str:
     """Return the retriever implementation name behind the Retriever seam.
@@ -54,6 +58,37 @@ def trusted_sources() -> set[str]:
     if not raw:
         return set(_DEFAULT_TRUSTED_SOURCES)
     return {s.strip() for s in raw.split(",") if s.strip()}
+
+
+def ingress_max_calls() -> int:
+    """Rolling-window LLM call ceiling for ingress actors (spend.py).
+
+    Reads ``SABNYX_INGRESS_MAX_CALLS`` from the environment; defaults to 60.
+    A value ``<= 0`` disables the cap. Pure and side-effect-free beyond
+    reading ``os.environ``.
+    """
+    raw = os.environ.get("SABNYX_INGRESS_MAX_CALLS", "").strip()
+    if not raw:
+        return _DEFAULT_INGRESS_MAX_CALLS
+    try:
+        return int(raw)
+    except ValueError:
+        return _DEFAULT_INGRESS_MAX_CALLS
+
+
+def ingress_window_minutes() -> int:
+    """Rolling-window size (minutes) for the ingress LLM spend cap.
+
+    Reads ``SABNYX_INGRESS_WINDOW_MINUTES`` from the environment; defaults
+    to 60. Pure and side-effect-free beyond reading ``os.environ``.
+    """
+    raw = os.environ.get("SABNYX_INGRESS_WINDOW_MINUTES", "").strip()
+    if not raw:
+        return _DEFAULT_INGRESS_WINDOW_MINUTES
+    try:
+        return int(raw)
+    except ValueError:
+        return _DEFAULT_INGRESS_WINDOW_MINUTES
 
 
 def load_local_env(root: Path | None = None) -> list[str]:
