@@ -405,6 +405,12 @@ def tend_cmd(
                 batch = triage_batch(triage_now, role="standard")
                 slug_to_path = {p.stem.lower(): p for p in triage_now}
                 decided: set[Path] = set()
+                # A non-tty run without --yes couldn't ask the operator at
+                # all — the LLM did answer (promote), so it's not
+                # "unanswered" either. Exclude these from the post-loop
+                # sweep without ledgering anything, so the item is re-offered
+                # next run instead of settling as a quiet "declined".
+                skip_sweep: set[Path] = set()
 
                 for item in batch.items:
                     path = slug_to_path.get(item.slug.lower())
@@ -476,6 +482,7 @@ def tend_cmd(
                             f"  [bold]LLM promote[/bold] {item.slug} → {item.atlas_type}  "
                             f"[dim]({item.reason})[/dim]"
                         )
+                        aborted = False
                         try:
                             if trusted_provenance:
                                 apply = yes or click.confirm(
@@ -488,17 +495,25 @@ def tend_cmd(
                                     default=False,
                                 )
                         except click.Abort:
-                            # non-tty without --yes (cron): keep, don't crash the run
+                            # non-tty without --yes (cron): keep, don't crash the
+                            # run. Not a "no" — the operator was never actually
+                            # asked, so this must NOT settle as "declined" (that
+                            # would quiet every pending LLM-promote after one
+                            # accidental non-tty run until content changes).
                             console.print(
                                 "  [yellow]no interactive input; kept in intake "
                                 "(use --yes for unattended runs)[/yellow]"
                             )
                             apply = False
+                            aborted = True
                         if not apply:
-                            # An operator "no", or a non-tty run without --yes.
-                            # Recorded so the item goes quiet until its content
-                            # changes or --retriage forces a resend — same
-                            # contract as a settled keep/discard.
+                            if aborted:
+                                skip_sweep.add(path)
+                                continue
+                            # An explicit interactive "no". Recorded so the
+                            # item goes quiet until its content changes or
+                            # --retriage forces a resend — same contract as a
+                            # settled keep/discard.
                             _record_triage_decision(
                                 path,
                                 slug=item.slug,
@@ -548,7 +563,7 @@ def tend_cmd(
                 # this sweep, that item re-fires the whole-queue LLM call on
                 # every subsequent heartbeat once the age fallback trips.
                 for path in triage_now:
-                    if path in decided or not path.exists():
+                    if path in decided or path in skip_sweep or not path.exists():
                         continue
                     console.print(
                         f"  [yellow]unanswered[/yellow] {path.stem}: LLM response omitted "
