@@ -3,7 +3,8 @@
 One schedulable command that drives the self-maintaining vault cycle:
 
   1. Auto-promote pass  — deterministic gate, no LLM.
-  2. LLM triage pass   — batched model call for deferred items (≥ threshold).
+  2. LLM triage pass   — batched model call for deferred items (≥ threshold,
+                          or any item past --max-age-days, whichever fires).
   3. Reweave pass       — consume pending reweave.proposed intents.
   4. Health pass        — print a concise audit summary.
 
@@ -22,6 +23,7 @@ promote_file or the reweave apply path.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import click
@@ -48,22 +50,71 @@ def _intake_files() -> list[Path]:
     return sorted(p for p in INTAKE.glob("*.md") if p.is_file())
 
 
-def _last_triage_hashes() -> dict[str, str | None]:
-    """Last triage.decided content_hash per subject, keyed by vault-relative path.
+def _ledger_memory() -> tuple[dict[str, str | None], dict[str, datetime]]:
+    """One replay() pass collecting both triage-decision memory and intake
+    creation timestamps, keyed by vault-relative subject path.
 
-    None means the last recorded decision for that subject predates the
-    content_hash field (a legacy event) — treated as "no memory" so it never
-    suppresses re-triage.
+    Two unrelated features (retriage memory, age-based triage fallback) both
+    need a full ledger scan; doing it once here avoids replaying events.jsonl
+    twice per tend run.
+
+    ``triage_hashes[subject] is None`` means the last recorded decision for
+    that subject predates the content_hash field (a legacy event) — treated
+    as "no memory" so it never suppresses re-triage. ``created_ts`` keeps the
+    first (earliest) intake.created ts per subject.
     """
-    hashes: dict[str, str | None] = {}
+    triage_hashes: dict[str, str | None] = {}
+    created_ts: dict[str, datetime] = {}
     for e in ledger.replay():
         if e.kind == "triage.decided":
-            hashes[e.subject] = e.payload.get("content_hash")
-    return hashes
+            triage_hashes[e.subject] = e.payload.get("content_hash")
+        elif e.kind == "intake.created":
+            created_ts.setdefault(e.subject, e.ts)
+    return triage_hashes, created_ts
+
+
+def _record_triage_decision(
+    path: Path,
+    *,
+    slug: str,
+    action: str,
+    reason: str,
+    decision: str,
+    extra: dict | None = None,
+) -> None:
+    """Ledger one triage.decided event for `path` — the single write site for
+    every outcome of the pass-2 LLM loop, keep/discard included.
+
+    Every path sent to the LLM tier (`triage_now`) MUST get exactly one of
+    these (or be removed from intake by a successful promote) by the end of
+    the loop. Without that, `_filter_already_triaged`'s retriage memory never
+    learns about it, and under the age fallback the SAME stale item re-fires
+    a whole-queue LLM call on every subsequent heartbeat, indefinitely.
+    """
+    payload: dict = {
+        "slug": slug,
+        "action": action,
+        "reason": reason,
+        "decision": decision,
+        "content_hash": util.file_hash(path),
+    }
+    if extra:
+        payload.update(extra)
+    ledger.append_event(
+        plane="projection",
+        kind="triage.decided",
+        actor=ACTOR_TEND,
+        subject=str(path.relative_to(DATA_ROOT)),
+        payload=payload,
+    )
 
 
 def _filter_already_triaged(
-    deferred: list[Path], *, retriage: bool, console: Console
+    deferred: list[Path],
+    *,
+    retriage: bool,
+    remembered: dict[str, str | None],
+    console: Console,
 ) -> list[Path]:
     """Drop intake files unchanged since their last triage.decided decision.
 
@@ -73,7 +124,6 @@ def _filter_already_triaged(
     """
     if retriage:
         return deferred
-    remembered = _last_triage_hashes()
     kept: list[Path] = []
     skipped = 0
     for p in deferred:
@@ -89,6 +139,59 @@ def _filter_already_triaged(
             f"decision; --retriage to force)"
         )
     return kept
+
+
+def _item_age_days(
+    path: Path,
+    created_ts: dict[str, datetime],
+    now: datetime | None = None,
+) -> float:
+    """Age in days of a deferred intake file, for the age-based triage fallback.
+
+    A pure, clock-injectable function so tests don't need to sleep or
+    monkeypatch time globally. Priority, falling through on a miss:
+
+      1. the ledger's ``intake.created`` ts for this subject (``created_ts``,
+         built by ``_ledger_memory``) — authoritative and independent of any
+         later frontmatter edit;
+      2. frontmatter ``created`` / ``source_date``, when the file's own
+         frontmatter loads and validates;
+      3. file mtime, the last resort for a file whose frontmatter is missing
+         or invalid — scheduling only, never treated as knowledge data.
+    """
+    if now is None:
+        now = datetime.now(UTC)
+
+    subject = str(path.relative_to(DATA_ROOT))
+    ts = created_ts.get(subject)
+
+    if ts is None:
+        try:
+            meta, _body, _kind = fm.load(path)
+        except Exception:
+            meta = None
+        if meta is not None:
+            raw = meta.get("created") or meta.get("source_date")
+            try:
+                if isinstance(raw, str):
+                    ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                elif isinstance(raw, datetime):
+                    ts = raw
+                elif isinstance(raw, date):
+                    ts = datetime(raw.year, raw.month, raw.day, tzinfo=UTC)
+            except ValueError:
+                # A non-ISO `created` string must fall to mtime, not abort
+                # the whole tend run — frontmatter is schema-validated on
+                # write, but a hand-edited or legacy file isn't guaranteed to
+                # still parse.
+                ts = None
+
+    if ts is None:
+        ts = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    elif ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+
+    return (now - ts).total_seconds() / 86400.0
 
 
 def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
@@ -164,6 +267,16 @@ def _health_summary(console: Console) -> None:
     is_flag=True,
     help="re-send already-triaged intakes to the LLM even if unchanged",
 )
+@click.option(
+    "--max-age-days",
+    default=7,
+    show_default=True,
+    type=int,
+    help=(
+        "Max days a deferred item waits before LLM triage fires even below "
+        "--threshold; 0 disables the age fallback."
+    ),
+)
 def tend_cmd(
     dry_run: bool,
     yes: bool,
@@ -171,6 +284,7 @@ def tend_cmd(
     no_reweave: bool,
     no_health: bool,
     retriage: bool,
+    max_age_days: int,
 ) -> None:
     """Heartbeat: auto-promote → LLM triage → reweave → health.
 
@@ -257,13 +371,46 @@ def tend_cmd(
             f"\n[bold]pass 2: LLM triage[/bold]  ({len(deferred)} deferred, threshold {threshold})"
         )
 
-        to_triage = _filter_already_triaged(deferred, retriage=retriage, console=console)
+        triage_hashes, created_ts = _ledger_memory()
+        to_triage = _filter_already_triaged(
+            deferred, retriage=retriage, remembered=triage_hashes, console=console
+        )
 
+        # Size threshold fires first; below it, fall back to age: a queue that
+        # never fills to --threshold must still get triaged once it's been
+        # sitting long enough. Age is a trigger over the whole queue (plan's
+        # triage_due semantics), not a per-item filter — once the OLDEST item
+        # in to_triage is old enough, send the whole (already-filtered)
+        # to_triage in one batched call, rather than trickling one call per
+        # item as each individually crosses the age limit.
+        # --max-age-days 0 disables the age fallback entirely.
+        triage_trigger: str | None = None
+        triage_now: list[Path] = []
         if to_triage and len(to_triage) >= threshold:
-            console.print(f"  calling LLM triage for {len(to_triage)} item(s)…")
+            triage_trigger = "threshold"
+            triage_now = to_triage
+        elif to_triage and max_age_days > 0:
+            oldest_age = max(_item_age_days(p, created_ts) for p in to_triage)
+            if oldest_age >= max_age_days:
+                triage_trigger = "age"
+                triage_now = to_triage
+                console.print(
+                    f"  oldest deferred item is {oldest_age:.1f} day(s) old "
+                    f"(≥ max-age-days) → triaging {len(to_triage)} below threshold"
+                )
+
+        if triage_now:
+            console.print(f"  calling LLM triage for {len(triage_now)} item(s)…")
             if not dry_run:
-                batch = triage_batch(to_triage, role="standard")
-                slug_to_path = {p.stem.lower(): p for p in to_triage}
+                batch = triage_batch(triage_now, role="standard")
+                slug_to_path = {p.stem.lower(): p for p in triage_now}
+                decided: set[Path] = set()
+                # A non-tty run without --yes couldn't ask the operator at
+                # all — the LLM did answer (promote), so it's not
+                # "unanswered" either. Exclude these from the post-loop
+                # sweep without ledgering anything, so the item is re-offered
+                # next run instead of settling as a quiet "declined".
+                skip_sweep: set[Path] = set()
 
                 for item in batch.items:
                     path = slug_to_path.get(item.slug.lower())
@@ -285,6 +432,14 @@ def tend_cmd(
                             # invalid frontmatter, and promote_file would refuse
                             # the file anyway. Report and continue (M3 contract).
                             console.print(f"  [red]promote failed:[/red] {e}")
+                            _record_triage_decision(
+                                path,
+                                slug=item.slug,
+                                action=item.action,
+                                reason=item.reason,
+                                decision="promote_failed",
+                            )
+                            decided.add(path)
                             continue
                         source_agent = meta.get("source_agent", "")
                         trusted_provenance = source_agent in trusted
@@ -294,20 +449,15 @@ def tend_cmd(
                                 f"provenance (source_agent={source_agent!r}; operator review "
                                 f"needed)"
                             )
-                            ledger.append_event(
-                                plane="projection",
-                                kind="triage.decided",
-                                actor=ACTOR_TEND,
-                                subject=str(path.relative_to(DATA_ROOT)),
-                                payload={
-                                    "slug": item.slug,
-                                    "action": item.action,
-                                    "reason": item.reason,
-                                    "decision": "deferred_untrusted",
-                                    "source_agent": source_agent,
-                                    "content_hash": util.file_hash(path),
-                                },
+                            _record_triage_decision(
+                                path,
+                                slug=item.slug,
+                                action=item.action,
+                                reason=item.reason,
+                                decision="deferred_untrusted",
+                                extra={"source_agent": source_agent},
                             )
+                            decided.add(path)
                             continue
 
                         # Gate 5 re-check: the deferred queue systematically
@@ -319,11 +469,20 @@ def tend_cmd(
                                 f"  [yellow]skip promote[/yellow] {item.slug}: slug already "
                                 f"exists in atlas (kept in intake)"
                             )
+                            _record_triage_decision(
+                                path,
+                                slug=item.slug,
+                                action=item.action,
+                                reason=item.reason,
+                                decision="skipped_atlas_dup",
+                            )
+                            decided.add(path)
                             continue
                         console.print(
                             f"  [bold]LLM promote[/bold] {item.slug} → {item.atlas_type}  "
                             f"[dim]({item.reason})[/dim]"
                         )
+                        aborted = False
                         try:
                             if trusted_provenance:
                                 apply = yes or click.confirm(
@@ -336,13 +495,33 @@ def tend_cmd(
                                     default=False,
                                 )
                         except click.Abort:
-                            # non-tty without --yes (cron): keep, don't crash the run
+                            # non-tty without --yes (cron): keep, don't crash the
+                            # run. Not a "no" — the operator was never actually
+                            # asked, so this must NOT settle as "declined" (that
+                            # would quiet every pending LLM-promote after one
+                            # accidental non-tty run until content changes).
                             console.print(
                                 "  [yellow]no interactive input; kept in intake "
                                 "(use --yes for unattended runs)[/yellow]"
                             )
                             apply = False
+                            aborted = True
                         if not apply:
+                            if aborted:
+                                skip_sweep.add(path)
+                                continue
+                            # An explicit interactive "no". Recorded so the
+                            # item goes quiet until its content changes or
+                            # --retriage forces a resend — same contract as a
+                            # settled keep/discard.
+                            _record_triage_decision(
+                                path,
+                                slug=item.slug,
+                                action=item.action,
+                                reason=item.reason,
+                                decision="declined",
+                            )
+                            decided.add(path)
                             continue
                         try:
                             promote_file(path, item.atlas_type, actor=ACTOR_TEND)
@@ -350,6 +529,14 @@ def tend_cmd(
                             atlas_slugs.add(path.stem.lower())
                         except Exception as e:
                             console.print(f"  [red]promote failed:[/red] {e}")
+                            _record_triage_decision(
+                                path,
+                                slug=item.slug,
+                                action=item.action,
+                                reason=item.reason,
+                                decision="promote_failed",
+                            )
+                            decided.add(path)
                     elif item.action in ("keep", "discard"):
                         if item.action == "keep":
                             console.print(f"  [dim]keep[/dim] {item.slug}  ({item.reason})")
@@ -360,18 +547,35 @@ def tend_cmd(
                             )
                         # Persist the decision (DEC-02: note it, do not delete) so
                         # unattended runs leave a record, not just console output.
-                        ledger.append_event(
-                            plane="projection",
-                            kind="triage.decided",
-                            actor=ACTOR_TEND,
-                            subject=str(path.relative_to(DATA_ROOT)),
-                            payload={
-                                "slug": item.slug,
-                                "action": item.action,
-                                "reason": item.reason,
-                                "content_hash": util.file_hash(path),
-                            },
+                        _record_triage_decision(
+                            path,
+                            slug=item.slug,
+                            action=item.action,
+                            reason=item.reason,
+                            decision=item.action,
                         )
+                        decided.add(path)
+
+                # Every path sent to the LLM tier must leave this loop either
+                # ledgered (`decided`) or gone from intake (a successful
+                # promote unlinks its source). Anything left over means the
+                # LLM never answered for it (unknown/omitted slug) — without
+                # this sweep, that item re-fires the whole-queue LLM call on
+                # every subsequent heartbeat once the age fallback trips.
+                for path in triage_now:
+                    if path in decided or path in skip_sweep or not path.exists():
+                        continue
+                    console.print(
+                        f"  [yellow]unanswered[/yellow] {path.stem}: LLM response omitted "
+                        f"this item; recorded so it doesn't re-fire every heartbeat"
+                    )
+                    _record_triage_decision(
+                        path,
+                        slug=path.stem.lower(),
+                        action="unanswered",
+                        reason="LLM response did not include a verdict for this item",
+                        decision="unanswered",
+                    )
             else:
                 console.print("  [dim]dry run: skipping LLM call[/dim]")
         else:
@@ -405,6 +609,7 @@ def tend_cmd(
                 "llm_triaged": llm_triaged,
                 "reweaved": reweaved,
                 "dry_run": dry_run,
+                "triage_trigger": triage_trigger,
             },
         )
 
