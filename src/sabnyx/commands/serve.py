@@ -30,6 +30,7 @@ from rich.console import Console
 
 from .. import ledger, services, spend
 from ..adapters import telegram
+from ..config import ingress_max_calls, ingress_window_minutes
 from ..paths import ensure_tree
 from ..schemas import NormalizedEnvelope
 from ..spend import SpendCapExceeded
@@ -255,6 +256,12 @@ def serve_cmd(once: bool, timeout: int) -> None:
     """Run the Telegram interface: long-poll, route, act, reply."""
     console = Console()
     ensure_tree()
+
+    # Fail fast on a bad ingress cap setting at startup, not at the first
+    # request — a typo'd SABNYX_INGRESS_MAX_CALLS/_WINDOW_MINUTES should
+    # kill the process, not silently drift into "cap disabled."
+    ingress_max_calls()
+    ingress_window_minutes()
 
     trusted = telegram.allowlist()
     if not trusted:

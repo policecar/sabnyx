@@ -36,6 +36,7 @@ from rich.console import Console
 
 from .. import ledger, services, spend
 from ..adapters import r1
+from ..config import ingress_max_calls, ingress_window_minutes
 from ..spend import SpendCapExceeded
 from ..util import VaultLocked, vault_lock
 
@@ -337,6 +338,12 @@ def serve_http_cmd(host: str, port: int, static_dir: Path | None) -> None:
     the API share one origin (CORS can't arise) and one unit covers both. API
     routes stay bearer-gated; static assets are public."""
     console = Console()
+
+    # Fail fast on a bad ingress cap setting at startup, not at the first
+    # request — a typo'd SABNYX_INGRESS_MAX_CALLS/_WINDOW_MINUTES should
+    # kill the process, not silently drift into "cap disabled."
+    ingress_max_calls()
+    ingress_window_minutes()
 
     trusted = r1.keys()
     if not trusted:

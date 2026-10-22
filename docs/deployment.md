@@ -390,8 +390,8 @@ git -C ~/sabnyx-vault status -sb | head -1                      # expected below
 | `SABNYX_TRUSTED_SOURCES` | `source_agent`s trusted for auto-promote (default `sabnyx-ingest`) | no |
 | `SABNYX_MAX_LLM_CALLS` | per-run LLM call ceiling for `tend` (default `50`; `0` = unlimited) | no |
 | `SABNYX_LLM_MAX_RETRIES` | retries on transient provider 429/5xx (default `3`) | no |
-| `SABNYX_INGRESS_MAX_CALLS` | rolling-window LLM call cap shared by `serve` + `serve-http` (default `60`; `<= 0` disables it) | no |
-| `SABNYX_INGRESS_WINDOW_MINUTES` | window size (minutes) for the above (default `60`) | no |
+| `SABNYX_INGRESS_MAX_CALLS` | rolling-window LLM call cap shared by `serve` + `serve-http` (default `60`; `<= 0` disables it; non-integer fails fast at startup). Unit is **requests to the LLM tier**, not provider calls: a schema-repair re-ask costs a second full-price call this cap doesn't see, so each counted request can cost up to `1 + _MAX_REPAIR_ATTEMPTS` (currently 2) provider calls — size accordingly | no |
+| `SABNYX_INGRESS_WINDOW_MINUTES` | window size (minutes) for the above (default `60`; must be an integer `>= 1`, fails fast at startup otherwise — `0` would silently disable the cap) | no |
 
 `sabnyx-sync-tend.sh` reads `SABNYX_DATA_DIR` too, with the same precedence
 (real env var over `.env`) — relocating the vault via this variable moves
