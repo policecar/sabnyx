@@ -8,6 +8,7 @@ permissions the operator set, not silently reverting to the process umask.
 from __future__ import annotations
 
 import os
+import stat
 
 import pytest
 
@@ -104,6 +105,35 @@ def test_write_result_survives_os_replace_is_atomic_rename(tmp_path):
 
     assert p.stat().st_ino != old_inode
     assert "new" in p.read_text()
+
+
+def test_write_fsyncs_parent_directory_after_replace(tmp_path, monkeypatch):
+    """After os.replace, the directory entry change (the rename itself) must
+    also be fsync'd -- fsyncing only the temp file's content durably commits
+    the bytes, but on most filesystems the rename needs its own fsync on the
+    containing directory to survive a power loss, not just a process crash.
+    """
+    calls: list[bool] = []
+    real_fsync = fm.os.fsync
+
+    def spy_fsync(fd):
+        try:
+            is_dir = stat.S_ISDIR(os.fstat(fd).st_mode)
+        except OSError:
+            is_dir = False
+        calls.append(is_dir)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(fm.os, "fsync", spy_fsync)
+
+    p = tmp_path / "durable.md"
+    fm.write(p, {"type": "concept", "description": "x" * 30}, "body\n")
+
+    assert calls, "fm.write never called os.fsync at all"
+    assert any(calls), (
+        "expected an os.fsync call on a directory fd (the parent dir, after "
+        f"os.replace) in addition to the temp file's own fsync; calls={calls!r}"
+    )
 
 
 def test_write_new_file_honors_process_umask(tmp_path):
