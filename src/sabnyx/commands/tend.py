@@ -333,9 +333,13 @@ def tend_cmd(
             deferred, retriage=retriage, remembered=triage_hashes, console=console
         )
 
-        # Size threshold fires first; below it, fall back to age: send only
-        # the subset of to_triage old enough to have been waiting past
-        # --max-age-days, so a slow-filling queue can't starve forever.
+        # Size threshold fires first; below it, fall back to age: a queue that
+        # never fills to --threshold must still get triaged once it's been
+        # sitting long enough. Age is a trigger over the whole queue (plan's
+        # triage_due semantics), not a per-item filter — once the OLDEST item
+        # in to_triage is old enough, send the whole (already-filtered)
+        # to_triage in one batched call, rather than trickling one call per
+        # item as each individually crosses the age limit.
         # --max-age-days 0 disables the age fallback entirely.
         triage_trigger: str | None = None
         triage_now: list[Path] = []
@@ -343,11 +347,14 @@ def tend_cmd(
             triage_trigger = "threshold"
             triage_now = to_triage
         elif to_triage and max_age_days > 0:
-            aged = [p for p in to_triage if _item_age_days(p, created_ts) >= max_age_days]
-            if aged:
+            oldest_age = max(_item_age_days(p, created_ts) for p in to_triage)
+            if oldest_age >= max_age_days:
                 triage_trigger = "age"
-                triage_now = aged
-                console.print(f"  {len(aged)} item(s) over age limit → triaging below threshold")
+                triage_now = to_triage
+                console.print(
+                    f"  oldest deferred item is {oldest_age:.1f} day(s) old "
+                    f"(≥ max-age-days) → triaging {len(to_triage)} below threshold"
+                )
 
         if triage_now:
             console.print(f"  calling LLM triage for {len(triage_now)} item(s)…")

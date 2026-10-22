@@ -1083,9 +1083,11 @@ class TestItemAgeDays:
 
 
 class TestTendAgeTriageFallback:
-    """Below --threshold, pass 2 must still triage any deferred item whose
-    age (via _item_age_days) is >= --max-age-days, sending only that aged
-    subset — never the whole deferred queue just because one item is old."""
+    """Below --threshold, pass 2 must still fire once the OLDEST item in
+    to_triage (via _item_age_days) is >= --max-age-days. Age is a trigger
+    over the whole queue (plan's triage_due semantics), not a per-item
+    filter: once triggered, the entire (already-filtered) to_triage queue is
+    sent in one batched call."""
 
     def _backdate(self, tmp_vault, paths: list[Path], *, days: int) -> None:
         ts = datetime.now(UTC) - timedelta(days=days)
@@ -1118,7 +1120,7 @@ class TestTendAgeTriageFallback:
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
-        assert "over age limit" not in result.output
+        assert "oldest deferred item" not in result.output
         assert "below threshold (3 < 5)" in result.output
         assert not [e for e in ledger.replay() if e.kind == "triage.decided"]
 
@@ -1149,7 +1151,8 @@ class TestTendAgeTriageFallback:
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
-        assert "3 item(s) over age limit → triaging below threshold" in result.output
+        assert "oldest deferred item is 10.0 day(s) old" in result.output
+        assert "→ triaging 3 below threshold" in " ".join(result.output.split())
         assert len(calls) == 1
         assert len(re.findall(r"- slug: (\S+)", calls[0]["user"])) == 3
 
@@ -1188,18 +1191,19 @@ class TestTendAgeTriageFallback:
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
-        assert "over age limit" not in result.output
+        assert "oldest deferred item" not in result.output
         assert not [e for e in ledger.replay() if e.kind == "triage.decided"]
 
-    def test_mixed_ages_sends_only_the_aged_subset(self, tmp_vault, monkeypatch):
+    def test_mixed_ages_sends_the_whole_deferred_batch(self, tmp_vault, monkeypatch):
         from sabnyx import services as svc_mod
         from sabnyx.commands import tend as tend_mod
 
         old_paths = [
             _make_intake(tmp_vault["INTAKE"], f"old-{i}", _good_meta("note")) for i in range(2)
         ]
-        for i in range(2):
-            _make_intake(tmp_vault["INTAKE"], f"fresh-{i}", _good_meta("note"))
+        fresh_paths = [
+            _make_intake(tmp_vault["INTAKE"], f"fresh-{i}", _good_meta("note")) for i in range(2)
+        ]
         self._backdate(tmp_vault, old_paths, days=10)
         monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
 
@@ -1218,13 +1222,20 @@ class TestTendAgeTriageFallback:
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
-        assert "2 item(s) over age limit → triaging below threshold" in result.output
+        assert "oldest deferred item is 10.0 day(s) old" in result.output
+        assert "→ triaging 4 below threshold" in " ".join(result.output.split())
         assert len(calls) == 1
+        # age is a trigger over the whole to_triage queue, not a per-item
+        # filter (plan's triage_due semantics) — one old item past
+        # --max-age-days sends the entire deferred batch, fresh items
+        # included, in one batched call.
         sent_slugs = sorted(re.findall(r"- slug: (\S+)", calls[0]["user"]))
-        assert sent_slugs == ["old-0", "old-1"]
+        assert sent_slugs == ["fresh-0", "fresh-1", "old-0", "old-1"]
 
         decided_subjects = {e.subject for e in ledger.replay() if e.kind == "triage.decided"}
-        assert decided_subjects == {str(p.relative_to(tmp_vault["DATA_ROOT"])) for p in old_paths}
+        assert decided_subjects == {
+            str(p.relative_to(tmp_vault["DATA_ROOT"])) for p in old_paths + fresh_paths
+        }
 
     def test_already_triaged_old_item_still_skipped(self, tmp_vault, monkeypatch):
         """The retriage-memory invariant holds regardless of age: an old item
@@ -1247,7 +1258,7 @@ class TestTendAgeTriageFallback:
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
-        assert "3 item(s) over age limit" in result.output
+        assert "oldest deferred item is 10.0 day(s) old" in result.output
         decided = [e for e in ledger.replay() if e.kind == "triage.decided"]
         assert len(decided) == 3
 
@@ -1266,7 +1277,7 @@ class TestTendAgeTriageFallback:
         )
         assert result2.exit_code == 0, result2.output
         assert "skipped 3 already-triaged item(s)" in result2.output
-        assert "over age limit" not in result2.output
+        assert "oldest deferred item" not in result2.output
 
 
 class TestTendRobustness:

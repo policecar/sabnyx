@@ -326,9 +326,9 @@ Then open `https://sabnyx.example.net/install.html` and scan the QR on the R1.
   every run regardless (the liveness signal `opsctl project` reads) — the sync
   script commits that line only when something else also changed, or the last
   commit has gone stale (>24h), so the ledger doesn't turn into one commit per run.
-  Deferred items older than `--max-age-days` (default 7) are sent to LLM triage
-  even if the batch threshold hasn't been reached yet, so a slow-filling intake
-  queue can't sit unreviewed indefinitely.
+  Once the oldest deferred item has waited `--max-age-days` (default 7), the
+  whole deferred batch is triaged even if the batch threshold hasn't been
+  reached yet, so a slow-filling intake queue can't sit unreviewed indefinitely.
 - **Laptop sync**: `git -C ~/src/_px/sabnyx-vault pull` to get the server's changes;
   Obsidian edits + `git push` flow back through the hub. Union-merge keeps the
   ledger conflict-free.
