@@ -80,7 +80,15 @@ def check_ingress_cap(actor: str, *, now: datetime | None = None) -> None:
     latency/quota, and on some providers partial billing) — only a call
     that was never attempted (refused here, or by llm.call_budget) should
     be free. Counting llm.completed would let a channel that reliably
-    triggers provider failures dodge the cap indefinitely.
+    triggers provider failures dodge the cap indefinitely. The counted unit
+    is requests to the LLM tier, not provider calls: `parse_structured`
+    emits exactly one llm.requested per request, but a schema-repair re-ask
+    (llm.py's `_MAX_REPAIR_ATTEMPTS`) is a second full-price provider call
+    that this cap never sees — each counted request can cost up to
+    ``1 + _MAX_REPAIR_ATTEMPTS`` provider calls. Kept as-is (counting
+    provider calls directly would mean charging the cap from inside the
+    repair-retry loop, a bigger change for a secondary cost multiplier);
+    size `SABNYX_INGRESS_MAX_CALLS` with that multiplier in mind.
     """
     if actor not in INGRESS_ACTORS:
         return
@@ -94,16 +102,21 @@ def check_ingress_cap(actor: str, *, now: datetime | None = None) -> None:
     cutoff = now - window
 
     # One full ledger replay per ingress request. Acceptable at the request
-    # rates Telegram/R1 produce (at most a handful per minute); if the
-    # ledger grows large enough for a full replay to matter, the
-    # optimisation is a tail read (seek backward from EOF until past
-    # `cutoff`) rather than this full scan. The same pass also finds the
-    # most recent ingress.capped event, so a refusal storm doesn't add a
-    # second write per request on top of the read.
+    # rates Telegram/R1 produce (at most a handful per minute): a full
+    # replay of the live ledger (11.9k events) measures 17 ms. If the ledger
+    # grows large enough for that to matter, the optimisation is a tail read
+    # (seek backward from EOF until past `cutoff`) rather than this full
+    # scan. This replay also finds the most recent ingress.capped event, so
+    # a refusal storm doesn't add a second write per request on top of the
+    # read; services.py calls this function too (DEC-01), so a non-capped
+    # request pays this replay twice — intended, see DEC-01.
+    #
+    # `event.ts > cutoff` (not `>=`): a call exactly `window` old has fully
+    # aged out, not merely reached the boundary.
     in_window: list[datetime] = []
     last_capped_ts: datetime | None = None
     for event in ledger.replay():
-        if event.kind == "llm.requested" and event.actor in INGRESS_ACTORS and event.ts >= cutoff:
+        if event.kind == "llm.requested" and event.actor in INGRESS_ACTORS and event.ts > cutoff:
             in_window.append(event.ts)
         elif event.kind == "ingress.capped":
             last_capped_ts = event.ts  # replay is chronological: last one wins
@@ -111,10 +124,21 @@ def check_ingress_cap(actor: str, *, now: datetime | None = None) -> None:
     if len(in_window) < max_calls:
         return
 
-    oldest = min(in_window)
-    retry_after_seconds = max(1, math.ceil((oldest + window - now).total_seconds()))
+    # The cap lifts only once enough EXCESS calls have aged out to bring the
+    # count back under max_calls — not when the single oldest call ages out.
+    # With N calls in window and a cap of max_calls, the (N - max_calls)-th
+    # oldest call (0-indexed: N - max_calls) is the last one that must age
+    # out; `window` after ITS timestamp is when the count finally drops
+    # below max_calls. Using the single oldest call instead would understate
+    # the wait whenever more than max_calls calls landed in one window (a
+    # lowered-then-restarted cap, or two daemons both passing the check at
+    # max_calls - 1 concurrently — no lock around check+emit, which is fine,
+    # but the arithmetic must cope with the resulting overshoot).
+    sorted_in_window = sorted(in_window)
+    lift_at = sorted_in_window[len(in_window) - max_calls] + window
+    retry_after_seconds = max(1, math.ceil((lift_at - now).total_seconds()))
 
-    if last_capped_ts is not None and last_capped_ts >= cutoff:
+    if last_capped_ts is not None and last_capped_ts > cutoff:
         # The cap is still exceeded and this window's trip is already
         # ledgered — refuse again without a second write (see docstring).
         # Order matters: this check sits AFTER the count check, so a trip

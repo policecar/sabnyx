@@ -28,7 +28,7 @@ import time
 import click
 from rich.console import Console
 
-from .. import ledger, services
+from .. import ledger, services, spend
 from ..adapters import telegram
 from ..paths import ensure_tree
 from ..schemas import NormalizedEnvelope
@@ -86,6 +86,18 @@ def handle(env: NormalizedEnvelope) -> str:
     write path the CLI uses."""
     text = env.payload.get("text", "")
     action, arg = classify(text)
+
+    # First thing for any LLM-using action, before the URL fetch, the
+    # ledger write below, and vault_lock: a capped sender must get an
+    # instant reply, never drive an outbound fetch or wait up to 120s on
+    # the writer lock just to be refused. services.py's own gate (DEC-01 in
+    # spend.py) still runs for a request that passes this one — a second,
+    # intentional replay, not a bug.
+    if action in ("ask", "ingest_url", "ingest_text"):
+        try:
+            spend.check_ingress_cap(ACTOR)
+        except SpendCapExceeded as e:
+            return str(e)
 
     ledger.append_event(
         plane="event",
