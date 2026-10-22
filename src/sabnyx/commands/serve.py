@@ -28,10 +28,12 @@ import time
 import click
 from rich.console import Console
 
-from .. import ledger, services
+from .. import ledger, services, spend
 from ..adapters import telegram
+from ..config import ingress_max_calls, ingress_window_minutes
 from ..paths import ensure_tree
 from ..schemas import NormalizedEnvelope
+from ..spend import SpendCapExceeded
 from ..util import VaultLocked, vault_lock
 
 ACTOR = "sabnyx-telegram"
@@ -86,6 +88,18 @@ def handle(env: NormalizedEnvelope) -> str:
     text = env.payload.get("text", "")
     action, arg = classify(text)
 
+    # First thing for any LLM-using action, before the URL fetch, the
+    # ledger write below, and vault_lock: a capped sender must get an
+    # instant reply, never drive an outbound fetch or wait up to 120s on
+    # the writer lock just to be refused. services.py's own gate (DEC-01 in
+    # spend.py) still runs for a request that passes this one — a second,
+    # intentional replay, not a bug.
+    if action in ("ask", "ingest_url", "ingest_text"):
+        try:
+            spend.check_ingress_cap(ACTOR)
+        except SpendCapExceeded as e:
+            return str(e)
+
     ledger.append_event(
         plane="event",
         kind="wire.received",
@@ -103,7 +117,10 @@ def handle(env: NormalizedEnvelope) -> str:
     if action == "ask":
         if not arg:
             return "ask what? send a question, or '/ask <question>'."
-        result = services.answer_question(question=arg, actor=ACTOR)  # writes nothing
+        try:
+            result = services.answer_question(question=arg, actor=ACTOR)  # writes nothing
+        except SpendCapExceeded as e:
+            return str(e)
         reply = result.answer.answer
         if result.answer.cited:
             reply += "\n\ncited: " + ", ".join(f"[[{s}]]" for s in result.answer.cited)
@@ -167,6 +184,8 @@ def _ingest(text: str, *, title: str, source_kind: str, source_url: str | None) 
     except FileExistsError:
         return f"already captured something titled '{title}'."
     except VaultLocked as e:
+        return str(e)
+    except SpendCapExceeded as e:
         return str(e)
     if written:
         return f"{head}\n\nfiled {len(written)}: " + ", ".join(written)
@@ -237,6 +256,12 @@ def serve_cmd(once: bool, timeout: int) -> None:
     """Run the Telegram interface: long-poll, route, act, reply."""
     console = Console()
     ensure_tree()
+
+    # Fail fast on a bad ingress cap setting at startup, not at the first
+    # request — a typo'd SABNYX_INGRESS_MAX_CALLS/_WINDOW_MINUTES should
+    # kill the process, not silently drift into "cap disabled."
+    ingress_max_calls()
+    ingress_window_minutes()
 
     trusted = telegram.allowlist()
     if not trusted:

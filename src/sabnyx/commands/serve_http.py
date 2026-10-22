@@ -34,8 +34,10 @@ from pathlib import Path
 import click
 from rich.console import Console
 
-from .. import ledger, services
+from .. import ledger, services, spend
 from ..adapters import r1
+from ..config import ingress_max_calls, ingress_window_minutes
+from ..spend import SpendCapExceeded
 from ..util import VaultLocked, vault_lock
 
 ACTOR = "sabnyx-r1"
@@ -97,14 +99,15 @@ def _ask(text: str) -> dict:
 
 def route(
     method: str, path: str, body: bytes, authorization: str | None, trusted: set[str]
-) -> tuple[int, dict]:
-    """Pure request dispatcher: auth, route, act. Returns (status, json_body).
+) -> tuple[int, dict, dict[str, str]]:
+    """Pure request dispatcher: auth, route, act. Returns (status, json_body, headers).
 
     No sockets — the HTTP handler and the tests both call this. A failing action
     is reported as a 500 JSON body and ledgered, never raised, so one bad request
-    can't take the server down."""
+    can't take the server down. `headers` is empty for every response except a
+    429 (SpendCapExceeded), which carries a ``Retry-After`` value."""
     if not r1.check_bearer(authorization, trusted):
-        return 401, {"error": "unauthorized"}
+        return 401, {"error": "unauthorized"}, {}
 
     path = path.split("?", 1)[0].rstrip("/") or "/"
 
@@ -117,23 +120,35 @@ def route(
             subject=f"r1:{env.source_id}",
             payload={"action": "status"},
         )
-        return 200, _status()
+        return 200, _status(), {}
 
     if method == "POST" and path in ("/ingest", "/ask"):
         try:
             data = json.loads(body.decode("utf-8")) if body else {}
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return 400, {"error": "invalid JSON body"}
+            return 400, {"error": "invalid JSON body"}, {}
         if not isinstance(data, dict):
-            return 400, {"error": "body must be a JSON object"}
+            return 400, {"error": "body must be a JSON object"}, {}
         raw = data.get("text")
         if raw is not None and not isinstance(raw, str):
-            return 400, {"error": "'text' must be a string"}
+            return 400, {"error": "'text' must be a string"}, {}
         text = (raw or "").strip()
         if not text:
-            return 400, {"error": "missing 'text'"}
+            return 400, {"error": "missing 'text'"}, {}
 
         action = "ask" if path == "/ask" else "ingest"
+
+        # First thing for ask/ingest, before the wire.received write below
+        # and before _ask/_ingest ever reach vault_lock: a capped caller
+        # must get an instant 429, never wait up to 120s on the writer lock
+        # (which it would also hold for a replay) just to be refused.
+        # services.py's own gate (DEC-01 in spend.py) still runs for a
+        # request that passes this one — a second, intentional replay.
+        try:
+            spend.check_ingress_cap(ACTOR)
+        except SpendCapExceeded as e:
+            return 429, {"error": str(e)}, {"Retry-After": str(e.retry_after_seconds)}
+
         env = r1.envelope_for_request(text)
         ledger.append_event(
             plane="event",
@@ -143,7 +158,7 @@ def route(
             payload={"action": action},
         )
         try:
-            return 200, (_ask(text) if action == "ask" else _ingest(text))
+            return 200, (_ask(text) if action == "ask" else _ingest(text)), {}
         except VaultLocked as e:
             # VaultLocked's message is already end-user-safe (no path/exception
             # detail) — unlike the generic 500 below, it's returned verbatim.
@@ -154,7 +169,15 @@ def route(
                 subject=f"r1:{env.source_id}",
                 payload={"error": str(e), "busy": True},
             )
-            return 503, {"error": str(e)}
+            return 503, {"error": str(e)}, {}
+        except SpendCapExceeded as e:
+            # End-user-safe (see spend.SpendCapExceeded); the client gets the
+            # seconds to wait both in the body and as a Retry-After header.
+            # No wire.errored write here, deliberately: spend.check_ingress_cap
+            # already ledgers ingress.capped at most once per tripped window —
+            # a second write per refused request would defeat that bound
+            # under exactly the refusal-storm load the cap exists to survive.
+            return 429, {"error": str(e)}, {"Retry-After": str(e.retry_after_seconds)}
         except Exception as e:  # noqa: BLE001 — report failure as JSON, never crash the loop
             # Detail goes to the ledger only; the client gets a generic message
             # so exception text (paths, provider errors) never leaks over the wire.
@@ -165,9 +188,9 @@ def route(
                 subject=f"r1:{env.source_id}",
                 payload={"error": str(e)},
             )
-            return 500, {"error": "internal error"}
+            return 500, {"error": "internal error"}, {}
 
-    return 404, {"error": "not found"}
+    return 404, {"error": "not found"}, {}
 
 
 def resolve_static(url_path: str, root: Path) -> Path | None:
@@ -227,8 +250,10 @@ def _make_handler(
             except (BrokenPipeError, ConnectionResetError):
                 self.close_connection = True
 
-        def _respond(self, status: int, payload: dict) -> None:
-            self._send(status, "application/json", json.dumps(payload).encode("utf-8"))
+        def _respond(
+            self, status: int, payload: dict, headers: dict[str, str] | None = None
+        ) -> None:
+            self._send(status, "application/json", json.dumps(payload).encode("utf-8"), headers)
 
         def _file(self, path: Path) -> None:
             body = path.read_bytes()
@@ -254,10 +279,10 @@ def _make_handler(
                 return
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
             if path == "/status":  # API route — bearer-gated
-                status, payload = route(
+                status, payload, headers = route(
                     "GET", self.path, b"", self.headers.get("Authorization"), trusted
                 )
-                self._respond(status, payload)
+                self._respond(status, payload, headers)
                 return
             if static_root is not None:  # public static assets (no secrets)
                 f = resolve_static(self.path, static_root)
@@ -285,10 +310,10 @@ def _make_handler(
                 self._respond(413, {"error": "body too large"})
                 return
             body = self.rfile.read(length) if length else b""
-            status, payload = route(
+            status, payload, headers = route(
                 "POST", self.path, body, self.headers.get("Authorization"), trusted
             )
-            self._respond(status, payload)
+            self._respond(status, payload, headers)
 
         def log_message(self, format: str, *args: object) -> None:  # silence access log
             pass
@@ -313,6 +338,12 @@ def serve_http_cmd(host: str, port: int, static_dir: Path | None) -> None:
     the API share one origin (CORS can't arise) and one unit covers both. API
     routes stay bearer-gated; static assets are public."""
     console = Console()
+
+    # Fail fast on a bad ingress cap setting at startup, not at the first
+    # request — a typo'd SABNYX_INGRESS_MAX_CALLS/_WINDOW_MINUTES should
+    # kill the process, not silently drift into "cap disabled."
+    ingress_max_calls()
+    ingress_window_minutes()
 
     trusted = r1.keys()
     if not trusted:

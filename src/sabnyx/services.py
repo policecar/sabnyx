@@ -24,7 +24,7 @@ from pathlib import Path
 from pydantic import ValidationError
 from rich.console import Console
 
-from . import context, ledger, llm, paths, retrieval, sources, writers
+from . import context, ledger, llm, paths, retrieval, sources, spend, writers
 from .schemas import AskAnswer, IngestChangeset, ModelRole, ProposedIntake, TriageBatch
 from .util import extract_wikilinks, slugify
 
@@ -590,6 +590,9 @@ def ingest_text(
     re-extraction. If extraction fails, the artifact remains intact and an
     ``ingest.failed`` event records the failed derivation.
     """
+    # First statement, before sources.capture writes anything: a capped
+    # request must leave no artifact behind (see spend.check_ingress_cap).
+    spend.check_ingress_cap(actor)
     # The model must read exactly what was captured (Gate 3: the immutable
     # artifact is the audit record of the extraction input).
     text = text[: sources.MAX_SOURCE_CHARS]
@@ -686,6 +689,8 @@ def answer_question(
 ) -> AskResult:
     """Assemble context, answer the question grounded in the vault, ledger
     the projection. Writes nothing (capture is a separate step)."""
+    # First statement — see spend.check_ingress_cap and ingest_text above.
+    spend.check_ingress_cap(actor)
     role = role_override or llm.role_for_message(question)
     index = context.slug_index(paths.ATLAS)
     user = (
