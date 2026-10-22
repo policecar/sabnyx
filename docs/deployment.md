@@ -369,6 +369,7 @@ git -C ~/sabnyx-vault status -sb | head -1                      # expected below
 - A `tend …` or content commit from more than ~20 min ago (one run + margin) means the loop has stalled.
 - `M  ops/events.jsonl` in `git status --short` is the **normal idle state**, not a problem: the ledger line is staged but deliberately left uncommitted until real content changes or 24h pass — see the gating block in the script. Anything else staged or untracked there is worth investigating.
 - `git status -sb | head -1` showing `## main...origin/main` (no suffix) is good; a `[ahead N]` suffix means there are commits the hub never received — the last push failed. Check `journalctl --user -u sabnyx-tend.service` for the "push failed after rebase retry" message and whether the repo is still mid-rebase (see Gotchas).
+- `$SABNYX_DATA_DIR/.sync-tend.lock` is held (via `flock`) by whichever side is currently writing: the heartbeat script for the duration of a `tend` run, or `serve`/`serve-http` for the duration of one capture/promote write (`util.vault_lock`, same file, same `flock(2)` semantics). A lock stuck held long after its holder should have finished means a hung writer — find and inspect it with `fuser $SABNYX_DATA_DIR/.sync-tend.lock` or `lsof $SABNYX_DATA_DIR/.sync-tend.lock`.
 
 ## `.env` reference
 
