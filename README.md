@@ -114,6 +114,9 @@ One schedulable command that runs the whole self-maintenance cycle:
 2. **LLM triage** — for everything that didn't auto-promote, *only* once
    `≥ --threshold` (default 5) items are pending: one batched call proposes
    promote / keep / discard. Human-gated unless `--yes`. Discard never deletes.
+   Below threshold, `--max-age-days` (default 7; `0` disables) is a fallback:
+   once the oldest deferred item has waited that long, the whole deferred
+   batch is triaged in one call, so a slow-filling queue can't starve forever.
 3. **Reweave** — consume pending `reweave.proposed` intents (backward links +
    contradiction observations).
 4. **Health** — a concise audit summary.
