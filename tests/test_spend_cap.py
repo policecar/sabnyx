@@ -282,3 +282,29 @@ def test_route_429_appends_no_wire_errored(tmp_vault, monkeypatch):
 
     assert status == 429
     assert "wire.errored" not in [e.kind for e in ledger.replay()]
+
+
+def test_calls_aging_out_lift_cap_even_after_a_trip_in_this_window(tmp_vault, monkeypatch):
+    """A trip must not lock the channel out for a whole window: once enough
+    calls age out that the count is back under max_calls, the next request is
+    allowed — the suppression of duplicate ingress.capped writes is about the
+    ledger, not about keeping the cap tripped."""
+    _set_cap(monkeypatch, max_calls=3, window_minutes=60)
+    for minutes_ago in (55, 40, 10):
+        _requested("sabnyx-telegram", minutes_ago=minutes_ago)
+    with pytest.raises(SpendCapExceeded):
+        check_ingress_cap("sabnyx-r1", now=NOW)
+
+    # 10 minutes later the 55-min-old call has aged out: 2 < 3 in window.
+    later = NOW + timedelta(minutes=10)
+    check_ingress_cap("sabnyx-r1", now=later)  # must not raise
+
+    # And a genuine re-trip later in the same window ledgers no second event
+    # (still within 60 min of the first ingress.capped) but is refused with a
+    # Retry-After derived from the oldest in-window call, not the trip time.
+    _requested("sabnyx-telegram", minutes_ago=0, ref=later)
+    with pytest.raises(SpendCapExceeded) as ei:
+        check_ingress_cap("sabnyx-r1", now=later)
+    # oldest in-window call is the 40-min-ago one (now 50 min old) -> 10 min left
+    assert ei.value.retry_after_seconds == 10 * 60
+    assert len([e for e in ledger.replay() if e.kind == "ingress.capped"]) == 1
