@@ -447,6 +447,63 @@ def test_lock_file_never_staged_by_add(tmp_path):
     assert ".sync-tend.lock" not in tracked.splitlines(), "lock file must never be committed"
 
 
+def test_orphaned_atomic_write_tmp_file_never_staged_by_add():
+    """fm.write's atomic rename (os.open -> os.replace) can leave a stray
+    `.<name>.<pid>.tmp` sibling if the process is SIGKILLed between the two
+    -- the vault repo has no .gitignore, so the heartbeat's `git add -A`
+    must exclude `*.tmp` explicitly or the next tend run commits it.
+
+    Asserted directly against the script's own pathspec (not a git add -A
+    subprocess): default pathspec magic's `*` matches across `/`, so one
+    `':(exclude)*.tmp')` entry must cover a nested path like
+    vault/intake/.x.md.123.tmp, not just the vault root. Confirmed with a
+    standalone probe (see implementer's report) that this pathspec form
+    excludes a nested .tmp from `git add -A`; this test pins the script
+    text to that same pathspec so a future edit can't drop it unnoticed.
+    """
+    script_text = SCRIPT.read_text(encoding="utf-8")
+    add_line = next(line for line in script_text.splitlines() if "git add -A -- ." in line)
+    assert ":(exclude)*.tmp" in add_line, (
+        f"heartbeat's git add must exclude *.tmp (orphaned atomic-write temp "
+        f"files), got: {add_line!r}"
+    )
+
+
+def test_orphaned_atomic_write_tmp_file_not_staged_end_to_end(tmp_path):
+    """Functional version of the above: run the real script against a vault
+    that already has a stray nested .tmp file sitting where fm.write's
+    atomic rename would leave one on a crash, and confirm it stays
+    untracked after the script's `git add -A` step."""
+    ctx = _setup(tmp_path)
+    vault, hub = ctx["vault"], ctx["hub"]
+    ctx["flag_file"].write_text("touch", encoding="utf-8")
+
+    intake = vault / "vault" / "intake"
+    intake.mkdir(parents=True, exist_ok=True)
+    stray_tmp = intake / ".x.md.12345.tmp"
+    stray_tmp.write_text("---\ntype: concept\n---\n\npartial\n", encoding="utf-8")
+
+    result = _run_script(ctx["env"])
+
+    assert result.returncode == 0, (
+        f"stdout={result.stdout!r} stderr={result.stderr!r}\nhub log:\n{_hub_log(hub)}"
+    )
+    status = subprocess.run(
+        ["git", "status", "--short", "--untracked-files=all"],
+        cwd=vault,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "?? vault/intake/.x.md.12345.tmp" in status, f"expected untracked, got: {status!r}"
+    staged_lines = [line for line in status.splitlines() if not line.startswith("??")]
+    assert not any(".x.md.12345.tmp" in line for line in staged_lines), (
+        f"stray .tmp was staged: {status!r}"
+    )
+
+    tracked = subprocess.run(["git", "ls-files"], cwd=vault, capture_output=True, text=True).stdout
+    assert ".x.md.12345.tmp" not in tracked, "stray .tmp must never be committed"
+
+
 def test_script_is_executable_and_strict():
     assert SCRIPT.is_file()
     assert os.access(SCRIPT, os.X_OK), "script must be chmod +x (0755)"
