@@ -3,7 +3,9 @@
 Pure-ledger cases (1-6) exercise `check_ingress_cap` directly with a pinned
 clock and backdated `llm.requested` events. Cases 7-8 are the service- and
 serve-level integration: a tripped cap must leave no artifact behind and
-must surface as a clear reply / 429, never a crash.
+must surface as a clear reply / 429, never a crash. Case 9 is the
+write-amplification guard: a refusal storm (the exact load the cap exists
+for) must not itself grow the ledger unboundedly.
 """
 
 from __future__ import annotations
@@ -19,15 +21,17 @@ from sabnyx.spend import SpendCapExceeded, check_ingress_cap
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
-def _requested(actor: str, *, minutes_ago: float, subject: str = "ask:x") -> None:
-    """Backdate one llm.requested event `minutes_ago` minutes before NOW."""
+def _requested(
+    actor: str, *, minutes_ago: float, subject: str = "ask:x", ref: datetime = NOW
+) -> None:
+    """Backdate one llm.requested event `minutes_ago` minutes before `ref`."""
     ledger.append_event(
         plane="intent",
         kind="llm.requested",
         actor=actor,
         subject=subject,
         payload={"role": "fast", "model": "m", "provider": "p", "schema": "AskAnswer"},
-        ts=NOW - timedelta(minutes=minutes_ago),
+        ts=ref - timedelta(minutes=minutes_ago),
     )
 
 
@@ -196,9 +200,10 @@ def test_serve_http_route_returns_429_with_retry_after_when_capped(tmp_vault, mo
     assert "spend cap" in body["error"]
     assert headers["Retry-After"] == "42"
     assert not list(tmp_vault["INTAKE"].glob("*.md"))
-    errs = [e for e in ledger.replay() if e.kind == "wire.errored"]
-    assert errs
-    assert errs[-1].payload["capped"] is True
+    # No wire.errored write for a capped request: spend.check_ingress_cap is
+    # the record (at most once per tripped window); a second write per
+    # refusal would defeat that bound under a refusal storm.
+    assert "wire.errored" not in [e.kind for e in ledger.replay()]
 
 
 def test_serve_telegram_ingest_replies_with_cap_message(tmp_vault, monkeypatch):
@@ -211,3 +216,69 @@ def test_serve_telegram_ingest_replies_with_cap_message(tmp_vault, monkeypatch):
 
     assert "spend cap" in reply
     assert not list(tmp_vault["INTAKE"].glob("*.md"))
+
+
+# -- 9: at most one ingress.capped write per tripped window --------------------
+
+
+def test_repeated_refusals_within_one_window_ledger_only_once(tmp_vault, monkeypatch):
+    """A refusal storm (the exact load the cap exists for) must not itself
+    grow the ledger: 50 refused calls in the same window write exactly one
+    ingress.capped event, not one per refusal."""
+    _set_cap(monkeypatch, max_calls=3, window_minutes=60)
+    for minutes_ago in (50, 40, 10):
+        _requested("sabnyx-telegram", minutes_ago=minutes_ago)
+
+    count_before = ledger.count()
+    for _ in range(50):
+        with pytest.raises(SpendCapExceeded):
+            check_ingress_cap("sabnyx-r1", now=NOW)
+
+    assert ledger.count() == count_before + 1
+    events = [e for e in ledger.replay() if e.kind == "ingress.capped"]
+    assert len(events) == 1
+
+
+def test_fresh_trip_after_window_passes_ledgers_a_new_event(tmp_vault, monkeypatch):
+    """Once the window carrying the original ingress.capped event has fully
+    elapsed, a fresh trip is a new, distinct event — the once-per-window
+    bound doesn't silently disable the cap forever."""
+    window_minutes = 60
+    _set_cap(monkeypatch, max_calls=3, window_minutes=window_minutes)
+    for minutes_ago in (50, 40, 10):
+        _requested("sabnyx-telegram", minutes_ago=minutes_ago)
+
+    with pytest.raises(SpendCapExceeded):
+        check_ingress_cap("sabnyx-r1", now=NOW)  # first trip -> one ingress.capped event (ts=NOW)
+
+    # Move well past the window the first ingress.capped event belongs to,
+    # and supply a fresh batch of in-window calls so the cap trips again
+    # rather than simply going quiet.
+    later = NOW + timedelta(minutes=window_minutes + 10)
+    for minutes_ago in (50, 40, 10):
+        _requested("sabnyx-r1", minutes_ago=minutes_ago, ref=later)
+
+    with pytest.raises(SpendCapExceeded):
+        check_ingress_cap("sabnyx-telegram", now=later)
+
+    events = [e for e in ledger.replay() if e.kind == "ingress.capped"]
+    assert len(events) == 2
+    assert events[0].ts == NOW
+    assert events[1].ts == later
+
+
+def test_route_429_appends_no_wire_errored(tmp_vault, monkeypatch):
+    """route()'s 429 branch must not write its own wire.errored — see
+    test_serve_http_route_returns_429_with_retry_after_when_capped above,
+    duplicated here under this section's name for the coordinator's ask."""
+    from sabnyx import spend as spend_mod
+    from sabnyx.commands import serve_http
+
+    monkeypatch.setattr(spend_mod, "check_ingress_cap", _always_capped)
+
+    status, _, _ = serve_http.route(
+        "POST", "/ingest", b'{"text":"remember buy milk"}', "Bearer k1", {"k1"}
+    )
+
+    assert status == 429
+    assert "wire.errored" not in [e.kind for e in ledger.replay()]

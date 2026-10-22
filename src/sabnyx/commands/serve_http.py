@@ -158,15 +158,12 @@ def route(
             )
             return 503, {"error": str(e)}, {}
         except SpendCapExceeded as e:
-            # Also end-user-safe (see spend.SpendCapExceeded); the client gets
-            # the seconds to wait both in the body and as a Retry-After header.
-            ledger.append_event(
-                plane="event",
-                kind="wire.errored",
-                actor=ACTOR,
-                subject=f"r1:{env.source_id}",
-                payload={"error": str(e), "capped": True},
-            )
+            # End-user-safe (see spend.SpendCapExceeded); the client gets the
+            # seconds to wait both in the body and as a Retry-After header.
+            # No wire.errored write here, deliberately: spend.check_ingress_cap
+            # already ledgers ingress.capped at most once per tripped window —
+            # a second write per refused request would defeat that bound
+            # under exactly the refusal-storm load the cap exists to survive.
             return 429, {"error": str(e)}, {"Retry-After": str(e.retry_after_seconds)}
         except Exception as e:  # noqa: BLE001 — report failure as JSON, never crash the loop
             # Detail goes to the ledger only; the client gets a generic message
