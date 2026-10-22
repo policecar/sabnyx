@@ -41,6 +41,14 @@ class SpendCapExceeded(RuntimeError):
         self.retry_after_seconds = retry_after_seconds
 
 
+def _message(max_calls: int, window_minutes: int, retry_after_seconds: int) -> str:
+    retry_minutes = max(1, math.ceil(retry_after_seconds / 60))
+    return (
+        f"LLM spend cap reached ({max_calls} calls / {window_minutes} min across "
+        f"ingress channels); try again in ~{retry_minutes} min"
+    )
+
+
 def check_ingress_cap(actor: str, *, now: datetime | None = None) -> None:
     """Raise `SpendCapExceeded` if `actor` has hit the rolling ingress cap.
 
@@ -48,15 +56,24 @@ def check_ingress_cap(actor: str, *, now: datetime | None = None) -> None:
     (`SABNYX_INGRESS_MAX_CALLS <= 0`). `now` defaults to `ledger.now()`
     (UTC, tz-aware) and exists so tests can pin the clock.
 
+    `ingress.capped` is ledgered at most once per tripped window, not once
+    per refusal: a flood of calls from a capped (or compromised) sender has
+    no LLM call to slow it down, so without this a refusal storm would grow
+    the ledger — and the replay every ingress request already does — by two
+    lines per request indefinitely. The event means "the cap tripped at
+    some point in this window", not "this request was refused"; callers
+    that need the latter already get it via the raised exception.
+
     @decision DEC-01: gate in services.py (this function's callers), not in
     llm.parse_structured.
     @rationale: parse_structured runs AFTER services.ingest_text has already
     called sources.capture, which writes an artifact. Gating earlier — as
     the first statement of services.ingest_text/answer_question — means a
     capped request leaves no artifact and no llm.requested event, just the
-    ingress.capped event below. Putting the gate in parse_structured would
-    also start throttling sabnyx-tend and the ingest CLI, which this cap is
-    not meant to cover; they stay governed solely by llm.call_budget.
+    (at most one per window) ingress.capped event below. Putting the gate in
+    parse_structured would also start throttling sabnyx-tend and the ingest
+    CLI, which this cap is not meant to cover; they stay governed solely by
+    llm.call_budget.
 
     @decision DEC-02: counts llm.requested, not llm.completed.
     @rationale: a call that errors out still spent the attempt (provider
@@ -80,19 +97,31 @@ def check_ingress_cap(actor: str, *, now: datetime | None = None) -> None:
     # rates Telegram/R1 produce (at most a handful per minute); if the
     # ledger grows large enough for a full replay to matter, the
     # optimisation is a tail read (seek backward from EOF until past
-    # `cutoff`) rather than this full scan.
-    in_window: list[datetime] = [
-        event.ts
-        for event in ledger.replay()
-        if event.kind == "llm.requested" and event.actor in INGRESS_ACTORS and event.ts >= cutoff
-    ]
+    # `cutoff`) rather than this full scan. The same pass also finds the
+    # most recent ingress.capped event, so a refusal storm doesn't add a
+    # second write per request on top of the read.
+    in_window: list[datetime] = []
+    last_capped_ts: datetime | None = None
+    for event in ledger.replay():
+        if event.kind == "llm.requested" and event.actor in INGRESS_ACTORS and event.ts >= cutoff:
+            in_window.append(event.ts)
+        elif event.kind == "ingress.capped":
+            last_capped_ts = event.ts  # replay is chronological: last one wins
+
+    if last_capped_ts is not None and last_capped_ts >= cutoff:
+        # Already tripped and ledgered within this window — refuse again
+        # without a second write (see docstring above).
+        retry_after_seconds = max(1, math.ceil((last_capped_ts + window - now).total_seconds()))
+        raise SpendCapExceeded(
+            _message(max_calls, window_minutes, retry_after_seconds),
+            retry_after_seconds=retry_after_seconds,
+        )
 
     if len(in_window) < max_calls:
         return
 
     oldest = min(in_window)
     retry_after_seconds = max(1, math.ceil((oldest + window - now).total_seconds()))
-    retry_minutes = max(1, math.ceil(retry_after_seconds / 60))
 
     ledger.append_event(
         plane="event",
@@ -105,9 +134,14 @@ def check_ingress_cap(actor: str, *, now: datetime | None = None) -> None:
             "window_minutes": window_minutes,
             "retry_after_seconds": retry_after_seconds,
         },
+        # Explicit ts=now (not ledger.append_event's real-wall-clock default):
+        # the suppression check above compares this event's ts against a
+        # cutoff derived from `now`, so it must be stamped with the same
+        # clock reading the rest of this call used, not the instant the
+        # write happens to land.
+        ts=now,
     )
     raise SpendCapExceeded(
-        f"LLM spend cap reached ({max_calls} calls / {window_minutes} min across "
-        f"ingress channels); try again in ~{retry_minutes} min",
+        _message(max_calls, window_minutes, retry_after_seconds),
         retry_after_seconds=retry_after_seconds,
     )
