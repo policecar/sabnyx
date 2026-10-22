@@ -121,8 +121,8 @@ def test_serve_ingest_src_rel_uses_data_root(tmp_vault, monkeypatch) -> None:
     """serve._ingest must relativize vault/sources/ against DATA_ROOT.
 
     This is the exact crash from the bug report:
-      '/home/p/sabnyx-vault/vault/sources/start.md' is not in the subpath of
-      '/home/p/sabnyx'.
+      '/home/USER/sabnyx-vault/vault/sources/start.md' is not in the subpath of
+      '/home/USER/sabnyx'.
     """
     from sabnyx.commands import serve as serve_mod
 

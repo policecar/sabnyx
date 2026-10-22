@@ -19,9 +19,9 @@ changed, else at most once a day) never pollutes code history.
 github.com/policecar/sabnyx            ← CODE (this repo)
 server:~/git/sabnyx-vault.git          ← DATA hub (bare repo, source of truth)
   ├─ server:~/sabnyx-vault             ← DATA working clone (serve + tend run here)
-  ├─ laptop:~/src/_px/sabnyx-vault     ← DATA working clone (Obsidian + local CLI)
+  ├─ laptop:~/src/sabnyx-vault         ← DATA working clone (Obsidian + local CLI)
 server:~/sabnyx                        ← CODE clone (the running app)
-laptop:~/src/_px/sabnyx                ← CODE clone (development)
+laptop:~/src/sabnyx                    ← CODE clone (development)
 ```
 
 - **DATA repo** (`sabnyx-vault`) contains only `vault/**` + `ops/events.jsonl` +
@@ -59,7 +59,7 @@ git -C ~/git/sabnyx-vault.git symbolic-ref HEAD refs/heads/main   # git <2.28 ha
 
 ### 2. Publish the DATA repo to the hub — from the laptop
 ```bash
-cd ~/src/_px/sabnyx-vault
+cd ~/src/sabnyx-vault
 git remote add origin ssh://USER@SERVER/home/USER/git/sabnyx-vault.git
 git push -u origin main
 ```
@@ -91,7 +91,7 @@ chmod 600 ~/sabnyx/.env
 
 # verify the wiring
 set -a; . ~/sabnyx/.env; set +a
-curl -s "https://api.telegram.org/bot$SABNYX_TELEGRAM_TOKEN/getMe"   # → "username":"sabnyxbot"
+curl -s "https://api.telegram.org/bot$SABNYX_TELEGRAM_TOKEN/getMe"   # → "username":"your-bot"
 uv run sabnyx verify          # LLM door answers
 uv run sabnyx health          # vault resolves under ~/sabnyx-vault
 
@@ -316,7 +316,7 @@ Then open `https://sabnyx.example.net/install.html` and scan the QR on the R1.
 
 ## Daily operation
 
-- **Capture / ask** from the phone via `@sabnyxbot` (trusted senders only).
+- **Capture / ask** from the phone via `@your-bot` (trusted senders only).
 - **`tend`** runs every 15 min: pulls the hub, promotes/triages/reweaves, commits +
   pushes any vault changes back to the hub. It ledgers a `tend.completed` event
   every run regardless (the liveness signal `opsctl project` reads) — the sync
@@ -325,7 +325,7 @@ Then open `https://sabnyx.example.net/install.html` and scan the QR on the R1.
   Once the oldest deferred item has waited `--max-age-days` (default 7), the
   whole deferred batch is triaged even if the batch threshold hasn't been
   reached yet, so a slow-filling intake queue can't sit unreviewed indefinitely.
-- **Laptop sync**: `git -C ~/src/_px/sabnyx-vault pull` to get the server's changes;
+- **Laptop sync**: `git -C ~/src/sabnyx-vault pull` to get the server's changes;
   Obsidian edits + `git push` flow back through the hub. Union-merge keeps the
   ledger conflict-free.
 
@@ -419,7 +419,7 @@ the heartbeat script's target along with everything else.
   weigh this added exposure before enabling it.
 - **Backup**: the DATA hub (`~/git/sabnyx-vault.git`) lives on the same server — a
   single point of failure. Your laptop clone is a full-history backup, but only as
-  fresh as your last `git -C ~/src/_px/sabnyx-vault pull`. Pull regularly (or add a
+  fresh as your last `git -C ~/src/sabnyx-vault pull`. Pull regularly (or add a
   private off-site mirror remote) so a server loss doesn't take the vault with it.
 - **Keep `git pull --rebase --autostash`** in the tend loop — NOT `--ff-only`. The
   sync is bidirectional (laptop edits + server tend both commit to the hub), so the

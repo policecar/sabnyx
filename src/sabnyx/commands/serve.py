@@ -39,7 +39,7 @@ from ..util import VaultLocked, vault_lock
 ACTOR = "sabnyx-telegram"
 _URL_RE = re.compile(r"^https?://\S+$")
 # Matches /start or /help with an optional @botname suffix and/or a trailing argument.
-# Examples: /start, /help, /start@sabnyxbot, /start somedeeplink, /help@sabnyxbot
+# Examples: /start, /help, /start@your-bot, /start somedeeplink, /help@your-bot
 _GREET_RE = re.compile(r"^/(start|help)(@\S+)?(\s.*)?$", re.IGNORECASE)
 
 _GREETING = (

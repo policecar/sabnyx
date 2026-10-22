@@ -173,8 +173,8 @@ def tmp_vault(tmp_path, monkeypatch):
     ROOT stays as the REAL code-repo root (repo_root()) so that config.py,
     llm.py and any other code-root consumers keep working normally.
     DATA_ROOT (and all vault/ops paths derived from it) are redirected to
-    tmp_path, mirroring the production split where ROOT=/home/p/sabnyx and
-    DATA_ROOT=/home/p/sabnyx-vault.
+    tmp_path, mirroring the production split where ROOT=/home/USER/sabnyx and
+    DATA_ROOT=/home/USER/sabnyx-vault.
 
     This ensures that relative_to(ROOT) on a DATA_ROOT-resident path raises
     ValueError in tests, exactly as it would crash on the server.

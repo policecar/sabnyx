@@ -185,7 +185,7 @@ def test_route_action_failure_returns_generic_error(tmp_vault, monkeypatch):
     from sabnyx.commands import serve_http
 
     def boom(_text):
-        raise RuntimeError("/home/p/sabnyx-vault leaked secret path")
+        raise RuntimeError("/home/USER/sabnyx-vault leaked secret path")
 
     monkeypatch.setattr(serve_http, "_ask", boom)
     status, body, _ = serve_http.route("POST", "/ask", b'{"text":"hi"}', AUTH, TRUSTED)

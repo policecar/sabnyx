@@ -37,11 +37,11 @@ def test_classify_greet():
     assert serve.classify("/START") == ("greet", "")
     assert serve.classify("/HELP") == ("greet", "")
     # Telegram @botname suffix
-    assert serve.classify("/start@sabnyxbot") == ("greet", "")
-    assert serve.classify("/help@sabnyxbot") == ("greet", "")
+    assert serve.classify("/start@your-bot") == ("greet", "")
+    assert serve.classify("/help@your-bot") == ("greet", "")
     # Deep-link payload after /start
     assert serve.classify("/start somedeeplink") == ("greet", "")
-    assert serve.classify("/start@sabnyxbot somedeeplink") == ("greet", "")
+    assert serve.classify("/start@your-bot somedeeplink") == ("greet", "")
 
 
 def test_greet_does_not_capture(tmp_vault, monkeypatch):
@@ -78,13 +78,13 @@ def test_help_does_not_capture(tmp_vault, monkeypatch):
 
 
 def test_start_botname_suffix_does_not_capture(tmp_vault, monkeypatch):
-    """/start@sabnyxbot routes to greeting, not capture."""
+    """/start@your-bot routes to greeting, not capture."""
     from sabnyx.commands import serve
 
     sent: list[tuple] = []
     monkeypatch.setattr(telegram, "send_message", lambda chat, text: sent.append((chat, text)))
 
-    serve._dispatch_batch([_update(3, "/start@sabnyxbot")], {"555"})
+    serve._dispatch_batch([_update(3, "/start@your-bot")], {"555"})
 
     assert len(sent) == 1
     assert "sabnyx" in sent[0][1]
@@ -351,7 +351,7 @@ def test_dispatch_error_reply_is_generic(tmp_vault, monkeypatch):
     monkeypatch.setattr(telegram, "send_message", lambda chat, text: sent.append(text))
 
     def boom(env):
-        raise RuntimeError("/home/p/sabnyx-vault leaked secret path")
+        raise RuntimeError("/home/USER/sabnyx-vault leaked secret path")
 
     monkeypatch.setattr(serve, "handle", boom)
     offset = serve._dispatch_batch([_update(1, "hello")], {"555"})
