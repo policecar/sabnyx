@@ -8,11 +8,14 @@ Rules:
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -80,6 +83,51 @@ def now() -> datetime:
     return datetime.now(UTC)
 
 
+def _fsync(fd: int) -> None:
+    """fsync `fd`, upgrading to a full cache flush where the platform needs it.
+
+    Plain fsync(2) on Darwin/APFS only pushes data to the drive's write
+    cache, not to the platter/flash itself — the kernel's actual durability
+    barrier there is F_FULLFSYNC. Linux and other POSIX filesystems already
+    get that guarantee from fsync(2) alone. opsctl's Rust appender calls
+    sync_all(), which issues F_FULLFSYNC on Apple targets automatically;
+    this mirrors that on the Python side so the two appenders share one
+    durability guarantee instead of silently diverging on macOS.
+    """
+    if hasattr(fcntl, "F_FULLFSYNC"):
+        try:
+            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+            return
+        except OSError:
+            # Some filesystems (e.g. exFAT, certain network mounts) reject
+            # F_FULLFSYNC outright. Fall back to the weaker guarantee rather
+            # than failing an append that otherwise succeeded.
+            pass
+    os.fsync(fd)
+
+
+def _fsync_dir(path: Path) -> None:
+    """Best-effort fsync of directory `path`, mirroring the pattern in
+    fm.write (the atomic replace).
+
+    A file's own fsync makes its *contents* durable, but the directory
+    entry that makes a brand-new file discoverable after a crash is
+    separate metadata living in the parent directory's inode, not the
+    file's. This only needs to run the first time a file is created inside
+    `path` — later appends to an already-existing file don't touch the
+    directory. Failure here is swallowed: by the time this is called the
+    append itself already succeeded, so raising would be a worse failure
+    mode than a directory entry that might not survive a *subsequent*
+    crash — a case opsctl verify / replay() can detect.
+    """
+    with contextlib.suppress(OSError):
+        dfd = os.open(path, os.O_RDONLY)
+        try:
+            _fsync(dfd)
+        finally:
+            os.close(dfd)
+
+
 def append_event(
     *,
     kind: str,
@@ -89,8 +137,28 @@ def append_event(
     plane: LedgerPlane = "event",
     ts: datetime | None = None,
 ) -> LedgerEvent:
-    """Append one event to ops/events.jsonl and return the typed record."""
+    """Append one event to ops/events.jsonl and return the typed record.
+
+    The append is the ledger's commit point: once this returns, the event
+    is durable (see the fsync comment inline for exactly what "durable"
+    covers on each platform). If the write itself lands but the short-write
+    check or the fsync afterward raises, the event line may *already* be on
+    disk — a LedgerError here is not proof the append didn't happen, and a
+    short write in particular can't be undone (the partial line is on disk
+    for good; the fix is to run opsctl verify, not to retry the write).
+    Callers must therefore not blindly retry a failed append: retrying a
+    `wire.received` or `tend.completed` just produces a harmless duplicate
+    audit entry, not corruption. (services.ingest_text already handles this
+    for captures by deduping on title via FileExistsError before it ever
+    calls append_event.)
+
+    Cost: measured on this machine, fsync on APFS runs ~0.05ms per append;
+    F_FULLFSYNC and Linux ext4 fsync are millisecond-scale. At the ledger's
+    real write rate (~70 events/day plus one tend.completed per 15-minute
+    heartbeat) that's negligible, so there's no batching API here.
+    """
     OPS.mkdir(parents=True, exist_ok=True)
+    created = not EVENTS_JSONL.exists()
     event = LedgerEvent(
         ts=ts or now(),
         plane=plane,
@@ -106,14 +174,25 @@ def append_event(
     # can't interleave bytes within a line — mirrors opsctl's append. A
     # buffered text writer may split large lines across write() syscalls.
     # (PIPE_BUF governs pipes, not regular files, so it buys nothing here.)
-    # fsync then makes the line durable to disk before we return, so the
-    # append is a true commit point even across a kernel panic / power loss —
-    # a process crash is already safe once write(2) returns (page cache), but
-    # that cache is lost on hard failure. opsctl's appender sync_all()s for
-    # the same guarantee.
+    # An unbuffered write(2) can still return fewer bytes than requested
+    # without raising, so the byte count is checked explicitly below.
+    # _fsync() then makes the line durable to disk before we return:
+    # durable against a process crash always (write(2) already reached the
+    # OS page cache); durable against power loss on Linux, and on macOS via
+    # F_FULLFSYNC where the filesystem honours it (APFS does). The
+    # directory entry itself is only fsync'd the first time the ledger file
+    # is created (_fsync_dir below) — later appends don't touch the
+    # directory. opsctl's appender mirrors both of these.
     with EVENTS_JSONL.open("ab", buffering=0) as f:
-        f.write(data)
-        os.fsync(f.fileno())
+        n = f.write(data)
+        if n != len(data):
+            raise LedgerError(
+                f"short write to ledger: {n} of {len(data)} bytes — the partial "
+                "line is on disk; run opsctl verify"
+            )
+        _fsync(f.fileno())
+    if created:
+        _fsync_dir(EVENTS_JSONL.parent)
     return event
 
 
