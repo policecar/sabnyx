@@ -3,7 +3,9 @@
 How to run sabnyx as a 24/7 service that ingests + answers over Telegram and tidies
 the vault on a timer. Companion to `architecture.md` (what the system is) and
 `README.md` (the CLI). Secrets never live in this repo — only in `~/sabnyx/.env`
-on the server (chmod 600).
+on the server (chmod 600). Nor does anything instance-specific: your domain,
+bot, keys and paths live in `.env`, the nginx site and the systemd units on the
+server. Examples here use placeholders (`sabnyx.example.net`, user `p`).
 
 ---
 
@@ -37,7 +39,7 @@ laptop:~/src/_px/sabnyx                ← CODE clone (development)
   No system Python needed — `uv` brings its own (3.12+).
 - Network egress to `api.telegram.org` and your LLM provider
   (`api.moonshot.ai` for Kimi, or `api.anthropic.com`).
-- A non-root user (examples use `p`, home `/home/p`); `sudo` only for one
+- A non-root user (examples use `USER`, home `/home/USER`); `sudo` only for one
   `loginctl enable-linger` call.
 - Works on old distros (git ≥ 2.20, systemd ≥ 241) — see **Gotchas**.
 
@@ -48,17 +50,11 @@ the only inbound surface.
 
 ## One-time bring-up
 
-### 1. DATA hub (bare repo) + GitHub deploy key — on the server
+### 1. DATA hub (bare repo) — on the server
 ```bash
 mkdir -p ~/git
 git init --bare ~/git/sabnyx-vault.git
 git -C ~/git/sabnyx-vault.git symbolic-ref HEAD refs/heads/main   # git <2.28 has no --initial-branch
-
-# read-only deploy key so the server can pull the private CODE repo
-ssh-keygen -t ed25519 -f ~/.ssh/sabnyx_deploy -N "" -C "sabnyx-server"
-printf 'Host github.com\n  IdentityFile ~/.ssh/sabnyx_deploy\n  IdentitiesOnly yes\n' >> ~/.ssh/config
-cat ~/.ssh/sabnyx_deploy.pub      # → add to GitHub repo → Settings → Deploy keys (READ-ONLY)
-ssh -T git@github.com             # expect: Hi policecar/sabnyx! ...authenticated
 ```
 
 ### 2. Publish the DATA repo to the hub — from the laptop
@@ -71,7 +67,7 @@ git push -u origin main
 ### 3. Clone both repos — on the server
 ```bash
 git clone ~/git/sabnyx-vault.git ~/sabnyx-vault           # DATA (local, no auth)
-git clone git@github.com:policecar/sabnyx.git ~/sabnyx    # CODE (deploy key)
+git clone https://github.com/policecar/sabnyx.git ~/sabnyx  # CODE (public, no auth)
 git -C ~/sabnyx-vault config user.name  "sabnyx-server"   # so tend can commit
 git -C ~/sabnyx-vault config user.email "sabnyx@$(hostname)"
 ```
@@ -413,7 +409,7 @@ the heartbeat script's target along with everything else.
   commit fails with "Please tell me who you are."
 - **No inline `# comments`** after a value in `.env` — both systemd and the loader
   keep the rest of the line literally.
-- **EOL OS**: no security updates. Acceptable for the *Telegram*
+- **EOL OS**: a release past end-of-life gets no security updates. Acceptable for the *Telegram*
   setup because its attack surface is outbound-only (long-poll, git, LLM API).
   Reprovision to a supported release when convenient.
 - **The R1 ingress is the one *inbound* surface** — enabling `serve-http` opens
@@ -446,7 +442,7 @@ the heartbeat script's target along with everything else.
   privesc tradeoff) or run these as system units. (`MemoryMax` may also be a no-op
   under cgroup v1 — harmless.) Also note several newer directives
   (`ProtectHostname` 242, `RestrictSUIDSGID` 242, `ProtectClock` 245) don't exist on
-  systemd 241 and would be ignored.
+  older systemd (e.g. 241) and would be ignored.
 - **Don't paste multi-line heredocs into a shell.** An unterminated `<<'EOF'`
   (one missed keystroke) silently swallows every following command into the
   target file instead of erroring — cost ten minutes re-pasting
