@@ -21,8 +21,10 @@
         font-size: 18px;
         margin: 0;
       }
-      img {
-        background: #0e0e10;
+      canvas {
+        width: 260px;
+        height: 260px;
+        image-rendering: pixelated;
         border-radius: 8px;
       }
       code {
@@ -40,13 +42,16 @@
   </head>
   <body>
     <h1>sabnyx → rabbit R1</h1>
-    <img id="qr" width="200" height="200" alt="install QR" />
+    <canvas id="qr" aria-label="install QR"></canvas>
     <div class="hint">
       Scan with your R1 to install the Creation. The first run asks for your
       sabnyx API key (stored encrypted on the device).
     </div>
     <div class="hint">Creation URL: <code id="url"></code></div>
 
+    <!-- QR generated locally (vendored nayuki/QR-Code-generator v1.5.0, MIT):
+         the install payload never leaves this origin. -->
+    <script src="js/qrcodegen.js"></script>
     <script>
       // The Creation lives next to this page. Adjust if you host index.html
       // elsewhere.
@@ -73,9 +78,29 @@
         });
 
         document.getElementById("url").textContent = creationUrl;
-        document.getElementById("qr").src =
-          "https://api.qrserver.com/v1/create-qr-code/?size=260x260&bgcolor=0e0e10&color=ffffff&data=" +
-          encodeURIComponent(payload);
+        drawQr(document.getElementById("qr"), payload);
+      }
+
+      // Same look as before (light modules on the page's dark background), a
+      // 4-module quiet zone, scaled to roughly 260px.
+      function drawQr(canvas, text) {
+        var qr = qrcodegen.QrCode.encodeText(text, qrcodegen.QrCode.Ecc.MEDIUM);
+        var border = 4;
+        var scale = Math.max(2, Math.floor(260 / (qr.size + 2 * border)));
+        var px = (qr.size + 2 * border) * scale;
+        canvas.width = px;
+        canvas.height = px;
+        var ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#0e0e10";
+        ctx.fillRect(0, 0, px, px);
+        ctx.fillStyle = "#ffffff";
+        for (var y = 0; y < qr.size; y++) {
+          for (var x = 0; x < qr.size; x++) {
+            if (qr.getModule(x, y)) {
+              ctx.fillRect((x + border) * scale, (y + border) * scale, scale, scale);
+            }
+          }
+        }
       }
     </script>
   </body>
