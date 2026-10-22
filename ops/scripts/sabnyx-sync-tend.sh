@@ -70,7 +70,13 @@ fi
 
 # 9>&- : don't let tend (or anything it spawns) inherit the lock fd.
 cd "$SABNYX_CODE_DIR" && uv run sabnyx tend --yes 9>&-
-cd "$SABNYX_DATA_DIR" && git add -A -- . ':(exclude).sync-tend.lock'
+# ':(exclude)*.tmp' -- fm.write's atomic-write temp files (.<name>.<pid>.tmp)
+# are siblings of the file they're replacing, so a crash between os.open and
+# os.replace (e.g. SIGKILL) can leave one on disk. Default pathspec magic's
+# `*` matches across `/`, so this excludes them at any depth, not just the
+# vault root -- verified with a probe (nested vault/intake/.x.md.123.tmp was
+# NOT staged).
+cd "$SABNYX_DATA_DIR" && git add -A -- . ':(exclude).sync-tend.lock' ':(exclude)*.tmp'
 
 # tend.completed is ledgered every run (opsctl's liveness signal) — a
 # ledger-only diff isn't "nothing changed", but committing it every 15 min
