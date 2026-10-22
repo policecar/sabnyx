@@ -150,6 +150,10 @@ Two safety nets live at this door (added recently):
   of crashing cryptically.
 - **Repair-retry** — if the AI's structured answer breaks a rule (e.g. a field
   too long), we hand the error back and ask once more before giving up.
+- **Two spend budgets** — a per-run call ceiling for one-shot work like the
+  heartbeat (`tend`), and a rolling-window cap shared by the always-on
+  Telegram/R1 daemons, since a process that polls forever has no single
+  "run" to bound.
 
 ### Finding things (the retrieval seam)
 

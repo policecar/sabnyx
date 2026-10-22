@@ -97,6 +97,10 @@ GET  /status          → vault pulse             → {intake, atlas, observatio
 Like `serve`, auth is a bearer-key allowlist and it refuses to run open (empty
 allowlist). Every request is logged as a `web`-sourced event (actor `sabnyx-r1`).
 
+`serve` and `serve-http` share a rolling-window LLM spend cap across both
+channels (`SABNYX_INGRESS_MAX_CALLS`/`_WINDOW_MINUTES`; see Cost & reliability
+guards below) — a tripped cap returns a plain reply / HTTP 429, never a crash.
+
 Every command that mutates the vault appends one event to `ops/events.jsonl`.
 
 ## The heartbeat (`sabnyx tend`)
@@ -169,11 +173,15 @@ Override any role's model with `SABNYX_MODEL_FAST` / `_STANDARD` / `_DEEP`.
 Every call is ledgered (`llm.requested` intent + `llm.completed` action) with
 provider, model, prompt hash, and token usage — the prompt text never is.
 
-**Cost & reliability guards.** Unattended runs (`tend`) are bounded by a
-per-run call ceiling (`SABNYX_MAX_LLM_CALLS`, default 50; `0` = unlimited) so a
-runaway queue or prompt can't spin the provider without limit — one-shot CLI
-calls and the long-lived `serve` daemon are uncapped. Transient provider
-failures (HTTP 429 / 5xx / 529) are retried with exponential backoff
+**Cost & reliability guards.** Two budgets, by shape of caller: unattended
+runs (`tend`) are bounded by a per-run call ceiling (`SABNYX_MAX_LLM_CALLS`,
+default 50; `0` = unlimited) so a runaway queue or prompt can't spin the
+provider without limit — one-shot CLI calls are uncapped. The long-lived
+`serve`/`serve-http` daemons instead get a rolling-window cap shared across
+both channels (`SABNYX_INGRESS_MAX_CALLS`/`_WINDOW_MINUTES`, default 60
+calls / 60 min; see the serve section above), since there is no single "run"
+to bound a process that polls forever. Transient provider failures (HTTP
+429 / 5xx / 529) are retried with exponential backoff
 (`SABNYX_LLM_MAX_RETRIES`, default 3) on both the Anthropic and
 OpenAI-compatible paths.
 
