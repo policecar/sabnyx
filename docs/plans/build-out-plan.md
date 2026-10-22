@@ -134,7 +134,7 @@ direction only: vault → halbor.
   the opt-in default keeps the YAGNI posture intact. 148 Python tests
   (4 new, model2vec stubbed); validated against the live model.
 - **Phase 5 — halbor v0 (the face)**: sibling repo
-  `/Users/USER/src/halbor`, branch `feat/projection-core` @ `7e4ff40` (off
+  `../halbor`, branch `feat/projection-core` @ `7e4ff40` (off
   its `main`). Projection core shipped: `halbor project` reads the vault as a
   *data contract* (markdown+frontmatter, no sabnyx code dep) and emits staged
   markdown + `llms.txt`. Two sensitivity gates — structural (atlas-only; the
