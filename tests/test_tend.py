@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1006,6 +1006,267 @@ class TestTendRetriageMemory:
         assert "already-triaged" not in result.output
         assert len(calls) == 1
         assert len(re.findall(r"- slug: (\S+)", calls[0]["user"])) == 5
+
+
+# ---------------------------------------------------------------------------
+# _item_age_days — pure function, ledger -> frontmatter -> mtime priority
+# ---------------------------------------------------------------------------
+
+
+class TestItemAgeDays:
+    def test_ledger_ts_wins_when_present(self, tmp_vault):
+        """Tier 1: the ledger's intake.created ts, even if frontmatter's own
+        `created` field disagrees."""
+        from sabnyx.commands import tend as tend_mod
+
+        p = _make_intake(tmp_vault["INTAKE"], "note-a", _good_meta("note"))
+        now = datetime(2026, 1, 20, tzinfo=UTC)
+        subject = str(p.relative_to(tmp_vault["DATA_ROOT"]))
+        created_ts = {subject: now - timedelta(days=12, hours=12)}
+
+        age = tend_mod._item_age_days(p, created_ts, now=now)
+        assert age == pytest.approx(12.5, abs=1e-6)
+
+    def test_frontmatter_created_used_when_no_ledger_entry(self, tmp_vault):
+        """Tier 2a: frontmatter `created`, when there's no ledger memory for
+        this subject (e.g. a file predating intake.created ledgering)."""
+        from sabnyx.commands import tend as tend_mod
+
+        now = datetime(2026, 1, 20, tzinfo=UTC)
+        meta = _good_meta("note")
+        meta["created"] = (now - timedelta(days=4)).isoformat()
+        p = _make_intake(tmp_vault["INTAKE"], "note-b", meta)
+
+        age = tend_mod._item_age_days(p, created_ts={}, now=now)
+        assert age == pytest.approx(4.0, abs=1e-6)
+
+    def test_frontmatter_source_date_used_when_created_absent(self, tmp_vault, monkeypatch):
+        """Tier 2b: `source_date` fallback when `created` itself is absent
+        from the loaded frontmatter dict.
+
+        `IntakeFrontmatter.created` is schema-required, so a real file can
+        never reach fm.load() with `created` missing — this exercises the
+        _item_age_days fallback logic directly by stubbing fm.load's return,
+        rather than asserting an unreachable on-disk state.
+        """
+        from sabnyx.commands import tend as tend_mod
+
+        p = _make_intake(tmp_vault["INTAKE"], "note-c", _good_meta("note"))
+        now = datetime(2026, 1, 20, tzinfo=UTC)
+        fake_meta = {"source_date": (now - timedelta(days=9)).date()}
+        monkeypatch.setattr(tend_mod.fm, "load", lambda path: (fake_meta, "", "intake"))
+
+        age = tend_mod._item_age_days(p, created_ts={}, now=now)
+        assert age == pytest.approx(9.0, abs=1e-6)
+
+    def test_mtime_fallback_when_frontmatter_invalid(self, tmp_vault):
+        """Tier 3: file mtime, last resort for invalid/malformed frontmatter.
+        Invalid frontmatter must never feed its (untrusted) content into the
+        age calculation — only the filesystem-level mtime."""
+        import os
+
+        from sabnyx.commands import tend as tend_mod
+
+        p = tmp_vault["INTAKE"] / "broken.md"
+        p.write_text("---\ntype: note\ntags: [unclosed\n---\nbody\n", encoding="utf-8")
+        now = datetime.now(UTC)
+        mtime = (now - timedelta(days=6)).timestamp()
+        os.utime(p, (mtime, mtime))
+
+        age = tend_mod._item_age_days(p, created_ts={}, now=now)
+        assert age == pytest.approx(6.0, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# tend pass 2 — age-based triage fallback (--max-age-days)
+# ---------------------------------------------------------------------------
+
+
+class TestTendAgeTriageFallback:
+    """Below --threshold, pass 2 must still triage any deferred item whose
+    age (via _item_age_days) is >= --max-age-days, sending only that aged
+    subset — never the whole deferred queue just because one item is old."""
+
+    def _backdate(self, tmp_vault, paths: list[Path], *, days: int) -> None:
+        ts = datetime.now(UTC) - timedelta(days=days)
+        for p in paths:
+            ledger.append_event(
+                kind="intake.created",
+                actor="sabnyx-cli",
+                subject=str(p.relative_to(tmp_vault["DATA_ROOT"])),
+                payload={"type": "note", "description": "x", "slug": p.stem},
+                ts=ts,
+            )
+
+    def test_fresh_items_below_threshold_no_age_trigger(self, tmp_vault, monkeypatch):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        for i in range(3):
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note"))
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        def fail_if_called(**kwargs):
+            pytest.fail("LLM triage must not fire: below threshold, nothing is aged")
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", fail_if_called)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "over age limit" not in result.output
+        assert "below threshold (3 < 5)" in result.output
+        assert not [e for e in ledger.replay() if e.kind == "triage.decided"]
+
+    def test_backdated_items_triaged_below_threshold_by_default_max_age(
+        self, tmp_vault, monkeypatch
+    ):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        paths = [
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note")) for i in range(3)
+        ]
+        self._backdate(tmp_vault, paths, days=10)
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        calls: list = []
+
+        def recording(**kwargs):
+            calls.append(kwargs)
+            return _keep_all_from_call(**kwargs)
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", recording)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "3 item(s) over age limit → triaging below threshold" in result.output
+        assert len(calls) == 1
+        assert len(re.findall(r"- slug: (\S+)", calls[0]["user"])) == 3
+
+        decided = [e for e in ledger.replay() if e.kind == "triage.decided"]
+        assert len(decided) == 3
+        completed = [e for e in ledger.replay() if e.kind == "tend.completed"][-1]
+        assert completed.payload["triage_trigger"] == "age"
+
+    def test_max_age_days_zero_disables_age_fallback(self, tmp_vault, monkeypatch):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        paths = [
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note")) for i in range(3)
+        ]
+        self._backdate(tmp_vault, paths, days=10)
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        def fail_if_called(**kwargs):
+            pytest.fail("--max-age-days 0 must disable the age fallback entirely")
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", fail_if_called)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            [
+                "--threshold",
+                "5",
+                "--max-age-days",
+                "0",
+                "--yes",
+                "--no-reweave",
+                "--no-health",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "over age limit" not in result.output
+        assert not [e for e in ledger.replay() if e.kind == "triage.decided"]
+
+    def test_mixed_ages_sends_only_the_aged_subset(self, tmp_vault, monkeypatch):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        old_paths = [
+            _make_intake(tmp_vault["INTAKE"], f"old-{i}", _good_meta("note")) for i in range(2)
+        ]
+        for i in range(2):
+            _make_intake(tmp_vault["INTAKE"], f"fresh-{i}", _good_meta("note"))
+        self._backdate(tmp_vault, old_paths, days=10)
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        calls: list = []
+
+        def recording(**kwargs):
+            calls.append(kwargs)
+            return _keep_all_from_call(**kwargs)
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", recording)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "2 item(s) over age limit → triaging below threshold" in result.output
+        assert len(calls) == 1
+        sent_slugs = sorted(re.findall(r"- slug: (\S+)", calls[0]["user"]))
+        assert sent_slugs == ["old-0", "old-1"]
+
+        decided_subjects = {e.subject for e in ledger.replay() if e.kind == "triage.decided"}
+        assert decided_subjects == {str(p.relative_to(tmp_vault["DATA_ROOT"])) for p in old_paths}
+
+    def test_already_triaged_old_item_still_skipped(self, tmp_vault, monkeypatch):
+        """The retriage-memory invariant holds regardless of age: an old item
+        with a matching content_hash in its last triage.decided event is
+        still filtered out before the age check ever sees it."""
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        paths = [
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note")) for i in range(3)
+        ]
+        self._backdate(tmp_vault, paths, days=10)
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", _keep_all_from_call)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "3 item(s) over age limit" in result.output
+        decided = [e for e in ledger.replay() if e.kind == "triage.decided"]
+        assert len(decided) == 3
+
+        def fail_if_called(**kwargs):
+            pytest.fail(
+                "an old item unchanged since its last triage.decided decision must "
+                "still be filtered before the age check"
+            )
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", fail_if_called)
+
+        result2 = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result2.exit_code == 0, result2.output
+        assert "skipped 3 already-triaged item(s)" in result2.output
+        assert "over age limit" not in result2.output
 
 
 class TestTendRobustness:
