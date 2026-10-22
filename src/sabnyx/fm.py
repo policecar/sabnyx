@@ -5,6 +5,9 @@ Uses python-frontmatter for the YAML split, pydantic for the schema.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -84,10 +87,48 @@ def load(path: Path) -> tuple[dict, str, FileKind]:
 
 
 def write(path: Path, meta: dict, body: str) -> None:
-    """Write a file with frontmatter. Does NOT validate — use after load/build."""
+    """Write a file with frontmatter. Does NOT validate — use after load/build.
+
+    Atomic: renders the full content, writes it to a sibling temp file, then
+    `os.replace`s it over `path`. A reader (or a crash) never observes a
+    half-written file — either the old content or the new content, never a
+    truncated mix. If `path` already exists, its permission bits are copied
+    onto the temp file first, so a rewrite doesn't silently reset them to the
+    process umask (e.g. a 0600 file in the vault must stay 0600).
+
+    `path` must be a real file path, not a symlink the caller wants followed:
+    os.replace() swaps the directory entry at `path` itself, so writing
+    through a symlink would replace the link, not its target. No current
+    caller writes through a symlink into the vault (grepped call sites).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     # Assign .metadata rather than passing **meta: a frontmatter key named
     # "content" or "handler" would collide with Post's own parameters.
     post = frontmatter.Post(body)
     post.metadata = dict(meta)
-    path.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
+    content = frontmatter.dumps(post) + "\n"
+
+    old_mode = path.stat().st_mode if path.exists() else None
+
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+            encoding="utf-8",
+        ) as tmp:
+            tmp_name = tmp.name
+            tmp.write(content)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        if old_mode is not None:
+            os.chmod(tmp_name, old_mode)
+        os.replace(tmp_name, path)
+    except BaseException:
+        if tmp_name is not None:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp_name)
+        raise
