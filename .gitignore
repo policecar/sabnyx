@@ -42,6 +42,9 @@ vault/_review/scratch/
 # Third-party text kept locally, never committed (Joi's, no license)
 /docs/spec/jibot.md
 
+# Session learnings: local only, full of instance specifics
+/.solutions/
+
 # Secrets
 .env
 .env.local
