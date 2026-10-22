@@ -13,6 +13,10 @@ tests pin the same invariants from the Python gate so a regression in
 from __future__ import annotations
 
 import math
+import os
+import stat
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -117,3 +121,106 @@ def test_append_large_event_is_one_line_and_replays(tmp_vault) -> None:
     events = list(ledger.replay())
     assert len(events) == 1
     assert events[0].payload["blob"] == big
+
+
+# -- append durability: fsync is the commit point ----------------------------------
+
+
+def test_append_event_fsyncs_for_durability(tmp_vault, monkeypatch) -> None:
+    # The append is the ledger's commit point, so it must be fsync'd to disk
+    # before returning — not left in the OS page cache where a power loss
+    # could drop it. Spying on os.fsync alone would be vacuous: it proves
+    # *some* fsync happened, not that it hit the ledger file. Spy on
+    # ledger._fsync (the helper that owns the real fsync/F_FULLFSYNC call)
+    # and assert the fd it's handed resolves — by inode — to the ledger
+    # file itself.
+    #
+    # The warm-up append puts the file in the "already exists" state so
+    # this test isolates the per-append file fsync from the first-append
+    # directory fsync, which has its own test below.
+    ledger.append_event(kind="warm.up", actor="t", subject="s", payload={})
+    ledger_ino = ledger.EVENTS_JSONL.stat().st_ino
+
+    synced_inos: list[int] = []
+    real_fsync = ledger._fsync
+
+    def _spy(fd: int) -> None:
+        synced_inos.append(os.fstat(fd).st_ino)
+        real_fsync(fd)
+
+    monkeypatch.setattr(ledger, "_fsync", _spy)
+    event = ledger.append_event(kind="test.event", actor="t", subject="s", payload={"n": 1})
+
+    assert synced_inos, "append_event must fsync the ledger file before returning"
+    assert ledger_ino in synced_inos, (
+        "fsync must hit the ledger file's own fd by inode, not an unrelated fd"
+    )
+    assert list(ledger.replay())[-1].content_hash == event.content_hash
+
+
+def test_append_event_fsyncs_parent_dir_on_first_creation(tmp_vault, monkeypatch) -> None:
+    # The very first append creates ops/events.jsonl, which also adds a new
+    # directory entry to its parent. The file's own fsync only covers its
+    # *contents* — without a directory fsync too, a crash right after
+    # creation could leave that directory entry unrecoverable even though
+    # the file's bytes are safely on disk. Prove it by inode: the fsync spy
+    # must see a fd that stats back to the parent directory itself.
+    assert not ledger.EVENTS_JSONL.exists(), "fixture must start with no ledger file"
+    parent_ino = ledger.EVENTS_JSONL.parent.stat().st_ino
+
+    dir_fsync_inos: list[int] = []
+    real_fsync = ledger._fsync
+
+    def _spy(fd: int) -> None:
+        st = os.fstat(fd)
+        if stat.S_ISDIR(st.st_mode):
+            dir_fsync_inos.append(st.st_ino)
+        real_fsync(fd)
+
+    monkeypatch.setattr(ledger, "_fsync", _spy)
+    ledger.append_event(kind="first.event", actor="t", subject="s", payload={})
+
+    assert dir_fsync_inos, "first append must fsync a directory fd"
+    assert parent_ino in dir_fsync_inos, (
+        "the directory fsync must hit the ledger's own parent directory"
+    )
+
+
+def test_append_event_raises_on_short_write(tmp_vault, monkeypatch) -> None:
+    # An unbuffered write(2) can legally report fewer bytes written than
+    # requested without raising. If append_event trusted that count blindly,
+    # a short write would get fsync'd and certified durable as a truncated,
+    # corrupt line. Simulate the kernel under-reporting by wrapping the
+    # ledger file's write() to lie about the byte count (data still lands on
+    # disk in full — only the reported count is short, same as a real short
+    # write would look from append_event's point of view).
+    real_open = Path.open
+
+    class _ShortWriteFile:
+        def __init__(self, real_file: Any) -> None:
+            self._real_file = real_file
+
+        def write(self, data: bytes) -> int:
+            self._real_file.write(data)
+            return len(data) - 1
+
+        def fileno(self) -> int:
+            return self._real_file.fileno()
+
+        def __enter__(self) -> _ShortWriteFile:
+            return self
+
+        def __exit__(self, *exc_info: object) -> bool:
+            self._real_file.__exit__(*exc_info)
+            return False
+
+    def _fake_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        real_file = real_open(self, *args, **kwargs)
+        if self == ledger.EVENTS_JSONL:
+            return _ShortWriteFile(real_file)
+        return real_file
+
+    monkeypatch.setattr(Path, "open", _fake_open)
+
+    with pytest.raises(ledger.LedgerError, match="short write"):
+        ledger.append_event(kind="test.event", actor="t", subject="s", payload={"n": 1})

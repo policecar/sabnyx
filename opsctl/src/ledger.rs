@@ -196,6 +196,8 @@ pub fn append(events_path: &Path, event: &Event) -> io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
+    let created = !events_path.exists();
+
     // Serialize with field order preserved (serde struct field order)
     let mut line = serde_json::to_string(event).map_err(io::Error::other)?;
     line.push('\n');
@@ -206,6 +208,29 @@ pub fn append(events_path: &Path, event: &Event) -> io::Result<()> {
         .open(events_path)?;
 
     f.write_all(line.as_bytes())?;
+    // sync_all() fsyncs data + metadata so the append is durable to disk
+    // before we return: durable against a process crash always (write_all
+    // already reached the OS page cache); durable against power loss on
+    // Linux, and on macOS too since std's sync_all issues F_FULLFSYNC on
+    // Apple targets where the filesystem honours it (APFS does). The
+    // Python appender mirrors this with its own _fsync() helper (plain
+    // os.fsync() plus an explicit F_FULLFSYNC call, since CPython's
+    // os.fsync() does not request F_FULLFSYNC on its own) — the two
+    // appenders share one durability guarantee instead of silently
+    // diverging on macOS.
+    f.sync_all()?;
+
+    if created {
+        if let Some(parent) = events_path.parent() {
+            // The file's own sync_all() makes its *contents* durable, but
+            // the directory entry that makes a brand-new file discoverable
+            // after a crash lives in the parent directory's metadata, not
+            // the file's — fsync it too, the first time only (fsync on a
+            // directory fd is valid on Linux and macOS). Later appends to
+            // an already-existing file don't touch the directory.
+            File::open(parent)?.sync_all()?;
+        }
+    }
     Ok(())
 }
 
