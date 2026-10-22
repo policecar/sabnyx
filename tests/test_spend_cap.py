@@ -5,7 +5,12 @@ clock and backdated `llm.requested` events. Cases 7-8 are the service- and
 serve-level integration: a tripped cap must leave no artifact behind and
 must surface as a clear reply / 429, never a crash. Case 9 is the
 write-amplification guard: a refusal storm (the exact load the cap exists
-for) must not itself grow the ledger unboundedly.
+for) must not itself grow the ledger unboundedly. Case 10 is the
+Retry-After math when more than `max_calls` calls land in one window. Case
+11 is the window boundary. Case 12 is the gate running before the URL
+fetch, the wire.received write, and vault_lock in both daemons.
+(config.py failing fast on an invalid ingress cap setting is covered in
+test_config.py.)
 """
 
 from __future__ import annotations
@@ -267,23 +272,6 @@ def test_fresh_trip_after_window_passes_ledgers_a_new_event(tmp_vault, monkeypat
     assert events[1].ts == later
 
 
-def test_route_429_appends_no_wire_errored(tmp_vault, monkeypatch):
-    """route()'s 429 branch must not write its own wire.errored — see
-    test_serve_http_route_returns_429_with_retry_after_when_capped above,
-    duplicated here under this section's name for the coordinator's ask."""
-    from sabnyx import spend as spend_mod
-    from sabnyx.commands import serve_http
-
-    monkeypatch.setattr(spend_mod, "check_ingress_cap", _always_capped)
-
-    status, _, _ = serve_http.route(
-        "POST", "/ingest", b'{"text":"remember buy milk"}', "Bearer k1", {"k1"}
-    )
-
-    assert status == 429
-    assert "wire.errored" not in [e.kind for e in ledger.replay()]
-
-
 def test_calls_aging_out_lift_cap_even_after_a_trip_in_this_window(tmp_vault, monkeypatch):
     """A trip must not lock the channel out for a whole window: once enough
     calls age out that the count is back under max_calls, the next request is
@@ -308,3 +296,122 @@ def test_calls_aging_out_lift_cap_even_after_a_trip_in_this_window(tmp_vault, mo
     # oldest in-window call is the 40-min-ago one (now 50 min old) -> 10 min left
     assert ei.value.retry_after_seconds == 10 * 60
     assert len([e for e in ledger.replay() if e.kind == "ingress.capped"]) == 1
+
+
+# -- 10: Retry-After when more than max_calls calls land in one window --------
+
+
+def test_retry_after_accounts_for_excess_calls_above_the_cap(tmp_vault, monkeypatch):
+    """5 calls at 55/50/45/40/35 minutes old, cap 3: the cap lifts only once
+    `len(in_window) - max_calls + 1` = 3 calls have aged out, i.e. 60 minutes
+    after the 3rd-oldest (45-min-old) call -> 15 minutes from now, not the 5
+    minutes a single-oldest-call calculation would give."""
+    _set_cap(monkeypatch, max_calls=3, window_minutes=60)
+    for minutes_ago in (55, 50, 45, 40, 35):
+        _requested("sabnyx-telegram", minutes_ago=minutes_ago)
+
+    with pytest.raises(SpendCapExceeded) as ei:
+        check_ingress_cap("sabnyx-r1", now=NOW)
+
+    assert ei.value.retry_after_seconds == 900  # 15 min, not 5 min (300s)
+    event = next(e for e in ledger.replay() if e.kind == "ingress.capped")
+    assert event.payload["retry_after_seconds"] == 900
+    assert event.payload["calls_in_window"] == 5
+
+
+# -- 11: window boundary -------------------------------------------------------
+
+
+def test_call_exactly_window_old_is_not_counted(tmp_vault, monkeypatch):
+    """A call exactly `window` old has fully aged out; counting it would be
+    an off-by-one that keeps a lifted cap tripped one tick too long."""
+    _set_cap(monkeypatch, max_calls=3, window_minutes=60)
+    _requested("sabnyx-telegram", minutes_ago=60)  # exactly `window` old
+    _requested("sabnyx-telegram", minutes_ago=40)
+    _requested("sabnyx-telegram", minutes_ago=10)
+
+    check_ingress_cap("sabnyx-r1", now=NOW)  # only 2 of 3 are in-window -> no raise
+    assert "ingress.capped" not in [e.kind for e in ledger.replay()]
+
+
+# -- 13: the gate runs before the fetch / wire.received / vault_lock ----------
+
+
+def test_serve_telegram_capped_url_ingest_never_fetches(tmp_vault, monkeypatch):
+    """A capped Telegram sender must not drive an outbound fetch: the gate
+    runs before telegram_fetch, not after."""
+    from sabnyx.commands import serve
+
+    monkeypatch.setattr(serve.spend, "check_ingress_cap", _always_capped)
+
+    called = False
+
+    def _fetch(url):
+        nonlocal called
+        called = True
+        return "fetched body"
+
+    monkeypatch.setattr(serve, "telegram_fetch", _fetch)
+
+    from sabnyx.adapters.telegram import envelope_for_update
+
+    env = envelope_for_update(
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 1,
+                "date": 0,
+                "chat": {"id": 1},
+                "from": {"id": 42},
+                "text": "https://example.com/x",
+            },
+        }
+    )
+    reply = serve.handle(env)
+
+    assert not called
+    assert "spend cap" in reply
+    assert "wire.received" not in [e.kind for e in ledger.replay()]
+
+
+def test_serve_http_capped_request_skips_wire_received_and_vault_lock(tmp_vault, monkeypatch):
+    """A capped R1 request must not append wire.received or ever call
+    vault_lock: the gate runs before both."""
+    from sabnyx import spend as spend_mod
+    from sabnyx.commands import serve_http
+
+    monkeypatch.setattr(spend_mod, "check_ingress_cap", _always_capped)
+
+    def _boom(timeout: float = 120.0):
+        raise AssertionError("vault_lock must not be entered for a capped request")
+
+    monkeypatch.setattr(serve_http, "vault_lock", _boom)
+
+    status, _, _ = serve_http.route(
+        "POST", "/ingest", b'{"text":"remember buy milk"}', "Bearer k1", {"k1"}
+    )
+
+    assert status == 429
+    assert "wire.received" not in [e.kind for e in ledger.replay()]
+
+
+def test_fifty_refusals_at_the_route_level_ledger_only_once(tmp_vault, monkeypatch):
+    """At the serve_http.route() level — the real check_ingress_cap, not
+    mocked — 50 refused /ingest requests grow the ledger by exactly one
+    event (ingress.capped), with no wire.received per request either."""
+    from sabnyx.commands import serve_http
+
+    _set_cap(monkeypatch, max_calls=3, window_minutes=60)
+    for minutes_ago in (50, 40, 10):
+        _requested("sabnyx-telegram", minutes_ago=minutes_ago)
+    monkeypatch.setattr(ledger, "now", lambda: NOW)
+
+    count_before = ledger.count()
+    for _ in range(50):
+        status, _, _ = serve_http.route(
+            "POST", "/ingest", b'{"text":"remember buy milk"}', "Bearer k1", {"k1"}
+        )
+        assert status == 429
+
+    assert ledger.count() == count_before + 1
+    assert "wire.received" not in [e.kind for e in ledger.replay()]

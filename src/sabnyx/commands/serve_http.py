@@ -34,7 +34,7 @@ from pathlib import Path
 import click
 from rich.console import Console
 
-from .. import ledger, services
+from .. import ledger, services, spend
 from ..adapters import r1
 from ..spend import SpendCapExceeded
 from ..util import VaultLocked, vault_lock
@@ -136,6 +136,18 @@ def route(
             return 400, {"error": "missing 'text'"}, {}
 
         action = "ask" if path == "/ask" else "ingest"
+
+        # First thing for ask/ingest, before the wire.received write below
+        # and before _ask/_ingest ever reach vault_lock: a capped caller
+        # must get an instant 429, never wait up to 120s on the writer lock
+        # (which it would also hold for a replay) just to be refused.
+        # services.py's own gate (DEC-01 in spend.py) still runs for a
+        # request that passes this one — a second, intentional replay.
+        try:
+            spend.check_ingress_cap(ACTOR)
+        except SpendCapExceeded as e:
+            return 429, {"error": str(e)}, {"Retry-After": str(e.retry_after_seconds)}
+
         env = r1.envelope_for_request(text)
         ledger.append_event(
             plane="event",
