@@ -172,12 +172,19 @@ def _item_age_days(
             meta = None
         if meta is not None:
             raw = meta.get("created") or meta.get("source_date")
-            if isinstance(raw, str):
-                ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            elif isinstance(raw, datetime):
-                ts = raw
-            elif isinstance(raw, date):
-                ts = datetime(raw.year, raw.month, raw.day, tzinfo=UTC)
+            try:
+                if isinstance(raw, str):
+                    ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                elif isinstance(raw, datetime):
+                    ts = raw
+                elif isinstance(raw, date):
+                    ts = datetime(raw.year, raw.month, raw.day, tzinfo=UTC)
+            except ValueError:
+                # A non-ISO `created` string must fall to mtime, not abort
+                # the whole tend run — frontmatter is schema-validated on
+                # write, but a hand-edited or legacy file isn't guaranteed to
+                # still parse.
+                ts = None
 
     if ts is None:
         ts = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
