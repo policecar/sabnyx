@@ -1090,6 +1090,24 @@ class TestItemAgeDays:
         age = tend_mod._item_age_days(p, created_ts={}, now=now)
         assert age == pytest.approx(6.0, abs=0.01)
 
+    def test_mtime_fallback_when_created_is_unparseable_string(self, tmp_vault, monkeypatch):
+        """A non-ISO `created` string must fall to mtime, not raise and abort
+        the whole tend run (PR #25 review)."""
+        import os
+
+        from sabnyx.commands import tend as tend_mod
+
+        p = _make_intake(tmp_vault["INTAKE"], "note-d", _good_meta("note"))
+        fake_meta = {"created": "not-a-date"}
+        monkeypatch.setattr(tend_mod.fm, "load", lambda path: (fake_meta, "", "intake"))
+
+        now = datetime.now(UTC)
+        mtime = (now - timedelta(days=3)).timestamp()
+        os.utime(p, (mtime, mtime))
+
+        age = tend_mod._item_age_days(p, created_ts={}, now=now)
+        assert age == pytest.approx(3.0, abs=0.01)
+
 
 # ---------------------------------------------------------------------------
 # tend pass 2 — age-based triage fallback (--max-age-days)
