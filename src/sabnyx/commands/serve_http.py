@@ -36,6 +36,7 @@ from rich.console import Console
 
 from .. import ledger, services
 from ..adapters import r1
+from ..util import VaultLocked, vault_lock
 
 ACTOR = "sabnyx-r1"
 _MAX_BODY = 64 * 1024  # generous for a voice transcript; reject anything larger
@@ -60,14 +61,15 @@ def _ingest(text: str) -> dict:
     """Capture a transcript into intake/ via the shared services write path."""
     title = services.title_from(text)
     try:
-        head, written = services.ingest_text(
-            text=text,
-            title=title,
-            source_kind="manual",
-            source_url=None,
-            console=_quiet(),
-            actor=ACTOR,
-        )
+        with vault_lock():
+            head, written = services.ingest_text(
+                text=text,
+                title=title,
+                source_kind="manual",
+                source_url=None,
+                console=_quiet(),
+                actor=ACTOR,
+            )
     except FileExistsError:
         return {"text": f"already captured something titled '{title}'.", "filed": []}
     return {"text": head, "filed": written}
@@ -75,14 +77,21 @@ def _ingest(text: str) -> dict:
 
 def _ask(text: str) -> dict:
     """Answer a question grounded in the vault; auto-capture durable insight."""
-    result = services.answer_question(question=text, actor=ACTOR)
+    result = services.answer_question(question=text, actor=ACTOR)  # writes nothing
     out: dict = {"text": result.answer.answer, "cited": result.answer.cited}
     if result.answer.capture is not None:
-        rel = services.capture_answer(
-            result.answer.capture, question=text, console=_quiet(), actor=ACTOR
-        )
-        if rel:
-            out["captured"] = rel
+        try:
+            with vault_lock():
+                rel = services.capture_answer(
+                    result.answer.capture, question=text, console=_quiet(), actor=ACTOR
+                )
+        except VaultLocked:
+            # The answer stands on its own — a busy lock just means the
+            # (non-critical) auto-capture didn't happen this time.
+            out["capture_error"] = "vault busy — not captured"
+        else:
+            if rel:
+                out["captured"] = rel
     return out
 
 
@@ -135,6 +144,17 @@ def route(
         )
         try:
             return 200, (_ask(text) if action == "ask" else _ingest(text))
+        except VaultLocked as e:
+            # VaultLocked's message is already end-user-safe (no path/exception
+            # detail) — unlike the generic 500 below, it's returned verbatim.
+            ledger.append_event(
+                plane="event",
+                kind="wire.errored",
+                actor=ACTOR,
+                subject=f"r1:{env.source_id}",
+                payload={"error": str(e), "busy": True},
+            )
+            return 503, {"error": str(e)}
         except Exception as e:  # noqa: BLE001 — report failure as JSON, never crash the loop
             # Detail goes to the ledger only; the client gets a generic message
             # so exception text (paths, provider errors) never leaks over the wire.
