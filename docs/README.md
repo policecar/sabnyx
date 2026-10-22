@@ -15,7 +15,7 @@ Everything else lives here:
 | `decisions/` | ADRs 0001–0007 — one decision each, immutable |
 | `plans/` | historical roadmap/build-out plus scoped future experiments and implementation plans |
 | `reviews/` | dated reviews: architecture, simplification, codebase-vs-spec, and post-hardening jibot divergence |
-| `recon/` | notes from scouting external systems (Amplifier, obs-dailynotes, Rabbit R1) |
+| `recon/` | notes from scouting external systems (Amplifier, obs-dailynotes, Rabbit R1, jilog + ai-agent-learnings) |
 
 Related but elsewhere: `../.solutions/` holds incident writeups (deployment,
 security, testing) filed where debugging tools expect them; `../creations/`
@@ -28,4 +28,7 @@ Current scoped plans:
 - `plans/atlas-update-intents-experiment.md` — interactive source-backed
   amendment experiment, with unattended application explicitly deferred;
 - `plans/feedback-telemetry.md` — precise outcome events before analytics or
-  notifications.
+  notifications;
+- `plans/jilog-borrowings.md` — deterministic signal hygiene borrowed from
+  Joi's jilog: stable observation identity, reopen policy, golden report
+  tests, heartbeat anomaly detectors, an operator-request channel.
