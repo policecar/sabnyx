@@ -107,9 +107,24 @@ Stage 3 public surface will have a separate voice document.
   - Ignoring contradictions instead of logging them
   - Putting dates in filenames (slugs are atemporal)
   - Meeting notes or session scratch in atlas/
+  - Instance specifics in tracked files (see 9)
 
 If you catch yourself doing any of these, STOP, write an observation
 with `category: friction`, and hand the task back to the operator.
+
+## 9. The code repo is public
+
+This repository is published. Nothing that identifies the operator's
+instance goes into a tracked file — not in docs, code, tests, fixtures,
+or commit messages:
+
+  - domain / hostnames: write `sabnyx.example.net`, never the real one
+  - no server IPs, usernames, home paths, OS or package versions
+  - no Telegram IDs, bot tokens, bearer keys, chat or session URLs
+
+Instance specifics live only in gitignored places: `.env`, the vault,
+`.solutions/`, `docs/spec/jibot.md`. Never un-ignore them to "fix" a
+reference; point at the gitignored file instead.
 
 ## 8. Session startup checklist
 
