@@ -108,20 +108,21 @@ def check_ingress_cap(actor: str, *, now: datetime | None = None) -> None:
         elif event.kind == "ingress.capped":
             last_capped_ts = event.ts  # replay is chronological: last one wins
 
-    if last_capped_ts is not None and last_capped_ts >= cutoff:
-        # Already tripped and ledgered within this window — refuse again
-        # without a second write (see docstring above).
-        retry_after_seconds = max(1, math.ceil((last_capped_ts + window - now).total_seconds()))
-        raise SpendCapExceeded(
-            _message(max_calls, window_minutes, retry_after_seconds),
-            retry_after_seconds=retry_after_seconds,
-        )
-
     if len(in_window) < max_calls:
         return
 
     oldest = min(in_window)
     retry_after_seconds = max(1, math.ceil((oldest + window - now).total_seconds()))
+
+    if last_capped_ts is not None and last_capped_ts >= cutoff:
+        # The cap is still exceeded and this window's trip is already
+        # ledgered — refuse again without a second write (see docstring).
+        # Order matters: this check sits AFTER the count check, so a trip
+        # never locks the channel out once enough calls have aged out.
+        raise SpendCapExceeded(
+            _message(max_calls, window_minutes, retry_after_seconds),
+            retry_after_seconds=retry_after_seconds,
+        )
 
     ledger.append_event(
         plane="event",
