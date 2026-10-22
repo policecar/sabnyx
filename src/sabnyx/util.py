@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
+import os
 import re
+import time
 import unicodedata
+from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -127,3 +132,71 @@ def set_marker_block(body: str, name: str, lines: list[str], heading: str | None
     sep = "" if body.endswith("\n\n") else ("\n" if body.endswith("\n") else "\n\n")
     section = f"## {heading}\n\n{block}\n" if heading else f"{block}\n"
     return body + sep + section
+
+
+# -- vault lock (shared with the bash heartbeat) -----------------------------
+#
+# @decision DEC-03: vault_lock lives in util.py, not services.py
+# @rationale: it's a generic concurrency primitive (open/flock/poll/release)
+# with no knowledge of intake/atlas/the ledger — same category as slugify or
+# the marker-block helpers above, not a vault write path itself. Call sites
+# (commands/serve.py, commands/serve_http.py) already import from both
+# services and util; keeping it here avoids a new services->util->services
+# import shape and keeps services.py focused on vault mutation logic.
+
+
+class VaultLocked(RuntimeError):
+    """vault_lock could not acquire the lock before its timeout elapsed."""
+
+
+_LOCK_FILENAME = ".sync-tend.lock"
+_POLL_INTERVAL_S = 0.2
+
+
+@contextlib.contextmanager
+def vault_lock(timeout: float = 120.0) -> Iterator[None]:
+    """Exclusive lock on ``DATA_ROOT/.sync-tend.lock``.
+
+    This is the SAME path and the same flock(2) semantics (LOCK_EX|LOCK_NB)
+    that `ops/scripts/sabnyx-sync-tend.sh` holds via `flock -n 9` for the
+    duration of a `tend` run — acquiring it here is what keeps a long-running
+    writer (serve/serve-http) from interleaving vault writes with the
+    heartbeat. The fd is opened O_RDWR|O_CREAT, never O_TRUNC — this must
+    never touch the lock file's content, only its existence.
+
+    Polls every `_POLL_INTERVAL_S` seconds until the lock is free or
+    `timeout` elapses, then raises `VaultLocked` with a message safe to show
+    an end user directly (Telegram reply / HTTP body) — it names what's
+    probably holding the lock but leaks no path or exception detail.
+
+    Do not nest calls in the same process: flock on one fd is not
+    re-entrant across a second `os.open` + `flock` from the same process on
+    the same file, so a nested `with vault_lock():` would just block on
+    itself until it times out. Every call site in this codebase wraps one
+    `services.*` call directly and is flat by construction — keep it that
+    way rather than adding a reentrancy counter nothing here needs yet.
+    """
+    from .paths import DATA_ROOT
+
+    lock_path = DATA_ROOT / _LOCK_FILENAME
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    acquired = False
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise VaultLocked(
+                        "vault is busy (another writer — probably the heartbeat "
+                        "tend run — holds the lock); try again shortly"
+                    ) from None
+                time.sleep(_POLL_INTERVAL_S)
+        yield
+    finally:
+        if acquired:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
