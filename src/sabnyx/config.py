@@ -60,35 +60,53 @@ def trusted_sources() -> set[str]:
     return {s.strip() for s in raw.split(",") if s.strip()}
 
 
+def _int_env(name: str, default: int, *, minimum: int | None = None) -> int:
+    """Read an integer env var, failing loud on a bad value instead of
+    silently falling back to `default`.
+
+    `retriever_name`/`trusted_sources` above fall back silently because a
+    bad value there just picks a different (still-working) retriever or
+    trust set. An ingress spend cap is the opposite: a typo'd or
+    out-of-range value here would silently remove the only bound on
+    externally-triggered LLM spend, which must fail at startup, not drift
+    unnoticed into "disabled." Absent/empty still returns `default` —
+    only a *present and invalid* value raises.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        suffix = f" >= {minimum}" if minimum is not None else ""
+        raise ValueError(f"{name}={raw!r}: must be an integer{suffix}") from None
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{name}={raw!r}: must be an integer >= {minimum}")
+    return value
+
+
 def ingress_max_calls() -> int:
     """Rolling-window LLM call ceiling for ingress actors (spend.py).
 
     Reads ``SABNYX_INGRESS_MAX_CALLS`` from the environment; defaults to 60.
-    A value ``<= 0`` disables the cap. Pure and side-effect-free beyond
-    reading ``os.environ``.
+    A value ``<= 0`` disables the cap (by design — this is the documented
+    escape hatch, unlike an invalid value). Raises ``ValueError`` if the
+    variable is set to something that isn't an integer.
     """
-    raw = os.environ.get("SABNYX_INGRESS_MAX_CALLS", "").strip()
-    if not raw:
-        return _DEFAULT_INGRESS_MAX_CALLS
-    try:
-        return int(raw)
-    except ValueError:
-        return _DEFAULT_INGRESS_MAX_CALLS
+    return _int_env("SABNYX_INGRESS_MAX_CALLS", _DEFAULT_INGRESS_MAX_CALLS)
 
 
 def ingress_window_minutes() -> int:
     """Rolling-window size (minutes) for the ingress LLM spend cap.
 
     Reads ``SABNYX_INGRESS_WINDOW_MINUTES`` from the environment; defaults
-    to 60. Pure and side-effect-free beyond reading ``os.environ``.
+    to 60. Raises ``ValueError`` if set to something that isn't an integer
+    ``>= 1`` — unlike ``ingress_max_calls``, 0 has no "disabled" meaning
+    here: a zero-minute window makes `cutoff == now`, so no past call is
+    ever "in window" and the cap silently never trips. Disabling the cap on
+    purpose is `SABNYX_INGRESS_MAX_CALLS<=0`; a zero window is just a typo.
     """
-    raw = os.environ.get("SABNYX_INGRESS_WINDOW_MINUTES", "").strip()
-    if not raw:
-        return _DEFAULT_INGRESS_WINDOW_MINUTES
-    try:
-        return int(raw)
-    except ValueError:
-        return _DEFAULT_INGRESS_WINDOW_MINUTES
+    return _int_env("SABNYX_INGRESS_WINDOW_MINUTES", _DEFAULT_INGRESS_WINDOW_MINUTES, minimum=1)
 
 
 def load_local_env(root: Path | None = None) -> list[str]:

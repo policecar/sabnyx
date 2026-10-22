@@ -367,6 +367,7 @@ def test_serve_telegram_capped_url_ingest_never_fetches(tmp_vault, monkeypatch):
             },
         }
     )
+    assert env is not None  # narrows NormalizedEnvelope | None for the ty checker
     reply = serve.handle(env)
 
     assert not called
