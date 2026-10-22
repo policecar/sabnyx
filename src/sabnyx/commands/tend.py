@@ -3,7 +3,8 @@
 One schedulable command that drives the self-maintaining vault cycle:
 
   1. Auto-promote pass  — deterministic gate, no LLM.
-  2. LLM triage pass   — batched model call for deferred items (≥ threshold).
+  2. LLM triage pass   — batched model call for deferred items (≥ threshold,
+                          or any item past --max-age-days, whichever fires).
   3. Reweave pass       — consume pending reweave.proposed intents.
   4. Health pass        — print a concise audit summary.
 
@@ -22,6 +23,7 @@ promote_file or the reweave apply path.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import click
@@ -48,22 +50,35 @@ def _intake_files() -> list[Path]:
     return sorted(p for p in INTAKE.glob("*.md") if p.is_file())
 
 
-def _last_triage_hashes() -> dict[str, str | None]:
-    """Last triage.decided content_hash per subject, keyed by vault-relative path.
+def _ledger_memory() -> tuple[dict[str, str | None], dict[str, datetime]]:
+    """One replay() pass collecting both triage-decision memory and intake
+    creation timestamps, keyed by vault-relative subject path.
 
-    None means the last recorded decision for that subject predates the
-    content_hash field (a legacy event) — treated as "no memory" so it never
-    suppresses re-triage.
+    Two unrelated features (retriage memory, age-based triage fallback) both
+    need a full ledger scan; doing it once here avoids replaying events.jsonl
+    twice per tend run.
+
+    ``triage_hashes[subject] is None`` means the last recorded decision for
+    that subject predates the content_hash field (a legacy event) — treated
+    as "no memory" so it never suppresses re-triage. ``created_ts`` keeps the
+    first (earliest) intake.created ts per subject.
     """
-    hashes: dict[str, str | None] = {}
+    triage_hashes: dict[str, str | None] = {}
+    created_ts: dict[str, datetime] = {}
     for e in ledger.replay():
         if e.kind == "triage.decided":
-            hashes[e.subject] = e.payload.get("content_hash")
-    return hashes
+            triage_hashes[e.subject] = e.payload.get("content_hash")
+        elif e.kind == "intake.created":
+            created_ts.setdefault(e.subject, e.ts)
+    return triage_hashes, created_ts
 
 
 def _filter_already_triaged(
-    deferred: list[Path], *, retriage: bool, console: Console
+    deferred: list[Path],
+    *,
+    retriage: bool,
+    remembered: dict[str, str | None],
+    console: Console,
 ) -> list[Path]:
     """Drop intake files unchanged since their last triage.decided decision.
 
@@ -73,7 +88,6 @@ def _filter_already_triaged(
     """
     if retriage:
         return deferred
-    remembered = _last_triage_hashes()
     kept: list[Path] = []
     skipped = 0
     for p in deferred:
@@ -89,6 +103,52 @@ def _filter_already_triaged(
             f"decision; --retriage to force)"
         )
     return kept
+
+
+def _item_age_days(
+    path: Path,
+    created_ts: dict[str, datetime],
+    now: datetime | None = None,
+) -> float:
+    """Age in days of a deferred intake file, for the age-based triage fallback.
+
+    A pure, clock-injectable function so tests don't need to sleep or
+    monkeypatch time globally. Priority, falling through on a miss:
+
+      1. the ledger's ``intake.created`` ts for this subject (``created_ts``,
+         built by ``_ledger_memory``) — authoritative and independent of any
+         later frontmatter edit;
+      2. frontmatter ``created`` / ``source_date``, when the file's own
+         frontmatter loads and validates;
+      3. file mtime, the last resort for a file whose frontmatter is missing
+         or invalid — scheduling only, never treated as knowledge data.
+    """
+    if now is None:
+        now = datetime.now(UTC)
+
+    subject = str(path.relative_to(DATA_ROOT))
+    ts = created_ts.get(subject)
+
+    if ts is None:
+        try:
+            meta, _body, _kind = fm.load(path)
+        except Exception:
+            meta = None
+        if meta is not None:
+            raw = meta.get("created") or meta.get("source_date")
+            if isinstance(raw, str):
+                ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            elif isinstance(raw, datetime):
+                ts = raw
+            elif isinstance(raw, date):
+                ts = datetime(raw.year, raw.month, raw.day, tzinfo=UTC)
+
+    if ts is None:
+        ts = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    elif ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+
+    return (now - ts).total_seconds() / 86400.0
 
 
 def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
@@ -164,6 +224,16 @@ def _health_summary(console: Console) -> None:
     is_flag=True,
     help="re-send already-triaged intakes to the LLM even if unchanged",
 )
+@click.option(
+    "--max-age-days",
+    default=7,
+    show_default=True,
+    type=int,
+    help=(
+        "Max days a deferred item waits before LLM triage fires even below "
+        "--threshold; 0 disables the age fallback."
+    ),
+)
 def tend_cmd(
     dry_run: bool,
     yes: bool,
@@ -171,6 +241,7 @@ def tend_cmd(
     no_reweave: bool,
     no_health: bool,
     retriage: bool,
+    max_age_days: int,
 ) -> None:
     """Heartbeat: auto-promote → LLM triage → reweave → health.
 
@@ -257,13 +328,32 @@ def tend_cmd(
             f"\n[bold]pass 2: LLM triage[/bold]  ({len(deferred)} deferred, threshold {threshold})"
         )
 
-        to_triage = _filter_already_triaged(deferred, retriage=retriage, console=console)
+        triage_hashes, created_ts = _ledger_memory()
+        to_triage = _filter_already_triaged(
+            deferred, retriage=retriage, remembered=triage_hashes, console=console
+        )
 
+        # Size threshold fires first; below it, fall back to age: send only
+        # the subset of to_triage old enough to have been waiting past
+        # --max-age-days, so a slow-filling queue can't starve forever.
+        # --max-age-days 0 disables the age fallback entirely.
+        triage_trigger: str | None = None
+        triage_now: list[Path] = []
         if to_triage and len(to_triage) >= threshold:
-            console.print(f"  calling LLM triage for {len(to_triage)} item(s)…")
+            triage_trigger = "threshold"
+            triage_now = to_triage
+        elif to_triage and max_age_days > 0:
+            aged = [p for p in to_triage if _item_age_days(p, created_ts) >= max_age_days]
+            if aged:
+                triage_trigger = "age"
+                triage_now = aged
+                console.print(f"  {len(aged)} item(s) over age limit → triaging below threshold")
+
+        if triage_now:
+            console.print(f"  calling LLM triage for {len(triage_now)} item(s)…")
             if not dry_run:
-                batch = triage_batch(to_triage, role="standard")
-                slug_to_path = {p.stem.lower(): p for p in to_triage}
+                batch = triage_batch(triage_now, role="standard")
+                slug_to_path = {p.stem.lower(): p for p in triage_now}
 
                 for item in batch.items:
                     path = slug_to_path.get(item.slug.lower())
@@ -405,6 +495,7 @@ def tend_cmd(
                 "llm_triaged": llm_triaged,
                 "reweaved": reweaved,
                 "dry_run": dry_run,
+                "triage_trigger": triage_trigger,
             },
         )
 
