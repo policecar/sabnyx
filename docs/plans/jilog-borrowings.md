@@ -37,8 +37,8 @@ Success means, mechanically:
 
 ## Borrowings
 
-Ordered by value ÷ effort. B1–B3 are the core; B4–B5 are independent
-follow-ons; B6 lists what was looked at and consciously deferred.
+Ordered by value ÷ effort; grouped into three dew cycles under Sequencing
+below. B6 lists what was looked at and consciously deferred.
 
 ### B1 — Stable observation identity
 
@@ -184,39 +184,78 @@ decision), `test_requests.py`.
   `telegram.py`, `r1.py`) already share `services.py`; a formal Protocol is
   Rule-of-Three material when a fourth channel appears.
 
-## Sequencing
+## Sequencing — three dew cycles
 
-```
-B1 ──► B2 ──► (companion plan: observations resolve/archive gets --kind)
-B3  independent; do first if the fixture vault needs work anyway
-B4  independent; after feedback-telemetry if that lands first
-B5  independent; last — most new surface
-```
+B1–B5 are not one feature, and two of them fight when built together, so
+they run as three cycles. Within a cycle, independent nodes may fan out
+(dew's DAG); across cycles, one PR each.
 
-One PR per borrowing. B1 and B2 may share a PR if B2 stays small.
+### Cycle 1 — `observation-lifecycle` (B1 + B2 + the companion plan)
+
+One coherent change to the observation data model and its readers:
+
+1. `observations-and-age-triage.md`: `observations()` reader,
+   `transition_observation`, `sabnyx observations list|resolve|archive`,
+   deterministic gap closure, age trigger.
+2. **B1** `obs_id` + `observations.index()`; rewire `scan` / `entities`
+   dedupe onto it.
+3. **B2** `resolution_kind`, `recurrence_policy`, reopen-with-`supersedes`,
+   `observation.suppressed` events; `--kind` on resolve/archive.
+
+B2 cannot exist without (1)'s transition helper, and B1's index *is* the
+reader (1) calls for — splitting them would mean building the same module
+twice. (1) and B1 are parallelizable; B2 follows both. Workflow: **full**
+(six stages) — this is a schema change plus a new command group and it
+deserves Demonstrate — or a chunky fast cycle if the operator prefers.
+
+### Cycle 2 — `report-hygiene` (B4 then B3)
+
+B4 changes what `tend` and `health` print; B3 freezes that output in golden
+files. Build B3 first and the goldens regenerate the moment B4 lands. So:
+B4 detectors → make outputs deterministic → B3 goldens, in that order, one
+cycle. Workflow: **fast**. Independent of Cycle 1 except that `health`
+output includes observation counts — run after Cycle 1 merges, or accept one
+golden regen.
+
+### Cycle 3 — `review-requests` (B5), if at all
+
+Most new surface (new frontmatter type, new command, a lint containment
+rule, `tend` writing into `_review/`) and the least-proven value. Kept
+alone so it can be dropped without touching the others. Workflow: **fast**.
+Prerequisite: `feedback-telemetry.md`'s `noninteractive` outcome, so the
+request is emitted exactly where that outcome is recorded.
+
+B6 builds nothing.
+
+If one cycle is non-negotiable: B1 + B2 + B4, leaving B3 and B5 out. B3 is
+the one item that must never share a cycle with anything that changes
+report output.
 
 ## Handoff — running this with dew
 
-Fast workflow (Plan → Build → Verify) per borrowing; the full six-stage
-workflow is overkill for any single item here. Discover/Design are already
-done by this document and the recon note.
+Discover is done by this document and the recon note; each cycle starts from
+the section above plus the files it names.
 
-From a worktree (never on `main`):
+One worktree per cycle, never on `main`:
 
 ```sh
-git worktree add -b feat/obs-identity .worktrees/obs-identity main
-cd .worktrees/obs-identity
+git worktree add -b feat/observation-lifecycle .worktrees/observation-lifecycle main
+cd .worktrees/observation-lifecycle
 ```
 
-then `/dew new` → name `obs-identity` (or `golden-reports`, `tend-detectors`,
-`review-requests`), kind *major new feature in an existing codebase*,
-**fast** workflow. In the Plan stage, hand the stage skill this file's section
-(B1, B3, …) plus `docs/plans/observations-and-age-triage.md` as the
-requirements source; the Plan artifact should be a refinement of the section,
-not a rediscovery. Build is gated by the success criteria at the top of this
-file translated into tests first. Verify runs `uv run pytest`,
-`uv run sabnyx lint`, and — for B3 — a second `pytest` run proving
-`UPDATE_GOLDEN=1` fails.
+then `/dew new` → name = the cycle name above, kind *major new feature in an
+existing codebase*, workflow as stated per cycle. In Plan (fast) or
+Discover/Design (full), hand the stage skill this file's cycle section and
+the plan(s) it names as the requirements source; the stage artifact should
+refine them, not rediscover them. Build is gated by the success criteria at
+the top of this file translated into tests first. Verify runs
+`uv run pytest`, `uv run sabnyx lint`, and — for Cycle 2 — a second `pytest`
+run proving `UPDATE_GOLDEN=1` fails.
+
+`.dew/` is gitignored in this repo: dew artifacts are ephemeral working state,
+and the durable record is this plan, the PR, and the ADR if a cycle produces a
+decision worth one. Use `/dew pause` before leaving a worktree; the context
+snapshot lives in the worktree, not in git.
 
 Agent brief (if delegating instead of running dew interactively): objective =
 one borrowing by id; files = those listed under the item; output = PR-ready

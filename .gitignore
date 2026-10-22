@@ -56,3 +56,6 @@ secrets/
 /vault/
 /ops/events.jsonl
 /ops/knowledge-log.md
+
+# dew workflow state — ephemeral per-worktree working files, never tracked
+.dew/
