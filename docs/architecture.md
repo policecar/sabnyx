@@ -114,6 +114,12 @@ duration of a `tend` run, so a heartbeat tick and a live capture/promote can
 never interleave writes. `tend` itself takes no lock — its parent (the
 heartbeat script) already holds it for the whole run, so a second
 acquisition in the same process would just deadlock against itself.
+`ledger.append_event`, by contrast, deliberately takes no lock at all: each
+event is one `O_APPEND` line onto `ops/events.jsonl`, which is append-atomic
+at the OS level (no reader ever sees a partial line), and the file carries a
+`union` git merge driver precisely so concurrent appends from laptop and
+server interleave instead of conflicting — serializing it behind the vault
+lock would defeat that design.
 
 ### The clock (`opsctl`, in Rust)
 
