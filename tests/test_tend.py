@@ -64,6 +64,20 @@ def _make_atlas(dir_: Path, slug: str, body: str = "# durable\n\noriginal conten
     return p
 
 
+def _backdate_intake_created(tmp_vault, paths: list[Path], *, days: int) -> None:
+    """Ledger an intake.created event `days` ago for each path, so age-triage
+    tests don't need to sleep or monkeypatch time globally."""
+    ts = datetime.now(UTC) - timedelta(days=days)
+    for p in paths:
+        ledger.append_event(
+            kind="intake.created",
+            actor="sabnyx-cli",
+            subject=str(p.relative_to(tmp_vault["DATA_ROOT"])),
+            payload={"type": "note", "description": "x", "slug": p.stem},
+            ts=ts,
+        )
+
+
 # ---------------------------------------------------------------------------
 # config.trusted_sources
 # ---------------------------------------------------------------------------
@@ -1089,17 +1103,6 @@ class TestTendAgeTriageFallback:
     filter: once triggered, the entire (already-filtered) to_triage queue is
     sent in one batched call."""
 
-    def _backdate(self, tmp_vault, paths: list[Path], *, days: int) -> None:
-        ts = datetime.now(UTC) - timedelta(days=days)
-        for p in paths:
-            ledger.append_event(
-                kind="intake.created",
-                actor="sabnyx-cli",
-                subject=str(p.relative_to(tmp_vault["DATA_ROOT"])),
-                payload={"type": "note", "description": "x", "slug": p.stem},
-                ts=ts,
-            )
-
     def test_fresh_items_below_threshold_no_age_trigger(self, tmp_vault, monkeypatch):
         from sabnyx import services as svc_mod
         from sabnyx.commands import tend as tend_mod
@@ -1133,7 +1136,7 @@ class TestTendAgeTriageFallback:
         paths = [
             _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note")) for i in range(3)
         ]
-        self._backdate(tmp_vault, paths, days=10)
+        _backdate_intake_created(tmp_vault, paths, days=10)
         monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
 
         calls: list = []
@@ -1168,7 +1171,7 @@ class TestTendAgeTriageFallback:
         paths = [
             _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note")) for i in range(3)
         ]
-        self._backdate(tmp_vault, paths, days=10)
+        _backdate_intake_created(tmp_vault, paths, days=10)
         monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
 
         def fail_if_called(**kwargs):
@@ -1204,7 +1207,7 @@ class TestTendAgeTriageFallback:
         fresh_paths = [
             _make_intake(tmp_vault["INTAKE"], f"fresh-{i}", _good_meta("note")) for i in range(2)
         ]
-        self._backdate(tmp_vault, old_paths, days=10)
+        _backdate_intake_created(tmp_vault, old_paths, days=10)
         monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
 
         calls: list = []
@@ -1247,7 +1250,7 @@ class TestTendAgeTriageFallback:
         paths = [
             _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note")) for i in range(3)
         ]
-        self._backdate(tmp_vault, paths, days=10)
+        _backdate_intake_created(tmp_vault, paths, days=10)
         monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
         monkeypatch.setattr(svc_mod.llm, "parse_structured", _keep_all_from_call)
 
@@ -1278,6 +1281,151 @@ class TestTendAgeTriageFallback:
         assert result2.exit_code == 0, result2.output
         assert "skipped 3 already-triaged item(s)" in result2.output
         assert "oldest deferred item" not in result2.output
+
+
+# ---------------------------------------------------------------------------
+# PR #25 review: every LLM-triaged item must get a triage.decided record,
+# or an unanswered/skipped item re-fires the whole-queue LLM call on every
+# subsequent heartbeat once the age fallback has tripped once.
+# ---------------------------------------------------------------------------
+
+
+class TestTendUndecidedTriageMemory:
+    def test_omitted_slug_recorded_as_unanswered_and_not_resent(self, tmp_vault, monkeypatch):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        paths = [
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note")) for i in range(3)
+        ]
+        _backdate_intake_created(tmp_vault, paths, days=10)
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        # the LLM batch omits note-2 entirely
+        batch = TriageBatch(
+            items=[
+                TriageItem(slug="note-0", action="keep", atlas_type=None, reason="ok"),
+                TriageItem(slug="note-1", action="keep", atlas_type=None, reason="ok"),
+            ]
+        )
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "unanswered" in result.output
+
+        decided = {e.payload["slug"]: e for e in ledger.replay() if e.kind == "triage.decided"}
+        assert set(decided) == {"note-0", "note-1", "note-2"}
+        assert decided["note-2"].payload["decision"] == "unanswered"
+        assert decided["note-2"].payload["content_hash"].startswith("sha256:")
+        assert decided["note-2"].subject == str(paths[2].relative_to(tmp_vault["DATA_ROOT"]))
+
+        def fail_if_called(**kwargs):
+            pytest.fail("the age fallback must not re-fire for an unanswered item")
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", fail_if_called)
+
+        result2 = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result2.exit_code == 0, result2.output
+
+    def test_atlas_dup_promote_recorded_and_not_resent(self, tmp_vault, monkeypatch):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        _make_atlas(tmp_vault["ATLAS_CONCEPTS"], "note-0")
+        paths = [
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note")) for i in range(3)
+        ]
+        _backdate_intake_created(tmp_vault, paths, days=10)
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        batch = TriageBatch(
+            items=[
+                TriageItem(slug="note-0", action="promote", atlas_type="concept", reason="dup"),
+                TriageItem(slug="note-1", action="keep", atlas_type=None, reason="ok"),
+                TriageItem(slug="note-2", action="keep", atlas_type=None, reason="ok"),
+            ]
+        )
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        decided = {e.payload["slug"]: e for e in ledger.replay() if e.kind == "triage.decided"}
+        assert decided["note-0"].payload["decision"] == "skipped_atlas_dup"
+        assert (tmp_vault["INTAKE"] / "note-0.md").exists()  # kept in intake, not promoted
+
+        def fail_if_called(**kwargs):
+            pytest.fail("the age fallback must not re-fire for an already-recorded atlas-dup skip")
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", fail_if_called)
+
+        result2 = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result2.exit_code == 0, result2.output
+
+    def test_retriage_still_resends_unanswered_and_atlas_dup_items(self, tmp_vault, monkeypatch):
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        _make_atlas(tmp_vault["ATLAS_CONCEPTS"], "note-0")
+        paths = [
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note")) for i in range(3)
+        ]
+        _backdate_intake_created(tmp_vault, paths, days=10)
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        first_batch = TriageBatch(
+            items=[
+                TriageItem(slug="note-0", action="promote", atlas_type="concept", reason="dup"),
+                TriageItem(slug="note-1", action="keep", atlas_type=None, reason="ok"),
+                # note-2 omitted -> recorded "unanswered"
+            ]
+        )
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: first_batch)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+
+        calls: list = []
+
+        def recording(**kwargs):
+            calls.append(kwargs)
+            return _keep_all_from_call(**kwargs)
+
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", recording)
+
+        result2 = runner.invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health", "--retriage"],
+            catch_exceptions=False,
+        )
+        assert result2.exit_code == 0, result2.output
+        assert len(calls) == 1
+        sent_slugs = sorted(re.findall(r"- slug: (\S+)", calls[0]["user"]))
+        assert sent_slugs == ["note-0", "note-1", "note-2"]
 
 
 class TestTendRobustness:
