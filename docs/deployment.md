@@ -19,9 +19,9 @@ changed, else at most once a day) never pollutes code history.
 github.com/policecar/sabnyx            ← CODE (this repo)
 server:~/git/sabnyx-vault.git          ← DATA hub (bare repo, source of truth)
   ├─ server:~/sabnyx-vault             ← DATA working clone (serve + tend run here)
-  ├─ laptop:~/src/sabnyx-vault     ← DATA working clone (Obsidian + local CLI)
+  ├─ laptop:~/src/sabnyx-vault         ← DATA working clone (Obsidian + local CLI)
 server:~/sabnyx                        ← CODE clone (the running app)
-laptop:~/src/sabnyx                ← CODE clone (development)
+laptop:~/src/sabnyx                    ← CODE clone (development)
 ```
 
 - **DATA repo** (`sabnyx-vault`) contains only `vault/**` + `ops/events.jsonl` +

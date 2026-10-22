@@ -8,7 +8,7 @@ Assumes the two repos are siblings (skip the halbor blocks if you haven't
 cloned it):
 
 ```
-
+src/
   sabnyx/   ← you are here
   halbor/   ← the read-only face; reads sabnyx's vault on disk
 ```
