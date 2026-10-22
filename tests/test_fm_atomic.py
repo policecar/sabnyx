@@ -106,11 +106,17 @@ def test_write_result_survives_os_replace_is_atomic_rename(tmp_path):
     assert "new" in p.read_text()
 
 
-def test_write_new_file_mode_is_not_overly_permissive(tmp_path):
-    """For a brand-new file (no existing target to preserve mode from), the
-    temp file's default mode (via NamedTemporaryFile, 0600) is fine as a
-    floor — just confirm write doesn't end up world-writable."""
-    p = tmp_path / "brand_new.md"
-    fm.write(p, {"type": "concept", "description": "x" * 30}, "body\n")
-    mode = p.stat().st_mode & 0o777
-    assert not (mode & 0o002), f"new file must not be world-writable, got {oct(mode)}"
+def test_write_new_file_honors_process_umask(tmp_path):
+    """A brand-new file (no existing target to preserve mode from) must get
+    the SAME mode `path.write_text` would have given it: 0o666 & ~umask, via
+    the kernel's own umask application at file-creation time — not whatever
+    fixed mode tempfile.NamedTemporaryFile happens to default to (0o600),
+    which would silently tighten every new intake/atlas file on the server."""
+    prev_umask = os.umask(0o022)
+    try:
+        p = tmp_path / "brand_new.md"
+        fm.write(p, {"type": "concept", "description": "x" * 30}, "body\n")
+        mode = p.stat().st_mode & 0o777
+        assert mode == 0o666 & ~0o022, f"expected mode 0o644, got {oct(mode)}"
+    finally:
+        os.umask(prev_umask)
