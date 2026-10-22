@@ -32,6 +32,7 @@ from .. import ledger, services
 from ..adapters import telegram
 from ..paths import ensure_tree
 from ..schemas import NormalizedEnvelope
+from ..util import VaultLocked, vault_lock
 
 ACTOR = "sabnyx-telegram"
 _URL_RE = re.compile(r"^https?://\S+$")
@@ -102,16 +103,23 @@ def handle(env: NormalizedEnvelope) -> str:
     if action == "ask":
         if not arg:
             return "ask what? send a question, or '/ask <question>'."
-        result = services.answer_question(question=arg, actor=ACTOR)
+        result = services.answer_question(question=arg, actor=ACTOR)  # writes nothing
         reply = result.answer.answer
         if result.answer.cited:
             reply += "\n\ncited: " + ", ".join(f"[[{s}]]" for s in result.answer.cited)
         if result.answer.capture is not None:
-            rel = services.capture_answer(
-                result.answer.capture, question=arg, console=_quiet(), actor=ACTOR
-            )
-            if rel:
-                reply += f"\n\n(captured to {rel})"
+            try:
+                with vault_lock():
+                    rel = services.capture_answer(
+                        result.answer.capture, question=arg, console=_quiet(), actor=ACTOR
+                    )
+            except VaultLocked:
+                # The answer itself is still good — don't discard it over a
+                # busy lock, just note the (non-critical) capture was skipped.
+                reply += "\n\n(vault busy — not captured; try again shortly)"
+            else:
+                if rel:
+                    reply += f"\n\n(captured to {rel})"
         return reply
 
     # ingest_url / ingest_text
@@ -147,16 +155,19 @@ def telegram_fetch(url: str) -> str:
 
 def _ingest(text: str, *, title: str, source_kind: str, source_url: str | None) -> str:
     try:
-        head, written = services.ingest_text(
-            text=text,
-            title=title,
-            source_kind=source_kind,
-            source_url=source_url,
-            console=_quiet(),
-            actor=ACTOR,
-        )
+        with vault_lock():
+            head, written = services.ingest_text(
+                text=text,
+                title=title,
+                source_kind=source_kind,
+                source_url=source_url,
+                console=_quiet(),
+                actor=ACTOR,
+            )
     except FileExistsError:
         return f"already captured something titled '{title}'."
+    except VaultLocked as e:
+        return str(e)
     if written:
         return f"{head}\n\nfiled {len(written)}: " + ", ".join(written)
     return f"{head}\n\n(nothing new filed — already covered)"

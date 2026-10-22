@@ -100,6 +100,27 @@ One command runs the whole self-maintenance cycle, so the brain tidies *itself*:
 
 `sabnyx tend --dry-run` previews everything and writes nothing.
 
+### The write path (atomic + locked)
+
+Every vault file write (`fm.write`) goes to a sibling temp file, fsync's it,
+then `os.replace`s it over the target — a reader or a crash mid-write sees
+either the old content or the new content, never a truncated mix. On top of
+that, the two *long-running* writers — `serve` (Telegram) and `serve-http`
+(the R1 ingress) — take an exclusive `flock` on
+`$SABNYX_DATA_DIR/.sync-tend.lock` (`util.vault_lock`) around each mutating
+call, before touching the vault. That's the SAME lock file and the same
+`flock(2)` semantics `ops/scripts/sabnyx-sync-tend.sh` holds for the
+duration of a `tend` run, so a heartbeat tick and a live capture/promote can
+never interleave writes. `tend` itself takes no lock — its parent (the
+heartbeat script) already holds it for the whole run, so a second
+acquisition in the same process would just deadlock against itself.
+`ledger.append_event`, by contrast, deliberately takes no lock at all: each
+event is one `O_APPEND` line onto `ops/events.jsonl`, which is append-atomic
+at the OS level (no reader ever sees a partial line), and the file carries a
+`union` git merge driver precisely so concurrent appends from laptop and
+server interleave instead of conflicting — serializing it behind the vault
+lock would defeat that design.
+
 ### The clock (`opsctl`, in Rust)
 
 `opsctl` is a small, fast control plane that owns the logbook and **schedules**
