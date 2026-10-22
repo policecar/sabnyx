@@ -105,6 +105,14 @@ def write(path: Path, meta: dict, body: str) -> None:
     os.replace() swaps the directory entry at `path` itself, so writing
     through a symlink would replace the link, not its target. No current
     caller writes through a symlink into the vault (grepped call sites).
+
+    After `os.replace`, the parent directory is fsync'd too: fsyncing only
+    the temp file's content makes the bytes durable, but the rename (the
+    directory-entry change os.replace performs) needs its own fsync on the
+    containing directory to survive power loss, not just a process crash --
+    the crash-safety `os.replace` already buys on its own. Best-effort: a
+    failure here is swallowed, since the crash-safety property this function
+    exists for is already satisfied by the point `os.replace` returns.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     # Assign .metadata rather than passing **meta: a frontmatter key named
@@ -129,6 +137,12 @@ def write(path: Path, meta: dict, body: str) -> None:
         if old_mode is not None:
             os.chmod(tmp_name, old_mode)
         os.replace(tmp_name, path)
+        with contextlib.suppress(OSError):
+            dfd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp_name)
