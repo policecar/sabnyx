@@ -233,7 +233,9 @@ rule, `tend` writing into `_review/`) and the least-proven value. Kept
 alone so it can be dropped without touching the others. Workflow: **fast**.
 Prerequisites: `feedback-telemetry.md`'s `noninteractive` outcome, so the
 request is emitted exactly where that outcome is recorded; and Cycle 1's
-trust-gated suppression merged.
+identity-eligibility gate (`observations.IDENTITY_SOURCES`) merged, so an
+untrusted observation can neither suppress nor trigger anything a request
+acts on.
 
 Threat note — this cycle executes model output on operator say-so, so the
 design must guarantee that what the operator saw is exactly what runs:
@@ -288,10 +290,13 @@ Treat all model output and all remote-ingress content (`sabnyx-telegram`,
 - every new read of such content is a trust boundary: validate at the edge,
   resolve names through the slug index, never build a `Path` or a command
   from it, load YAML with `safe_load` only;
-- trust follows provenance (`SABNYX_TRUSTED_SOURCES`), the same gate that
-  already bounds auto-promote — a design that lets untrusted content block,
-  suppress, or trigger a trusted action needs that gate or an explicit
-  accepted-risk note;
+- trust follows provenance, classified by `source_agent` (set by the adapter,
+  never by model output). Each trusted action keeps its own allowlist —
+  auto-promote uses `SABNYX_TRUSTED_SOURCES`, observation identity uses
+  `observations.IDENTITY_SOURCES` (Cycle 1, D14) — because one list carrying
+  two trust decisions lets a widening for one silently widen the other. A
+  design that lets untrusted content block, suppress, or trigger a trusted
+  action needs such a gate or an explicit accepted-risk note;
 - the Design artifact carries a short *threat pass* section listing the new
   boundaries and what bounds each (a gate, a cap, a refusal by construction);
 - run `/security-review` on the branch before Verify closes; the review's
