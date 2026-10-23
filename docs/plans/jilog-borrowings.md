@@ -217,13 +217,36 @@ cycle. Workflow: **fast**. Independent of Cycle 1 except that `health`
 output includes observation counts — run after Cycle 1 merges, or accept one
 golden regen.
 
+Also in this cycle (assigned from Cycle 1's deferred list): `reconcile`
+asserts that every non-pending observation has an `observation.resolved`
+event for its `rel` — the file/ledger mismatch a failed restore can leave
+behind. ~15 read-only lines.
+
+Threat note: detectors read ledger payloads that carry model-derived fields
+(slugs, reasons). They are data for counting only — never interpolated into
+a path, a shell, or a prompt. Golden fixtures use made-up slugs (AGENTS §9).
+
 ### Cycle 3 — `review-requests` (B5), if at all
 
 Most new surface (new frontmatter type, new command, a lint containment
 rule, `tend` writing into `_review/`) and the least-proven value. Kept
 alone so it can be dropped without touching the others. Workflow: **fast**.
-Prerequisite: `feedback-telemetry.md`'s `noninteractive` outcome, so the
-request is emitted exactly where that outcome is recorded.
+Prerequisites: `feedback-telemetry.md`'s `noninteractive` outcome, so the
+request is emitted exactly where that outcome is recorded; and Cycle 1's
+trust-gated suppression merged.
+
+Threat note — this cycle executes model output on operator say-so, so the
+design must guarantee that what the operator saw is exactly what runs:
+
+- `options` is a closed enum of actions (`promote-as-<atlas type>` / `keep` /
+  `discard`), never free text the answer path interprets;
+- the request file stores `proposal_hash = content_hash(proposal)` at write
+  time; `requests answer` recomputes it and refuses on mismatch, so a
+  hand-edited or tampered request fails closed;
+- request files are written only by `tend` and mutated only by `answer`;
+  lint rejects `type: request` outside `_review/`;
+- the answer path applies the action through the same `services.py` function
+  the interactive prompt would have called — no second apply path.
 
 B6 builds nothing.
 
@@ -256,6 +279,27 @@ run proving `UPDATE_GOLDEN=1` fails.
 and the durable record is this plan, the PR, and the ADR if a cycle produces a
 decision worth one. Use `/dew pause` before leaving a worktree; the context
 snapshot lives in the worktree, not in git.
+
+### Threat pass — every cycle
+
+Treat all model output and all remote-ingress content (`sabnyx-telegram`,
+`sabnyx-r1`, `sabnyx-ingest-web`) as attacker-controlled. Concretely:
+
+- every new read of such content is a trust boundary: validate at the edge,
+  resolve names through the slug index, never build a `Path` or a command
+  from it, load YAML with `safe_load` only;
+- trust follows provenance (`SABNYX_TRUSTED_SOURCES`), the same gate that
+  already bounds auto-promote — a design that lets untrusted content block,
+  suppress, or trigger a trusted action needs that gate or an explicit
+  accepted-risk note;
+- the Design artifact carries a short *threat pass* section listing the new
+  boundaries and what bounds each (a gate, a cap, a refusal by construction);
+- run `/security-review` on the branch before Verify closes; the review's
+  findings are part of Verify's evidence, not optional reading.
+
+AGENTS §2 roles are convention at stage 0 and hooks are discipline, not
+security (ADR 0004); the provenance gate and OS sandboxing are the real
+boundaries, so designs must not lean on the roles table for safety.
 
 Agent brief (if delegating instead of running dew interactively): objective =
 one borrowing by id; files = those listed under the item; output = PR-ready
