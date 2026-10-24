@@ -80,29 +80,21 @@ _OBSERVATIONS_ENUM = re.compile(
     r"|\bglob\.i?glob\([^)]*OBSERVATIONS"
 )
 
-# EXACTLY the allowed sites, compared by equality, not subset: when 6a
-# (producers-deterministic) removes the scan and entities globs, this test
-# fails until the two temporary entries are deleted, so the allowlist
-# cannot stay wide after the globs are gone. Keyed by file and source line
+# EXACTLY the allowed sites, compared by equality, not subset: a new
+# enumeration fails it, and so does a removed one left on the list. The
+# temporary scan and entities entries went with their globs in 6a
+# (develop.producers-deterministic). Keyed by file and source line
 # (not line number) so unrelated edits don't churn it.
 _ALLOWED_OBSERVATIONS_ENUM = {
     (
         "observations.py",
         '(p for p in paths.OBSERVATIONS.glob("*.md") if p.is_file()), key=lambda p: p.name',
     ),
-    # TEMPORARY until develop.producers-deterministic (6a): the entities
-    # gap-filename dedupe and scan's pending-pair set, both replaced by the
-    # recurrence policy in write_observation.
-    (
-        "commands/entities.py",
-        'already = bool(list(paths.OBSERVATIONS.glob(f"*-gap-{target_slug}.md")))',
-    ),
-    ("commands/scan.py", 'for p in paths.OBSERVATIONS.glob("*.md"):'),
 }
 
 
 def test_only_the_reader_enumerates_observations():
-    """Only observations.py lists .observations/ (plus the temporary 6a entries).
+    """Only observations.py lists .observations/.
 
     KNOWN LIMIT -- this guard is not complete. It is a per-line regex, so it
     misses any enumeration that doesn't name OBSERVATIONS right before the

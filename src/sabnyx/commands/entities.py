@@ -134,6 +134,19 @@ def list_cmd(type_: str | None) -> None:
     console.print(f"[dim]{len(pages)} entity page(s)[/dim]")
 
 
+def _gap_action(out: writers.WriteOutcome) -> str:
+    """The table's action cell for one candidate's outcome."""
+    if out.kind == "written":
+        return "would file gap" if out.dry_run else "filed gap"
+    if out.kind == "reopened":
+        return "would reopen gap" if out.dry_run else "reopened gap"
+    if out.kind == "suppressed":
+        return f"[dim]suppressed ({out.resolution_kind})[/dim]"
+    if out.kind in ("already_pending", "exists"):
+        return "exists" if out.dry_run else "[dim]exists[/dim]"
+    return "[yellow]skipped[/yellow]"  # invalid: write_observation printed why
+
+
 @entities_cmd.command("gaps")
 @click.option(
     "--threshold",
@@ -173,39 +186,29 @@ def gaps_cmd(threshold: int, dry_run: bool) -> None:
     table.add_column("referrers", justify="right")
     table.add_column("action")
 
-    written = 0
-    seen_slugs: set[str] = set()
+    # One write_observation per candidate, through the recurrence policy: a
+    # gap filed by an earlier run is already_pending, a dismissed one is
+    # suppressed, a fixed-and-back one is reopened. Dry runs ask the same
+    # policy (D5), so the preview cannot drift from a real run.
+    outcomes: list[writers.WriteOutcome] = []
     for key, refs in candidates:
-        target_slug = slugify(key)
-        # Dedup: a prior run (any date) may have already filed this gap.
-        already = bool(list(paths.OBSERVATIONS.glob(f"*-gap-{target_slug}.md")))
-        if target_slug in seen_slugs:
-            already = True
-        seen_slugs.add(target_slug)
+        body = (
+            f"`[[{key}]]` is referenced by {len(refs)} vault file(s) but has no "
+            f"page. Create an entity page (`sabnyx promote --as person|org|project`) "
+            f"or fix the links.\n\n" + "\n".join(f"- {r}" for r in refs)
+        )
+        out = writers.write_observation(
+            ProposedObservation(category="gap", title=key, body=body, involves=refs),
+            producer="entities",
+            actor=ACTOR_ENTITIES,
+            target=key,  # _broken_link_counts keys are already slugs
+            dry_run=dry_run,
+            console=console,
+        )
+        outcomes.append(out)
+        table.add_row(key, str(len(refs)), _gap_action(out))
 
-        if dry_run:
-            action = "would file gap" if not already else "exists"
-        elif already:
-            action = "[dim]exists[/dim]"
-        else:
-            body = (
-                f"`[[{key}]]` is referenced by {len(refs)} vault file(s) but has no "
-                f"page. Create an entity page (`sabnyx promote --as person|org|project`) "
-                f"or fix the links.\n\n" + "\n".join(f"- {r}" for r in refs)
-            )
-            out = writers.write_observation(
-                ProposedObservation(category="gap", title=key, body=body, involves=refs),
-                producer="entities",
-                actor=ACTOR_ENTITIES,
-                console=console,
-            )
-            if out.kind in ("written", "reopened"):
-                written += 1
-                action = "filed gap"
-            else:
-                action = "[yellow]skipped[/yellow]"
-        table.add_row(key, str(len(refs)), action)
-
+    written = sum(1 for o in outcomes if o.kind in ("written", "reopened"))
     console.print(table)
     if not dry_run:
         console.print(f"[green]{written}[/green] new gap observation(s) filed")
@@ -217,9 +220,17 @@ def gaps_cmd(threshold: int, dry_run: bool) -> None:
             payload={
                 "threshold": threshold,
                 "candidates": len(candidates),
+                # A partition of candidates (Cycle 2 reads these):
+                #   filed + already_tracked + suppressed + invalid == candidates
                 "filed": written,
+                "already_tracked": sum(
+                    1 for o in outcomes if o.kind in ("already_pending", "exists")
+                ),
+                "suppressed": sum(1 for o in outcomes if o.kind == "suppressed"),
+                "invalid": sum(1 for o in outcomes if o.kind == "invalid"),
             },
         )
+        writers.ledger_suppressed(outcomes, actor=ACTOR_ENTITIES)
 
 
 @entities_cmd.command("resolve")

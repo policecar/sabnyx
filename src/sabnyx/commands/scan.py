@@ -8,8 +8,10 @@ share no vocabulary.
 
   1. assemble atlas excerpts
   2. one structured LLM call -> ContradictionScan
-  3. dedupe against pending contradiction observations (by file pair)
-  4. human approval gate, then write category: contradiction observations
+  3. dry pass through the recurrence policy (write_observation, dry_run),
+     with identical pairs deduped within the one LLM result
+  4. human approval gate, then the real pass; dismissed signals are counted
+     once per run (observation.suppressed)
 
 An observation is cheap to write and expensive to miss; the human still
 resolves each one. Writing nothing when the atlas is coherent is the
@@ -18,12 +20,14 @@ expected common case.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 from rich.console import Console
 
-from .. import context, fm, ledger, llm, paths, retrieval, writers
+from .. import context, ledger, llm, paths, retrieval, writers
 from ..paths import ensure_tree
-from ..schemas import ContradictionScan, ModelRole
+from ..schemas import ContradictionScan, ModelRole, ProposedObservation
 
 ACTOR = "sabnyx-scan"
 
@@ -44,22 +48,6 @@ Rules, in addition to the SPEC and ROUTING contract above:
 - Only reference slugs that appear in the material provided.
 - Report nothing if the atlas is coherent. Precision over recall: a missed
   contradiction costs less than a false one the operator must chase down."""
-
-
-def _pending_contradiction_pairs() -> set[frozenset[str]]:
-    """File-pair sets already covered by a pending contradiction observation,
-    so re-scans don't pile up duplicates."""
-    pairs: set[frozenset[str]] = set()
-    for p in paths.OBSERVATIONS.glob("*.md"):
-        try:
-            meta, _body, _ = fm.load(p)
-        except Exception:
-            continue
-        if meta.get("category") == "contradiction" and meta.get("status") == "pending":
-            involves = meta.get("involves") or []
-            if involves:
-                pairs.add(frozenset(involves))
-    return pairs
 
 
 @click.command("scan")
@@ -97,9 +85,42 @@ def scan_cmd(role: ModelRole, yes: bool, dry_run: bool) -> None:
         purpose="scan:atlas-contradictions",
     )
 
-    known = _pending_contradiction_pairs()
-    fresh = [f for f in result.findings if frozenset(f.involves) not in known]
-    dup = len(result.findings) - len(fresh)
+    findings = list(result.findings)
+    for f in findings:
+        f.category = "contradiction"  # enforce regardless of model, before any id is computed
+
+    # 1. Dry pass through the real policy (D5): what a real run would do with
+    #    each finding, with nothing written and nothing ledgered.
+    previews = [
+        writers.write_observation(f, producer="scan", actor=ACTOR, dry_run=True, console=console)
+        for f in findings
+    ]
+    # 2. Within-result dedupe (D5b). The model can name one pair twice, in two
+    #    forms (alpha.md / alpha); against an empty folder both would preview as
+    #    "written" while the real pass files one. Keyed by obs_id; prose (no
+    #    id) by the file it would write, which a second prose write would find
+    #    taken. So the count the operator confirms is the count the real pass
+    #    files.
+    plan: list[tuple[ProposedObservation, writers.WriteOutcome]] = []
+    seen_ids: set[str] = set()
+    planned_paths: set[Path] = set()
+    for f, pv in zip(findings, previews, strict=True):
+        if pv.obs_id is not None:
+            if pv.obs_id in seen_ids:
+                continue
+            seen_ids.add(pv.obs_id)
+        elif pv.path in planned_paths:
+            continue
+        if pv.kind in ("written", "reopened"):
+            planned_paths.add(pv.path)
+        plan.append((f, pv))
+    fresh = [f for f, pv in plan if pv.kind in ("written", "reopened")]
+    suppressed = [f for f, pv in plan if pv.kind == "suppressed"]
+    invalid = [f for f, pv in plan if pv.kind == "invalid"]
+    # The scan.completed counts PARTITION the findings (Cycle 2 reads them):
+    #   fresh + duplicates + suppressed + invalid == findings
+    # duplicates = in-result repeats + already_pending + exists (already tracked).
+    dup = len(findings) - len(fresh) - len(suppressed) - len(invalid)
 
     # Dry runs are ledger-write-free: the llm.* events for the call that
     # really happened are appended by parse_structured and correctly stay.
@@ -111,32 +132,43 @@ def scan_cmd(role: ModelRole, yes: bool, dry_run: bool) -> None:
             subject="vault/atlas/",
             payload={
                 "files_scanned": len(index),
-                "findings": len(result.findings),
+                "findings": len(findings),
                 "fresh": len(fresh),
                 "duplicates": dup,
+                "suppressed": len(suppressed),
+                "invalid": len(invalid),
             },
         )
 
     console.print(f"\n[bold]{result.summary}[/bold]")
     if dup:
         console.print(f"[dim]{dup} finding(s) already tracked — skipped[/dim]")
+    if suppressed:
+        console.print(f"[dim]{len(suppressed)} finding(s) dismissed earlier — not filed[/dim]")
     for f in fresh:
         console.print(f"  [yellow]contradiction[/yellow] {', '.join(f.involves)} — {f.title}")
     if not fresh:
         console.print("[green]no new contradictions[/green]")
-        return
-
     if dry_run:
-        console.print("[dim]dry run: nothing written[/dim]")
-        return
-    if not yes and not click.confirm("\nfile these observations?", default=True):
-        console.print("[dim]declined; nothing written[/dim]")
+        if fresh:
+            console.print("[dim]dry run: nothing written[/dim]")
         return
 
-    written = 0
-    for f in fresh:
-        f.category = "contradiction"  # enforce regardless of model
-        out = writers.write_observation(f, producer="scan", actor=ACTOR, console=console)
-        if out.kind in ("written", "reopened"):
-            written += 1
-    console.print(f"\n[green]filed {written} contradiction observation(s)[/green]")
+    confirmed = bool(fresh) and (
+        yes or click.confirm(f"\nfile these {len(fresh)} observation(s)?", default=True)
+    )
+    if fresh and not confirmed:
+        console.print("[dim]declined; nothing written[/dim]")
+
+    # 3. Real pass: the confirmed findings, plus the suppressed ones. A
+    #    suppressed write writes nothing, so running it needs no consent, and
+    #    it is what lets this run count the dismissed signal it met (D4).
+    outcomes = [
+        writers.write_observation(f, producer="scan", actor=ACTOR, console=console)
+        for f, pv in plan
+        if (confirmed and pv.kind in ("written", "reopened")) or pv.kind == "suppressed"
+    ]
+    writers.ledger_suppressed(outcomes, actor=ACTOR)
+    if confirmed:
+        written = sum(1 for o in outcomes if o.kind in ("written", "reopened"))
+        console.print(f"\n[green]filed {written} contradiction observation(s)[/green]")
