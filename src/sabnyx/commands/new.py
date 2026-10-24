@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import sys
-from datetime import date as date_cls
 
 import click
 from pydantic import ValidationError
+from rich.console import Console
 
 from .. import fm, ledger, writers
-from ..paths import DATA_ROOT, INTAKE, OBSERVATIONS, ensure_tree
-from ..schemas import IntakeFrontmatter, ObservationFrontmatter
+from ..paths import DATA_ROOT, INTAKE, ensure_tree
+from ..schemas import IntakeFrontmatter, ProposedObservation
 from ..util import slugify
 
 
@@ -57,42 +57,31 @@ def new_cmd(
         if not category:
             click.echo("--category is required for observation", err=True)
             sys.exit(2)
-        # observation filenames are date-prefixed
-        today = date_cls.today().isoformat()
-        path = OBSERVATIONS / f"{today}-{category}-{slug}.md"
-        meta = {
-            "type": "observation",
-            "category": category,
-            "observed": today,
-            "source_agent": "sabnyx-cli",
-            "status": "pending",
-            "involves": [],
-        }
-        body = f"# {title}\n\n{description}\n"
-    else:
-        # source_url-required-for-bookmark/paper is enforced by the
-        # IntakeFrontmatter schema (Gate 2), via the pre-write validation below.
-        path = INTAKE / f"{slug}.md"
-        meta: dict = {
-            "type": type_,
-            "description": description,
-            "source": "manual",
-            "tags": tag_list,
-            "status": "draft",
-            "created": ledger.now().isoformat(),
-            "source_agent": "sabnyx-cli",
-        }
-        if source_url:
-            meta["source_url"] = source_url
-        if source_date:
-            meta["source_date"] = source_date
-        body = f"# {title}\n\n"
+        _new_observation(title, description, category)
+        return
+
+    # source_url-required-for-bookmark/paper is enforced by the
+    # IntakeFrontmatter schema (Gate 2), via the pre-write validation below.
+    path = INTAKE / f"{slug}.md"
+    meta: dict = {
+        "type": type_,
+        "description": description,
+        "source": "manual",
+        "tags": tag_list,
+        "status": "draft",
+        "created": ledger.now().isoformat(),
+        "source_agent": "sabnyx-cli",
+    }
+    if source_url:
+        meta["source_url"] = source_url
+    if source_date:
+        meta["source_date"] = source_date
+    body = f"# {title}\n\n"
 
     # Validate the frontmatter BEFORE touching disk: an invalid dict (short
     # description, urlless bookmark, ...) must never write-then-delete.
-    model = ObservationFrontmatter if type_ == "observation" else IntakeFrontmatter
     try:
-        model.model_validate(meta)
+        IntakeFrontmatter.model_validate(meta)
     except ValidationError as e:
         errors = "; ".join(
             f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()
@@ -120,12 +109,12 @@ def new_cmd(
         sys.exit(3)
 
     ledger.append_event(
-        kind=f"{'observation' if type_ == 'observation' else 'intake'}.created",
+        kind="intake.created",
         actor="sabnyx-cli",
         subject=str(path.relative_to(DATA_ROOT)),
         payload={
             "type": meta["type"],
-            "description": description if type_ != "observation" else None,
+            "description": description,
             "category": category,
             "slug": slug,
         },
@@ -135,3 +124,33 @@ def new_cmd(
         "new", title, {"file": str(path.relative_to(DATA_ROOT)), "type": meta["type"]}
     )
     click.echo(str(path))
+
+
+def _new_observation(title: str, description: str, category: str) -> None:
+    """`new --type observation` through the shared writer (D2): one filename
+    and metadata path for every producer. Exit codes keep their meaning and
+    precedence (validation never depends on disk): invalid → 3, a name
+    already taken → 1. The writer's console is quiet; this command keeps its
+    own messages, and prints the path on success as before.
+    """
+    out = writers.write_observation(
+        ProposedObservation(category=category, title=title, body=description, involves=[]),
+        producer="manual",
+        actor="sabnyx-cli",
+        console=Console(quiet=True),
+    )
+    if out.kind == "invalid":
+        click.echo(f"invalid frontmatter, nothing written: {out.error}", err=True)
+        sys.exit(3)
+    if out.kind == "exists":
+        click.echo(f"refusing to overwrite: {out.path}", err=True)
+        sys.exit(1)
+    if out.kind in ("already_pending", "suppressed"):
+        # Unreachable until `new --involves/--target` (B6) gives these
+        # observations an identity; mapped so a later change can't fall
+        # through to a silent success.
+        click.echo(f"already tracked ({out.kind}): {out.path}", err=True)
+        sys.exit(1)
+    # Provenance log (Gate 3): manual creation is an ingestion too.
+    writers.append_knowledge_log("new", title, {"file": out.rel, "type": "observation"})
+    click.echo(str(out.path))

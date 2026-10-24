@@ -429,7 +429,8 @@ Rules, in addition to the SPEC and ROUTING contract above:
   already covered by an existing atlas entry, do NOT duplicate it — propose an
   observation (category: connection) naming the existing file instead.
 - If the source contradicts a claim suggested by an existing description,
-  propose an observation (category: contradiction) naming the file.
+  propose an observation (category: contradiction) with exactly two files in
+  `involves`: the existing file and the intake file you propose for the source.
 - If the source references an entity the vault clearly lacks, you may note a
   gap observation. Be conservative: observations are cheap but not free.
 - Bodies are plain markdown, no frontmatter, no leading H1 (the writer adds
@@ -540,8 +541,10 @@ def apply_ingest(
         )
         if rel:
             written.append(rel)
+    outcomes: list[writers.WriteOutcome] = []
     for ob in proposal.changeset.observations:
         out = writers.write_observation(ob, producer="ingest", actor=actor, console=console)
+        outcomes.append(out)
         if out.kind in ("written", "reopened"):
             written.append(out.rel)
 
@@ -561,6 +564,9 @@ def apply_ingest(
         subject=src_rel,
         payload={"written": written},
     )
+    # One run = one ingest apply (IDD §6): dismissed signals it met are
+    # counted once each, after ingest.applied.
+    writers.ledger_suppressed(outcomes, actor=actor)
     return written
 
 

@@ -162,7 +162,6 @@ def test_new_ledger_subject_uses_data_root(tmp_vault, monkeypatch) -> None:
     # Patch DATA_ROOT in new_mod (it imports DATA_ROOT at module level now)
     monkeypatch.setattr(new_mod, "DATA_ROOT", tmp_vault["DATA_ROOT"])
     monkeypatch.setattr(new_mod, "INTAKE", tmp_vault["INTAKE"])
-    monkeypatch.setattr(new_mod, "OBSERVATIONS", tmp_vault["OBSERVATIONS"])
     monkeypatch.setattr(new_mod, "ensure_tree", lambda: None)
 
     result = CliRunner().invoke(

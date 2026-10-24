@@ -14,7 +14,6 @@ def new_mod(tmp_vault, monkeypatch):
 
     monkeypatch.setattr(new_mod, "DATA_ROOT", tmp_vault["DATA_ROOT"])
     monkeypatch.setattr(new_mod, "INTAKE", tmp_vault["INTAKE"])
-    monkeypatch.setattr(new_mod, "OBSERVATIONS", tmp_vault["OBSERVATIONS"])
     monkeypatch.setattr(new_mod, "ensure_tree", lambda: None)
     return new_mod
 
