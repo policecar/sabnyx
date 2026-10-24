@@ -1,6 +1,10 @@
 # Plan: observation lifecycle and age-based triage
 
-Status: proposed
+Status: implemented — age-based triage in PR #25 (`tend --max-age-days`);
+the observation lifecycle (reader, transitions, command group, gap closure)
+in the Cycle 1 `observation-lifecycle` branch of `jilog-borrowings.md`, which
+also adds `resolution_kind`, identity and reopen. Deviations are listed under
+"As built" at the end; deferred items live in that plan's single list.
 Depends on: PR #15
 Scope: one small Python feature set; no new LLM disposition pass
 
@@ -120,7 +124,9 @@ During `entities gaps` and tend health:
 
 1. Build the shared alias-aware resolution index.
 2. For each pending gap with `target`, resolve the target.
-3. If it now resolves, archive with `resolved by existing page: <canonical>`.
+3. If it now resolves, *resolve* it (kind `done`) with `page now exists:
+   <canonical>` — not archive: a gap whose page later disappears must be
+   re-filed (`jilog-borrowings.md` §B2).
 4. Leave legacy or multi-target observations untouched.
 
 This transition is deterministic and safe to run unattended. It must emit the
@@ -177,8 +183,8 @@ it does not need a new event kind.
 - Transition rollback on validation and ledger failure.
 - Second transition refused.
 - All readers exclude archived/promoted fixtures by default.
-- New gap with target auto-archives when target resolves through slug or alias.
-- Legacy gap without target never auto-archives.
+- New gap with target auto-resolves when target resolves through slug or alias.
+- Legacy gap without target never auto-resolves.
 - `triage_due` count/age/disabled/empty/invalid-file matrix.
 - Tend dry-run and live trigger payloads.
 
@@ -187,3 +193,25 @@ it does not need a new event kind.
 One PR is appropriate: schema, helper, command, reader convergence, and age
 trigger form one coherent contract. Do not include notifications, update
 intents, or analytics in the same change.
+
+## As built
+
+Where the shipped design differs from the text above:
+
+- The reader returns records (`Observation(path, rel, fm)`), with
+  `load_all()` also returning malformed files with their errors; nothing
+  else enumerates `.observations/` (a source guard enforces it).
+- `transition_observation(path, *, kind, reason, actor, dry_run)`: the kind
+  (`done` / `wontfix` / `duplicate` / `obsolete`) derives the status, and
+  `resolution_kind` is written beside `resolved` and `resolution`.
+- Invariant 5 is refined: the file is restored on a ledger failure only if
+  the ledger line cannot be on disk; a failure after the first `write(2)`
+  leaves the file resolved (a retry is refused) so file and ledger agree.
+- `archive` takes `--kind wontfix|duplicate|obsolete`; `--kind done` is a
+  usage error (use `resolve`). A relative `FILE` is resolved against the
+  data root.
+- `list --involves SLUG` is not implemented (deferred).
+- "Existing files remain valid without migration" holds for every file the
+  code wrote; a hand-set `status: archived` without the resolution fields
+  is malformed under the strict rule and lint says how to fix it.
+

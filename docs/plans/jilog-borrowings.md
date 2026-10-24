@@ -1,6 +1,7 @@
 # Plan: borrowings from jilog — deterministic signal hygiene
 
-Status: proposed
+Status: Cycle 1 (B1, B2 and the companion plan) implemented — branch
+`feat/observation-lifecycle`; B3–B5 proposed (Cycles 2–3); B6 deferred.
 Depends on: `observations-and-age-triage.md` (shares the `resolution` field
 and the `observations()` reader; B2 needs its transition helper)
 Source: `docs/recon/jilog-and-ai-agent-learnings.md`
@@ -57,8 +58,11 @@ Refined in Cycle 1 Discover. Identity is narrower than first drafted: only
 signals the code can name mechanically get one; a false merge silently drops
 a signal, which is worse than a duplicate the operator archives in seconds.
 
-- Identity is a property of the *file*, not of who wrote it. The `signal` is
-  derivable or absent:
+- Identity is a property of the *file* and its provenance. The `signal` is
+  derivable or absent (amended in Cycle 1 Design, D14: only files whose
+  `source_agent` is in `observations.IDENTITY_SOURCES` — the trusted local
+  writers — confer identity; remote channels confer none, so injected
+  content can neither block nor suppress a trusted producer's finding):
   - `contradiction` with exactly two `involves` → the sorted pair;
   - `gap` with `target` set → the target;
   - `connection` / `friction` / `structural`, a contradiction naming ≠ 2
@@ -106,6 +110,25 @@ Files: `schemas.py`, `writers.py`, `commands/scan.py`, `commands/entities.py`,
 plan's module), tests `test_observations.py`, extend `test_scan.py`,
 `test_entities.py`.
 
+**As built (Cycle 1).** Where the shipped design differs from the text above:
+
+- `obs_id` is computed on every read and never stored, as planned; the
+  helper is `observations.obs_id(frontmatter, resolver)` rather than
+  `observation_id(category, signal)`, because the writer needs the id of
+  metadata before any file exists.
+- Identity is gated on provenance (`IDENTITY_SOURCES`, above), a list kept
+  separate from `SABNYX_TRUSTED_SOURCES`.
+- A name two pages claim (alias-vs-alias, or two stems that slugify alike)
+  is never guessed: that component gives no identity. A token with no
+  slug-able content (`[[]]`, `!!!`) gives none either, instead of slugify's
+  `untitled-<hash>`.
+- The writer returns a typed outcome (`written`, `reopened`,
+  `already_pending`, `suppressed`, `exists`, `invalid`) rather than the
+  existing path; nothing returns a bare `None`.
+- The health nice-to-have shipped as six integrity warnings (duplicate
+  pending ids, several chain heads, dangling and mismatched `supersedes`,
+  alias-vs-alias and stem-stem ambiguity), warnings only.
+
 ### B2 — Resolution kind and reopen policy
 
 jilog: a recurring signal reopens a closed issue only when `closed_reason ==
@@ -115,9 +138,11 @@ alone (`trackers/kata.rs:82-101`).
 Refined in Cycle 1 Discover:
 
 - Companion plan's `resolution: str` stays; add
-  `resolution_kind: done | wontfix | duplicate | obsolete` (required whenever
-  `resolved` is present on a new transition; legacy = absent = treated as
-  "missing reason" → never reopen, matching jilog's schema-drift rule).
+  `resolution_kind: done | wontfix | duplicate | obsolete`, required whenever
+  `resolved` is present. A non-pending file without it is malformed (strict;
+  amended in Cycle 1 Design, D7b): sabnyx owns this schema, so the "missing
+  kind" state is made unreachable rather than tolerated. jilog's
+  "missing reason → never reopen" drift rule is for schemas it does not own.
 - `status` is **derived from the kind**, not a second axis: `done` →
   `promoted`; `wontfix` / `duplicate` / `obsolete` → `archived`. Schema
   validation rejects a mismatch. Commands: `resolve FILE --reason` (always
@@ -148,6 +173,26 @@ Refined in Cycle 1 Discover:
 
 Files: `schemas.py`, `writers.py` / `observations.py`, companion plan's
 command module, `test_observations.py`.
+
+**As built (Cycle 1).** Where the shipped design differs from the text above:
+
+- Status is derived from the kind and validated strictly in both directions;
+  a hand-set `status: archived` without the resolution fields is malformed.
+- `recurrence_policy` returns `already_pending` / `reopen` / `suppressed` /
+  `new`, checked in that order: a pending signal is its own outcome, not a
+  kind of suppression.
+- `supersedes` holds the superseded file's DATA_ROOT-relative path (the
+  ledger `subject` form), as planned. The chain head follows `supersedes`,
+  never filename order (`foo-2.md` sorts before `foo.md`).
+- Deterministic gap closure is a *resolve* (`done`, reason `page now exists:
+  <slug>`), as planned here, through the same `transition_observation` as the
+  manual command, so its event is the manual one by construction.
+- `observation.suppressed` is one event per id per run (one entry-point
+  call), payload `{obs_id, count, kind}`; `scan` counts suppressions on every
+  real run, including when the operator declines the write.
+- A transition restores the file on a ledger failure only if the ledger line
+  cannot be on disk (`ledger.LedgerWriteError` covers `write(2)` through
+  `close`).
 
 ### B3 — Golden tests for operator-facing reports
 
@@ -260,6 +305,31 @@ twice. (1) and B1 are parallelizable; B2 follows both. Workflow: **full**
 (six stages) — this is a schema change plus a new command group and it
 deserves Demonstrate — or a chunky fast cycle if the operator prefers.
 
+#### Deferred from Cycle 1 (the one list)
+
+- `new --involves / --target`, so hand-filed contradictions and gaps get
+  identity (today `new` writes prose).
+- `observations list --involves SLUG` (in the companion plan's command
+  surface; not in the Cycle 1 design).
+- The two remaining `date.today()` calls in `services.py`; observation dates
+  already use `ledger.today()` (UTC).
+- Unify relative `FILE` resolution between `promote` (cwd) and
+  `observations resolve|archive` (DATA_ROOT).
+- A rate limit on `/status` (bearer-authenticated; each poll parses every
+  observation file).
+- Residual: a lone surrogate (`\udcXX`) reaching `write_observation` through
+  `involves` (LLM JSON can carry one) is written via YAML escaping, then the
+  ledger event fails to serialise before the ledger file is opened; the
+  writer does not restore, leaving a *pending* file with no
+  `observation.created`. Improbable and safe (the file is valid); Cycle 2's
+  reconcile check detects it.
+- `entities resolve` (entity-page collisions) and health's
+  `ambiguous_alias` / `ambiguous_stem` overlap for entity pages; both are
+  correct and answer different questions.
+- A forged `supersedes` cycle beside a live, unsuperseded chain tip of the
+  same id is not reported by health; the recurrence policy stays safe (never
+  `new`).
+
 ### Cycle 2 — `report-hygiene` (B4 then B3)
 
 B4 changes what `tend` and `health` print; B3 freezes that output in golden
@@ -272,11 +342,16 @@ golden regen.
 Also in this cycle (assigned from Cycle 1's deferred list): `reconcile`
 asserts that every non-pending observation has an `observation.resolved`
 event for its `rel` — the file/ledger mismatch a failed restore can leave
-behind. ~15 read-only lines.
+behind — and that every pending observation has an `observation.created`
+event for its `rel` (the state a pre-write ledger failure in
+`write_observation` can leave; see the deferred list). ~20 read-only lines.
 
 Threat note: detectors read ledger payloads that carry model-derived fields
 (slugs, reasons). They are data for counting only — never interpolated into
 a path, a shell, or a prompt. Golden fixtures use made-up slugs (AGENTS §9).
+
+Follow the "Threat pass — every cycle" section and the cycle's own threat
+note; run `/security-review` before Verify closes.
 
 ### Cycle 3 — `review-requests` (B5), if at all
 
@@ -301,6 +376,9 @@ design must guarantee that what the operator saw is exactly what runs:
   lint rejects `type: request` outside `_review/`;
 - the answer path applies the action through the same `services.py` function
   the interactive prompt would have called — no second apply path.
+
+Follow the "Threat pass — every cycle" section and the cycle's own threat
+note; run `/security-review` before Verify closes.
 
 B6 builds nothing.
 

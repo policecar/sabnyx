@@ -138,7 +138,10 @@ from `source_agent`, and legacy files without it are left as they are.
 
 An observation's identity (`obs_id`) is computed on every read and never
 stored in frontmatter. Only two shapes have one: a contradiction whose
-`involves` names exactly two distinct files, and a gap with a `target`.
+`involves` holds exactly two entries that normalise to two distinct names,
+and a gap with a `target`. A name normalises to the page it resolves to
+(by file name, then by alias); a name two pages claim, or one with no
+slug-able content, gives no identity, so that observation is prose.
 Only observations whose `source_agent` is one of the trusted local
 writers (`observations.IDENTITY_SOURCES`) confer identity; remote
 channels (telegram, R1, ingest-web) confer none, so their observations
@@ -195,7 +198,9 @@ Titles whose ASCII fold is empty (e.g. Japanese) slugify to
 `untitled-<8-hex content hash>` so distinct titles never collide.
 
 Observation files may include a date prefix because they are
-time-stamped signals: `2026-04-22-gap-oracle-technology.md`.
+time-stamped signals: `2026-04-22-gap-oracle-technology.md`. When that
+name is taken, an observation with an identity takes the first free of
+`-2` … `-99` before `.md`; never a time of day.
 
 ## 7. Wikilinks
 
