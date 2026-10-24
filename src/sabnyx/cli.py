@@ -11,6 +11,7 @@ from .commands.health import health_cmd
 from .commands.ingest import ingest_cmd
 from .commands.lint import lint_cmd
 from .commands.new import new_cmd
+from .commands.observations import observations_cmd
 from .commands.promote import promote_cmd
 from .commands.reconcile import reconcile_cmd
 from .commands.reweave import reweave_cmd
@@ -46,6 +47,7 @@ main.add_command(reweave_cmd)
 main.add_command(scan_cmd)
 main.add_command(entities_cmd)
 main.add_command(health_cmd)
+main.add_command(observations_cmd)
 main.add_command(serve_cmd)
 main.add_command(serve_http_cmd)
 main.add_command(verify_cmd)

@@ -45,6 +45,7 @@ from sabnyx.commands import health as health_mod  # noqa: E402
 from sabnyx.commands import ingest as ingest_mod  # noqa: E402
 from sabnyx.commands import lint as lint_mod  # noqa: E402
 from sabnyx.commands import new as new_mod  # noqa: E402
+from sabnyx.commands import observations as observations_mod  # noqa: E402
 from sabnyx.commands import promote as promote_mod  # noqa: E402
 from sabnyx.commands import reconcile as reconcile_mod  # noqa: E402
 from sabnyx.commands import reweave as reweave_mod  # noqa: E402
@@ -225,6 +226,7 @@ def tmp_vault(tmp_path, monkeypatch):
     monkeypatch.setattr(entities_mod, "ensure_tree", _ensure)
     monkeypatch.setattr(new_mod, "ensure_tree", _ensure)
     monkeypatch.setattr(triage_mod, "ensure_tree", _ensure)
+    monkeypatch.setattr(observations_mod, "ensure_tree", _ensure)
     _ensure()
 
     # Expose both roots so individual tests can assert ROOT != DATA_ROOT.

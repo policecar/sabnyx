@@ -121,6 +121,32 @@ def load(path: Path) -> tuple[dict, str, FileKind]:
     return meta, body, kind
 
 
+def load_text(text: str, kind: FileKind, *, path: Path) -> tuple[dict, str]:
+    """Parse and strictly validate `text` as a `kind` file. Returns (meta, body).
+
+    load() for text already in memory: a transition parses the exact
+    decoded bytes it patches, and then its own patched output, without a
+    second read of the file. `path` is only named in errors. Raises
+    FrontmatterError on malformed YAML or a schema violation, as load() does.
+    """
+    try:
+        meta, body = frontmatter.parse(text, handler=_SAFE_YAML)
+    except yaml.YAMLError as e:
+        raise FrontmatterError(path, kind, [f"malformed YAML: {e}"]) from e
+    meta = dict(meta)
+    model = {
+        "intake": IntakeFrontmatter,
+        "atlas": AtlasFrontmatter,
+        "observation": ObservationFrontmatter,
+    }[kind]
+    try:
+        model.model_validate(meta)
+    except ValidationError as e:
+        errors = [f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()]
+        raise FrontmatterError(path, kind, errors) from e
+    return meta, body
+
+
 def write(path: Path, meta: dict, body: str) -> None:
     """Write a file with frontmatter. Does NOT validate — use after load/build.
 

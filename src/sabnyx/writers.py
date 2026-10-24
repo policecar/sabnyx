@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -20,6 +21,7 @@ from . import fm, ledger, paths
 from . import observations as obs
 from .schemas import (
     ObservationFrontmatter,
+    ObservationStatus,
     Producer,
     ProposedIntake,
     ProposedObservation,
@@ -354,3 +356,225 @@ def ledger_suppressed(outcomes: Iterable[WriteOutcome], *, actor: str) -> int:
             payload={"obs_id": oid, "count": len(group), "kind": first.resolution_kind},
         )
     return len(groups)
+
+
+# -- transitions (IDD §6 writers.py, §10, §10a, D11, D12, D15, P2) -------------------
+
+RefusalReason = Literal[
+    "outside",
+    "not_found",
+    "malformed",
+    "not_pending",
+    "empty_reason",
+    "multiline_reason",
+    "unencodable_reason",
+]
+
+
+class ObservationRefused(Exception):
+    """An operator-facing refusal: nothing was written, nothing was ledgered.
+
+    `reason` is the machine-readable class (the CLI prints it and exits 1);
+    `detail` is the human explanation.
+    """
+
+    def __init__(self, reason: RefusalReason, detail: str) -> None:
+        self.reason: RefusalReason = reason
+        self.detail = detail
+        super().__init__(f"{reason}: {detail}")
+
+
+@dataclass(frozen=True)
+class Transition:
+    """What transition_observation did, or would do on a dry run.
+
+    path: the resolved absolute file (a symlink's target, never the link).
+    rel: DATA_ROOT-relative POSIX, the ledger `subject` form.
+    obs_id: the id snapshot taken before the patch, or None for prose.
+    old_status is always "pending"; new_status is derived from kind
+    (done -> promoted, anything else -> archived). resolution is the
+    stripped reason; resolved is ledger.today(). dry_run: nothing written.
+    """
+
+    path: Path
+    rel: str
+    obs_id: str | None
+    old_status: ObservationStatus
+    new_status: ObservationStatus
+    kind: ResolutionKind
+    resolution: str
+    resolved: date
+    dry_run: bool = False
+
+
+def _check_path(path: Path) -> Path:
+    """Step 1 (§10a): the resolved file must sit directly in .observations/."""
+    try:
+        resolved = Path(path).resolve()
+    except (OSError, RuntimeError) as e:
+        # A symlink loop: Python 3.11/3.12 raise RuntimeError here; 3.13 returns
+        # the unresolved path instead (and is_file() below is False). Either
+        # way there is no file to transition: refused not_found, never a
+        # traceback.
+        raise ObservationRefused("not_found", f"{path}: cannot resolve: {e}") from e
+    folder = paths.OBSERVATIONS.resolve()
+    if resolved.parent != folder or resolved.suffix != ".md":
+        raise ObservationRefused(
+            "outside", f"{path} does not resolve to a .md file directly under {folder}"
+        )
+    if not resolved.is_file():
+        raise ObservationRefused("not_found", f"{path}: no such observation file")
+    return resolved
+
+
+def _check_reason(reason: str) -> str:
+    """Step 2 (P2): non-empty, one line by splitlines (all 8 break characters),
+    and encodable as UTF-8 (no lone surrogates)."""
+    r = reason.strip()
+    if not r:
+        raise ObservationRefused("empty_reason", "the reason is empty")
+    if r.splitlines() != [r]:
+        raise ObservationRefused("multiline_reason", f"the reason must be one line: {r!r}")
+    try:
+        r.encode("utf-8")
+    except UnicodeEncodeError as e:
+        # A lone surrogate (non-UTF-8 bytes on argv arrive as \udcXX): YAML
+        # would write it escaped, then the ledger event could not serialise it.
+        raise ObservationRefused(
+            "unencodable_reason", f"the reason is not valid UTF-8 text: {r!r}"
+        ) from e
+    return r
+
+
+# @decision DEC-003: on a ledger failure, restore the file iff the ledger line
+#   cannot be on disk (D15, IDD §10).
+# @rationale: the file is written first and the ledger second, because the
+#   ledger records mutations that happened. append_event raises
+#   LedgerWriteError for every failure from the first write(2) through close:
+#   the line may be on disk, so restoring the file could leave the ledger
+#   recording a resolution that never happened; the file stays resolved and a
+#   retry is refused not_pending. Any other exception (OPS.mkdir, event
+#   construction, open: a read-only mount, permissions) means nothing reached
+#   the ledger, so the original bytes are put back and a retry works. Deciding
+#   by exception type is the only signal there is: a LedgerError-only rule is
+#   unsafe in 3 of 8 failure modes, the subclass in 0 (Demonstrate c1).
+#   ENOSPC with 0 bytes written is a LedgerWriteError too: conservative.
+def transition_observation(
+    path: Path,
+    *,
+    kind: ResolutionKind,
+    reason: str,
+    actor: str,
+    dry_run: bool = False,
+) -> Transition:
+    """Resolve (kind done) or archive one pending observation, with a reason.
+
+    Order: path (outside, not_found) -> reason (empty_reason,
+    multiline_reason, unencodable_reason) -> parse (malformed) -> pending
+    (not_pending); each
+    raises ObservationRefused and touches nothing. The file is read once as
+    raw bytes (CRLF intact), parsed from those bytes, patched by
+    fm.patch_frontmatter (every byte it does not own is copied, D11), and
+    the patched text is strictly re-validated before any write; a
+    re-validation failure raises RuntimeError and writes nothing. A
+    PatchError (a file the patcher cannot touch safely) is refused malformed.
+
+    Then the file is written atomically and one `observation.resolved`
+    (plane event) is appended, subject rel, payload {category, old_status,
+    new_status, kind, resolution} plus obs_id and target when set. On a
+    ledger failure (DEC-003): LedgerWriteError propagates and the file stays
+    resolved with possibly no event; any other exception restores the
+    original bytes and propagates; if the restore fails too, a RuntimeError
+    chained to both is raised and the file is left resolved with no ledger
+    event. Both leftovers have the signature Cycle 2 `reconcile` detects: a
+    non-pending observation with no `observation.resolved` event for its rel.
+
+    Prints nothing. Cost: builds one Resolver (walks the vault) for the id.
+    """
+    resolved_path = _check_path(path)
+    resolution = _check_reason(reason)
+    rel = (paths.OBSERVATIONS.relative_to(paths.DATA_ROOT) / resolved_path.name).as_posix()
+
+    try:
+        # Bytes, not read_text(): universal newlines would turn CRLF into LF
+        # and the patcher could no longer copy the bytes it does not own.
+        raw = resolved_path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ObservationRefused("malformed", f"{rel}: not UTF-8: {e}") from e
+    try:
+        meta, _body = fm.load_text(raw, "observation", path=resolved_path)
+    except fm.FrontmatterError as e:
+        raise ObservationRefused("malformed", f"{rel}: {'; '.join(e.errors)}") from e
+    model = ObservationFrontmatter.model_validate(meta)
+    if model.status != "pending":
+        raise ObservationRefused(
+            "not_pending", f"{rel} is already {model.status} ({model.resolution_kind})"
+        )
+
+    oid = obs.obs_id(model, obs.resolver())
+    new_status: ObservationStatus = "promoted" if kind == "done" else "archived"
+    today = ledger.today()
+    try:
+        patched = fm.patch_frontmatter(
+            raw,
+            {
+                "status": new_status,
+                "resolved": today,  # a date renders unquoted
+                "resolution": resolution,
+                "resolution_kind": kind,
+            },
+        )
+    except fm.PatchError as e:
+        raise ObservationRefused("malformed", f"{rel}: cannot patch safely: {e}") from e
+    try:
+        fm.load_text(patched, "observation", path=resolved_path)
+    except fm.FrontmatterError as e:
+        raise RuntimeError(
+            f"{rel}: patched frontmatter failed strict validation; nothing written: "
+            f"{'; '.join(e.errors)}"
+        ) from e
+
+    t = Transition(
+        path=resolved_path,
+        rel=rel,
+        obs_id=oid,
+        old_status="pending",
+        new_status=new_status,
+        kind=kind,
+        resolution=resolution,
+        resolved=today,
+        dry_run=dry_run,
+    )
+    if dry_run:
+        return t
+
+    fm.write_text_atomic(resolved_path, patched)
+    payload: dict = {
+        "category": model.category,
+        "old_status": "pending",
+        "new_status": new_status,
+        "kind": kind,
+        "resolution": resolution,
+    }
+    if oid is not None:
+        payload["obs_id"] = oid
+    if model.target is not None:
+        payload["target"] = model.target
+    try:
+        ledger.append_event(
+            plane="event", kind="observation.resolved", actor=actor, subject=rel, payload=payload
+        )
+    except ledger.LedgerWriteError:
+        raise  # the line may be on disk: never restore (DEC-003)
+    except Exception as ledger_err:
+        try:
+            fm.write_text_atomic(resolved_path, raw)
+        except Exception as restore_err:
+            # restore_err.__context__ is ledger_err: both are in the chain.
+            raise RuntimeError(
+                f"{rel}: ledger append failed ({ledger_err!r}) and restoring the "
+                f"original bytes failed too ({restore_err!r}); the file is left "
+                "resolved with no ledger event (Cycle 2 reconcile detects this)"
+            ) from restore_err
+        raise
+    return t
