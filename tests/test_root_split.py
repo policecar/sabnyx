@@ -224,7 +224,6 @@ def test_triage_output_uses_data_root(tmp_vault, monkeypatch) -> None:
     from sabnyx.commands import triage as triage_mod
 
     monkeypatch.setattr(triage_mod, "INTAKE", tmp_vault["INTAKE"])
-    monkeypatch.setattr(triage_mod, "OBSERVATIONS", tmp_vault["OBSERVATIONS"])
     monkeypatch.setattr(triage_mod, "REVIEW", tmp_vault["VAULT"] / "_review")
     monkeypatch.setattr(triage_mod, "DATA_ROOT", tmp_vault["DATA_ROOT"])
     monkeypatch.setattr(triage_mod, "ensure_tree", lambda: None)
@@ -267,7 +266,6 @@ def test_health_displays_use_data_root(tmp_vault, monkeypatch) -> None:
     # so health no longer carries its own VAULT attribute to patch.
     monkeypatch.setattr(health_mod, "ATLAS", tmp_vault["ATLAS"])
     monkeypatch.setattr(health_mod, "INTAKE", tmp_vault["INTAKE"])
-    monkeypatch.setattr(health_mod, "OBSERVATIONS", tmp_vault["OBSERVATIONS"])
     monkeypatch.setattr(health_mod, "DATA_ROOT", tmp_vault["DATA_ROOT"])
 
     # Create an atlas file that references a non-existent slug → broken wikilink

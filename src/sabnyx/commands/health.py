@@ -10,7 +10,8 @@ from rich.console import Console
 from rich.table import Table
 
 from .. import context, fm, ledger
-from ..paths import ATLAS, DATA_ROOT, INTAKE, OBSERVATIONS
+from .. import observations as obs
+from ..paths import ATLAS, DATA_ROOT, INTAKE
 from ..util import age_days, extract_wikilinks
 
 # Gate 5: jibot flags time-sensitive content whose last_verified is absent
@@ -59,17 +60,9 @@ def scan_wikilinks(
 
 
 def pending_observation_count() -> int:
-    """Observations with status == "pending" — the same filter `scan` uses,
-    so health, tend, and scan agree on what an open observation is."""
-    n = 0
-    for p in OBSERVATIONS.glob("*.md"):
-        try:
-            meta, _body, _kind = fm.load(p)
-        except Exception:
-            continue
-        if meta.get("status") == "pending":
-            n += 1
-    return n
+    """Pending observations, through the shared reader — the same count
+    vault_pulse, triage, reweave and tend see."""
+    return len(obs.observations())
 
 
 @click.command("health")
@@ -136,8 +129,9 @@ def health_cmd(quick: bool) -> None:
     intake_count = len(list(INTAKE.glob("*.md")))
     cost_ratio = intake_count / atlas_count if atlas_count else float(intake_count)
 
-    # Observations
-    pending_obs = pending_observation_count()
+    # Observations: one parse; malformed files are reported, never counted.
+    valid_obs, malformed_obs = obs.load_all()
+    pending_obs = sum(1 for o in valid_obs if o.fm.status == "pending")
 
     # Report
     table = Table(title="sabnyx health")
@@ -149,6 +143,7 @@ def health_cmd(quick: bool) -> None:
     table.add_row("atlas files", str(atlas_count))
     table.add_row("intake:atlas ratio (Gate 6 cost)", f"{cost_ratio:.2f}")
     table.add_row("pending observations", str(pending_obs))
+    table.add_row("malformed observations", str(len(malformed_obs)))
     table.add_row("broken wikilinks", str(len(broken_links)))
     if not quick:
         table.add_row("atlas orphans", str(len(orphans)))
@@ -182,6 +177,13 @@ def health_cmd(quick: bool) -> None:
         if len(untracked) > 20:
             console.print(f"  ... and {len(untracked) - 20} more")
 
+    if malformed_obs:
+        console.print("\n[yellow]malformed observations (not counted):[/yellow]")
+        for path, err in malformed_obs[:20]:
+            console.print(f"  {path.relative_to(DATA_ROOT)}: {err}")
+        if len(malformed_obs) > 20:
+            console.print(f"  ... and {len(malformed_obs) - 20} more")
+
     if schema_drift:
         console.print("\n[red]schema drift:[/red]")
         for path, errs in schema_drift[:10]:
@@ -201,6 +203,7 @@ def health_cmd(quick: bool) -> None:
             # content_hash stays byte-compatible with opsctl (ADR-0002).
             "cost_ratio": f"{cost_ratio:.3f}",
             "observations": pending_obs,
+            "malformed_observations": len(malformed_obs),
             "broken_links": len(broken_links),
             "orphans": len(orphans) if not quick else None,
             "dead_ends": len(dead_ends) if not quick else None,

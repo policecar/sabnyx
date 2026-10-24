@@ -25,6 +25,7 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from . import context, ledger, llm, paths, retrieval, sources, spend, writers
+from . import observations as obs
 from .schemas import AskAnswer, IngestChangeset, ModelRole, ProposedIntake, TriageBatch
 from .util import extract_wikilinks, slugify
 
@@ -55,12 +56,16 @@ def title_from(text: str, n: int = 8) -> str:
 def vault_pulse() -> dict[str, int]:
     """A terse vault pulse: counts of intake, atlas, and pending observations.
 
-    Computed without the full health command — cheap enough for a status poll.
+    Computed without the full health command. Cost: the observation count
+    parses every observation file on each poll (observations.load_all), and
+    nothing bounds the file count or the poll rate (the ingress cap limits
+    LLM calls only; /status is bearer-authenticated, not rate-limited). An
+    mtime-keyed cache is the fix if that ever matters.
     """
     return {
         "intake": len(list(paths.INTAKE.glob("*.md"))),
         "atlas": sum(1 for _ in paths.ATLAS.rglob("*.md")),
-        "observations": len(list(paths.OBSERVATIONS.glob("*.md"))),
+        "observations": len(obs.observations()),
     }
 
 

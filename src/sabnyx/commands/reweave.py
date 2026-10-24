@@ -27,6 +27,7 @@ import click
 from rich.console import Console
 
 from .. import context, fm, ledger, llm, paths, retrieval, writers
+from .. import observations as obs
 from ..schemas import ModelRole, ReweaveChangeset
 from ..util import extract_wikilinks, get_marker_block, set_marker_block
 
@@ -106,17 +107,14 @@ def _context_for(target: Path, index: dict[str, Path]) -> str:
         else "(the atlas contains no other files)",
     ]
 
-    obs = sorted(paths.OBSERVATIONS.glob("*.md"))
-    if obs:
+    # Pending only: an archived (dismissed) signal must not reach the model.
+    pending = obs.observations()
+    if pending:
         parts.append("## Pending observations")
-        for p in obs:
-            try:
-                meta, _body, _ = fm.load(p)
-            except Exception:
-                continue
-            involves = ", ".join(meta.get("involves", []))
+        for o in pending:
+            involves = ", ".join(o.fm.involves)
             parts.append(
-                f"- [{meta.get('category')}] {p.stem}"
+                f"- [{o.fm.category}] {o.path.stem}"
                 + (f" (involves: {involves})" if involves else "")
             )
     return "\n".join(parts)

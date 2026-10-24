@@ -69,3 +69,73 @@ def test_guards_match_what_they_claim():
     assert _UNSAFE_YAML.search("yaml.load(s, Loader=yaml.Loader)")
     assert _UNSAFE_YAML.search("yaml.unsafe_load(s)")
     assert not _UNSAFE_YAML.search("yaml.safe_load(s)")
+
+
+# -- M1: one reader enumerates .observations/ (IDD D13) ---------------------------
+
+# The usual ways of listing the folder's entries, matched per line.
+_OBSERVATIONS_ENUM = re.compile(
+    r"OBSERVATIONS\)?\.(glob|rglob|iterdir)\("
+    r"|\bos\.(listdir|scandir|walk)\([^)]*OBSERVATIONS"
+    r"|\bglob\.i?glob\([^)]*OBSERVATIONS"
+)
+
+# EXACTLY the allowed sites, compared by equality, not subset: when 6a
+# (producers-deterministic) removes the scan and entities globs, this test
+# fails until the two temporary entries are deleted, so the allowlist
+# cannot stay wide after the globs are gone. Keyed by file and source line
+# (not line number) so unrelated edits don't churn it.
+_ALLOWED_OBSERVATIONS_ENUM = {
+    (
+        "observations.py",
+        '(p for p in paths.OBSERVATIONS.glob("*.md") if p.is_file()), key=lambda p: p.name',
+    ),
+    # TEMPORARY until develop.producers-deterministic (6a): the entities
+    # gap-filename dedupe and scan's pending-pair set, both replaced by the
+    # recurrence policy in write_observation.
+    (
+        "commands/entities.py",
+        'already = bool(list(paths.OBSERVATIONS.glob(f"*-gap-{target_slug}.md")))',
+    ),
+    ("commands/scan.py", 'for p in paths.OBSERVATIONS.glob("*.md"):'),
+}
+
+
+def test_only_the_reader_enumerates_observations():
+    """Only observations.py lists .observations/ (plus the temporary 6a entries).
+
+    KNOWN LIMIT -- this guard is not complete. It is a per-line regex, so it
+    misses any enumeration that doesn't name OBSERVATIONS right before the
+    listing call:
+      - traversal from a neighbour: paths.OBSERVATIONS.parent.glob(".observations/*.md")
+        (shown by a mutation during develop.reader: the regex did not fire)
+      - an alias: d = paths.OBSERVATIONS; d.glob("*.md")
+      - a whole-vault walk (util.walk_vault_md(paths.VAULT)) that doesn't
+        filter observations out; today every such walk either excludes
+        them or is lint (a schema check, not a count).
+    Its job is to make the shared reader the easy path and to catch the
+    obvious regressions; an AST guard was judged not worth its cost. Review
+    still owns the cases above.
+    """
+    found = {(h.split(":", 1)[0], h.split(": ", 1)[1]) for h in _hits(_OBSERVATIONS_ENUM)}
+    assert found == _ALLOWED_OBSERVATIONS_ENUM
+
+
+def test_observations_guard_matches_what_it_claims():
+    for must in [
+        'paths.OBSERVATIONS.glob("*.md")',
+        "OBSERVATIONS.rglob('*')",
+        "OBSERVATIONS.iterdir()",
+        "(paths.OBSERVATIONS).glob('*.md')",
+        "os.listdir(paths.OBSERVATIONS)",
+        "os.scandir(str(OBSERVATIONS))",
+        "os.walk(paths.OBSERVATIONS)",
+        "glob.glob(str(paths.OBSERVATIONS) + '/*.md')",
+    ]:
+        assert _OBSERVATIONS_ENUM.search(must), must
+    for must_not in [
+        'path = paths.OBSERVATIONS / f"{today}-{c}-{slug}.md"',  # building a path, not listing
+        "if paths.OBSERVATIONS in p.parents:",
+        "paths.INTAKE.glob('*.md')",
+    ]:
+        assert not _OBSERVATIONS_ENUM.search(must_not), must_not
