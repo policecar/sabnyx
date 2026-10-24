@@ -251,8 +251,11 @@ def patch_frontmatter(raw: str, updates: dict[str, object]) -> str:
     The file is split on "\\n" only, matching python-frontmatter's MULTILINE
     fence regex, never str.splitlines (which also breaks on NEL/LS/PS).
     Rendered lines take the newline of the file's first line (CRLF is
-    preserved). Raises PatchError when the input is not a flat frontmatter
-    block opening on line 1, when a key it owns cannot be located
+    preserved). Leading whitespace before the opening fence is copied byte
+    for byte: python-frontmatter strips the text before splitting, so
+    fm.load accepts such a file, and a file fm.load counts must be one the
+    patcher can resolve (P1). Raises PatchError when the input is not a flat
+    frontmatter block opening the file, when a key it owns cannot be located
     unambiguously, or when its own output does not re-parse to the input
     metadata plus exactly `updates` with the body unchanged.
     """
@@ -260,14 +263,17 @@ def patch_frontmatter(raw: str, updates: dict[str, object]) -> str:
     if unknown:
         raise PatchError(f"not patchable: {sorted(unknown)}")
 
-    lines = raw.split("\n")  # each element keeps its "\r" in a CRLF file
+    # Exactly what frontmatter.parse's .strip() removes from the front; the
+    # opening fence must follow it directly.
+    lead = raw[: len(raw) - len(raw.lstrip())]
+    lines = raw[len(lead) :].split("\n")  # each element keeps its "\r" in a CRLF file
     cr = "\r" if lines[0].endswith("\r") else ""
 
     def bare(line: str) -> str:
         return line[:-1] if line.endswith("\r") else line
 
     if not _FENCE_LINE.fullmatch(bare(lines[0])):
-        raise PatchError("frontmatter must open with a --- fence on line 1")
+        raise PatchError("frontmatter must open the file with a --- fence")
     close = next((i for i in range(1, len(lines)) if _FENCE_LINE.fullmatch(bare(lines[i]))), None)
     if close is None:
         raise PatchError("frontmatter has no closing --- fence")
@@ -307,7 +313,7 @@ def patch_frontmatter(raw: str, updates: dict[str, object]) -> str:
             raise PatchError("no status line, and no category line to insert it after")
     new_block += [_render_line(k, updates[k]) + cr for k in _APPENDED_KEYS if k in updates]
 
-    out = "\n".join([lines[0], *new_block, *lines[close:]])
+    out = lead + "\n".join([lines[0], *new_block, *lines[close:]])
 
     after, after_body = frontmatter.parse(out, handler=_SAFE_YAML)
     if after != {**before, **updates} or after_body != before_body:

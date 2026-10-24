@@ -51,8 +51,8 @@ def _assert_diff_limited(raw: str, out: str, *, status_replaced: bool) -> None:
 def _body(text: str) -> str:
     """Everything from the closing fence on, byte for byte."""
     lines = text.split("\n")
-    close = next(i for i in range(1, len(lines)) if lines[i].rstrip("\r").strip() == "---")
-    return "\n".join(lines[close:])
+    fence = [i for i, line in enumerate(lines) if line.rstrip("\r").strip() == "---"]
+    return "\n".join(lines[fence[1] :])  # second fence: the first is the opener
 
 
 FIXTURES = {
@@ -194,8 +194,8 @@ def test_escaped_break_characters_render_as_one_safe_line(reason):
 @pytest.mark.parametrize(
     ("raw", "match"),
     [
-        ("type: observation\nstatus: pending\n", "line 1"),  # no frontmatter
-        ("\n---\ntype: observation\nstatus: pending\n---\n", "line 1"),  # leading blank line
+        ("type: observation\nstatus: pending\n", "open the file"),  # no frontmatter
+        ("intro\n---\ntype: observation\nstatus: pending\n---\n", "open the file"),  # text first
         ("---\ntype: observation\nstatus: pending\n", "closing"),
         ("---\ntype: observation\nmeta:\n  nested: 1\nstatus: pending\n---\n", "nested"),
         (
@@ -319,3 +319,63 @@ def test_patch_then_atomic_write_is_byte_exact_outside_patched_lines(tmp_path: P
     p.write_bytes(raw.encode("utf-8"))
     fm.write_text_atomic(p, fm.patch_frontmatter(p.read_bytes().decode("utf-8"), UPDATES))
     assert _body(p.read_bytes().decode("utf-8")) == _body(raw)
+
+
+# -- leading whitespace: the patcher accepts what the loader accepts (P1) ------------
+
+_OBS_KEYS = (
+    "type: observation\ncategory: gap\nobserved: 2026-06-12\nstatus: pending\ninvolves: []\n"
+)
+
+LEADING = {
+    "blank line": "\n---\n" + _OBS_KEYS + "---\n\n# T\n",
+    "spaces before the fence": "   ---\n" + _OBS_KEYS + "---\n\n# T\n",
+    "CRLF blank line": ("\r\n---\r\n" + _OBS_KEYS.replace("\n", "\r\n") + "---\r\n\r\n# T\r\n"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(LEADING))
+def test_leading_whitespace_is_copied_and_the_patch_applies(name):
+    raw = LEADING[name]
+    out = fm.patch_frontmatter(raw, UPDATES)
+    lead = raw[: len(raw) - len(raw.lstrip())]
+    assert out.startswith(lead)
+    assert out[len(lead) :].startswith("---")
+    _assert_diff_limited(raw, out, status_replaced=True)
+    assert _body(out) == _body(raw)
+    meta, _ = fm.frontmatter.parse(out, handler=fm._SAFE_YAML)
+    assert meta["status"] == "archived"
+
+
+def test_crlf_blank_line_keeps_crlf_on_rendered_lines():
+    out = fm.patch_frontmatter(LEADING["CRLF blank line"], UPDATES)
+    assert "\n" not in out.replace("\r\n", "")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        *LEADING.values(),
+        "---\n" + _OBS_KEYS + "---\n",  # the ordinary shape
+        "intro\n---\n" + _OBS_KEYS + "---\n",  # text before the fence
+        _OBS_KEYS,  # no frontmatter at all
+    ],
+)
+def test_loader_and_patcher_agree_on_which_files_have_frontmatter(tmp_vault, raw):
+    # The property behind this fix: a file fm.load counts as an observation
+    # is one `resolve` can patch, and a file it rejects the patcher rejects
+    # too. Before the fix, a leading blank line was counted but unresolvable.
+    p = tmp_vault["OBSERVATIONS"] / "2026-06-12-gap-agree.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(raw.encode("utf-8"))
+    try:
+        fm.load(p)
+        loads = True
+    except fm.FrontmatterError:
+        loads = False
+    try:
+        fm.patch_frontmatter(raw, UPDATES)
+        patches = True
+    except fm.PatchError:
+        patches = False
+    assert loads == patches
