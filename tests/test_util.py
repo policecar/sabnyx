@@ -71,6 +71,26 @@ def test_slug_re_rejects_non_slugs(bad):
     assert util.SLUG_RE.fullmatch(bad) is None
 
 
+def test_slug_fold_is_slugify_without_the_untitled_fallback():
+    for text in _SLUG_EDGE_INPUTS + _seeded_inputs():
+        for max_len in (80, 10_000):
+            folded = util.slug_fold(text, max_len=max_len)
+            plain = util.slugify(text, max_len=max_len)
+            if folded is None:
+                assert plain.startswith("untitled-"), text  # the fallback fired
+            else:
+                assert folded == plain, text
+
+
+@pytest.mark.parametrize("text", ["", "!!!", "[[]]", "知識の庭", "  -  "])
+def test_slug_fold_is_none_when_nothing_slug_able_remains(text):
+    assert util.slug_fold(text) is None
+
+
+def test_slug_fold_keeps_a_literal_untitled_name():
+    assert util.slug_fold("untitled-notes") == "untitled-notes"
+
+
 @pytest.mark.parametrize("method", ["match", "search", "fullmatch"])
 def test_slug_re_rejects_trailing_newline_under_every_call(method):
     # `$` matches before a trailing "\n"; the \Z anchor must not. A caller

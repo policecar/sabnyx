@@ -92,6 +92,44 @@ def resolve_wikilink(target: str, resolution: dict[str, str]) -> str | None:
     return resolution.get(t) or resolution.get(slugify(target))
 
 
+def link_candidates(
+    idx: dict[str, Path],
+) -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
+    """(stem_claims, alias_claims): token -> every slug in ``idx`` claiming it.
+
+    The same tokens ``link_resolution_index`` registers (stem: ``slug.lower()``
+    and ``slugify(slug)``; alias: each slugified ``aliases`` entry), but kept in
+    two maps and with ALL claimants instead of first-wins: the observation
+    identity layer must tell a stem claim from an alias claim (stem wins) and
+    see when a token is claimed twice (ambiguous, never guessed). Same
+    tolerance as ``link_resolution_index``: a page whose frontmatter can't be
+    loaded still claims by stem. Non-string alias entries are skipped.
+
+    Cost: one frontmatter parse per page in ``idx``.
+    """
+    stem: dict[str, set[str]] = {}
+    alias: dict[str, set[str]] = {}
+    for slug in idx:
+        for tok in (slug.lower(), slugify(slug)):
+            stem.setdefault(tok, set()).add(slug)
+    for slug, p in idx.items():
+        try:
+            meta, _body, _kind = fm.load(p)
+        except Exception:
+            continue
+        for a in meta.get("aliases") or []:
+            if not isinstance(a, str):  # slugify needs a str (defence in depth:
+                # AtlasFrontmatter already rejects non-str aliases at load)
+                continue
+            tok = slugify(a)
+            if tok:
+                alias.setdefault(tok, set()).add(slug)
+    return (
+        {k: frozenset(v) for k, v in stem.items()},
+        {k: frozenset(v) for k, v in alias.items()},
+    )
+
+
 def description_index(dir_: Path, label: str) -> str:
     """Slug + description listing of a vault directory — the cheap index."""
     lines: list[str] = []

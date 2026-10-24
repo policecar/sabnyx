@@ -132,3 +132,55 @@ def test_vault_and_scoped_indexes_share_collision_policy(tmp_vault, capsys):
     assert context.slug_index(tmp_vault["ATLAS"])["dupe"] == first
     assert context.vault_slug_index()["dupe"] == first
     assert capsys.readouterr().err.count("duplicate slug 'dupe'") == 2
+
+
+# -- link_candidates: stem and alias claims kept apart, all claimants (IDD §6, D8b) --
+
+
+def _page(dir_: Path, name: str, aliases: list | None = None) -> Path:
+    meta: dict = {"type": "concept", "description": "a synthetic page for the link candidates test"}
+    if aliases is not None:
+        meta["aliases"] = aliases
+    p = dir_ / f"{name}.md"
+    fm.write(p, meta, f"# {name}\n")
+    return p
+
+
+def test_link_candidates_keeps_stem_and_alias_claims_apart(tmp_vault):
+    d = tmp_vault["ATLAS_CONCEPTS"]
+    _page(d, "foo", aliases=["Bar"])
+    _page(d, "bar")
+    stem, alias = context.link_candidates(context.vault_slug_index())
+    assert stem["bar"] == {"bar"}  # bar's stem ...
+    assert alias["bar"] == {"foo"}  # ... and foo's alias, never merged
+    assert "foo" not in alias
+
+
+def test_link_candidates_keeps_every_claimant(tmp_vault):
+    """No first-wins: two pages claiming one token both appear."""
+    _page(tmp_vault["ATLAS_CONCEPTS"], "alpha", aliases=["Shared Name"])
+    _page(tmp_vault["ATLAS_CONCEPTS"], "beta", aliases=["shared name"])
+    _page(tmp_vault["ATLAS_CONCEPTS"], "Foo Bar")
+    _page(tmp_vault["ATLAS_IDEAS"], "foo-bar")
+    stem, alias = context.link_candidates(context.vault_slug_index())
+    assert alias["shared-name"] == {"alpha", "beta"}
+    assert stem["foo-bar"] == {"foo bar", "foo-bar"}  # both stems slugify alike
+    assert stem["foo bar"] == {"foo bar"}  # the lowercased stem form
+
+
+def test_link_candidates_unloadable_page_claims_by_stem(tmp_vault):
+    broken = tmp_vault["ATLAS_CONCEPTS"] / "broken.md"
+    broken.write_text("---\naliases: [unclosed\n---\nbody\n", encoding="utf-8")
+    stem, alias = context.link_candidates(context.vault_slug_index())
+    assert stem["broken"] == {"broken"}
+    assert alias == {}
+
+
+def test_link_candidates_non_string_alias_does_not_crash(tmp_vault):
+    """link_resolution_index would hand an int alias to slugify; here the page
+    still claims by stem and the run survives."""
+    _page(tmp_vault["ATLAS_CONCEPTS"], "foo", aliases=[42, "Real Alias"])
+    _page(tmp_vault["ATLAS_CONCEPTS"], "bar", aliases=["Bar Alias"])
+    stem, alias = context.link_candidates(context.vault_slug_index())
+    assert stem["foo"] == {"foo"}
+    assert alias == {"bar-alias": {"bar"}}
