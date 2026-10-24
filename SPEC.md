@@ -112,7 +112,41 @@ script enforces this and the git pre-commit hook blocks violations.
                   # sabnyx-tend, sabnyx-scan, sabnyx-reweave, sabnyx-entities
     status: pending | promoted | archived
     involves: ["<file1.md>", "<file2.md>"]
+    target: <slug>                    # optional; a gap's missing page
+    producer: entities | scan | reweave | ingest | manual   # optional
+    resolved: 2026-04-23              # only when not pending
+    resolution: <one line>            # only when not pending
+    resolution_kind: done | wontfix | duplicate | obsolete  # only when not pending
+    supersedes: vault/intake/.observations/<file>.md        # optional
     ---
+
+Status is derived, and the schema enforces it strictly:
+
+    pending   resolved, resolution, resolution_kind all absent
+    promoted  all three present, resolution_kind: done
+    archived  all three present, resolution_kind: wontfix | duplicate | obsolete
+
+A hand-set `status: archived` without the three fields is malformed:
+revert it to pending and run `sabnyx observations archive` (or
+`resolve`). `resolution` is one non-empty line; any line break,
+including CR, NEL and the Unicode line/paragraph separators, is refused.
+
+`producer` names the code path that built the observation, not the
+command or channel that invoked it: reweave run by tend is `reweave`,
+and telegram, R1 and CLI ingest are all `ingest`. It is never derived
+from `source_agent`, and legacy files without it are left as they are.
+
+An observation's identity (`obs_id`) is computed on every read and never
+stored in frontmatter. Only two shapes have one: a contradiction whose
+`involves` names exactly two distinct files, and a gap with a `target`.
+Only observations whose `source_agent` is one of the trusted local
+writers (`observations.IDENTITY_SOURCES`) confer identity; remote
+channels (telegram, R1, ingest-web) confer none, so their observations
+are prose.
+`supersedes` holds the DATA_ROOT-relative path of the resolved
+observation a recurring signal reopens; only the writer sets it.
+
+`observed` and `resolved` are UTC dates (`ledger.today()`).
 
 ## 4. The `description` field
 

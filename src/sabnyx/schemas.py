@@ -6,10 +6,14 @@ for the whole vault — bump the schema version and write a migration.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from . import paths
+from .util import SLUG_RE
 
 # -- frontmatter ---------------------------------------------------------------
 
@@ -21,6 +25,12 @@ AtlasEntityType = Literal["person", "org", "project"]
 AtlasType = Literal["concept", "reference", "idea", "person", "org", "project"]
 ObservationCategory = Literal["gap", "contradiction", "connection", "friction", "structural"]
 ObservationStatus = Literal["pending", "promoted", "archived"]
+# The code path that built an observation -- not the command or channel that
+# invoked it (reweave run by tend is "reweave"; telegram/R1/CLI ingest are all
+# "ingest"). Never derived from source_agent.
+Producer = Literal["entities", "scan", "reweave", "ingest", "manual"]
+# done -> status promoted; every other kind -> status archived.
+ResolutionKind = Literal["done", "wontfix", "duplicate", "obsolete"]
 IntakeSource = Literal["manual", "web", "email", "import", "clipboard"]
 
 
@@ -93,6 +103,73 @@ class ObservationFrontmatter(BaseModel):
     source_agent: str = "manual"
     status: ObservationStatus = "pending"
     involves: list[str] = Field(default_factory=list)
+    # A gap's missing page, as a slug. Optional: legacy and prose gaps lack it.
+    target: str | None = None
+    # Optional on read: legacy files are "unknown", never backfilled.
+    producer: Producer | None = None
+    resolved: date | None = None
+    resolution: str | None = None
+    resolution_kind: ResolutionKind | None = None
+    # DATA_ROOT-relative path of the observation this one reopens (the ledger
+    # `subject` form). Set only by the recurrence path in write_observation.
+    supersedes: str | None = None
+
+    @field_validator("target")
+    @classmethod
+    def _target_is_slug(cls, v: str | None) -> str | None:
+        if v is not None and not SLUG_RE.fullmatch(v):
+            raise ValueError(f"target must be a slug matching {SLUG_RE.pattern} (got {v!r})")
+        return v
+
+    @field_validator("resolution")
+    @classmethod
+    def _resolution_is_one_line(cls, v: str | None) -> str | None:
+        # splitlines, not "\n" in v: of the 8 line-break characters, "\n"
+        # catches only LF and CRLF; splitlines also catches CR, VT, FF, NEL,
+        # LS and PS (NEL renders raw and breaks the YAML round-trip).
+        # Demonstrate c5.
+        if v is not None and v.strip().splitlines() != [v.strip()]:
+            raise ValueError("resolution must be non-empty and a single line")
+        return v
+
+    @field_validator("supersedes")
+    @classmethod
+    def _supersedes_is_observation_rel(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        # Built at validation time, not import time: tests (and a split-repo
+        # DATA_ROOT) redirect paths after this module loads.
+        prefix = paths.OBSERVATIONS.relative_to(paths.DATA_ROOT).as_posix()
+        if not re.fullmatch(rf"{re.escape(prefix)}/[^/]+\.md", v):
+            raise ValueError(f"supersedes must be {prefix}/<file>.md (got {v!r})")
+        return v
+
+    @model_validator(mode="after")
+    def _status_matches_resolution(self) -> ObservationFrontmatter:
+        # Strict: status is derived from resolution_kind, never set alone.
+        # pending  => resolved, resolution, resolution_kind all absent
+        # promoted <=> all three present and kind == done
+        # archived <=> all three present and kind in {wontfix, duplicate, obsolete}
+        present = [f is not None for f in (self.resolved, self.resolution, self.resolution_kind)]
+        if self.status == "pending":
+            if any(present):
+                raise ValueError(
+                    "a pending observation must not carry resolved, resolution or resolution_kind"
+                )
+            return self
+        if not all(present):
+            raise ValueError(
+                f"status {self.status!r} requires resolved, resolution and "
+                "resolution_kind; revert status to pending and run "
+                "`sabnyx observations resolve` or `sabnyx observations archive`"
+            )
+        expected = "promoted" if self.resolution_kind == "done" else "archived"
+        if self.status != expected:
+            raise ValueError(
+                f"resolution_kind {self.resolution_kind!r} requires status "
+                f"{expected!r} (got {self.status!r})"
+            )
+        return self
 
 
 # -- ledger --------------------------------------------------------------------

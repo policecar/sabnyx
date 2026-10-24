@@ -34,6 +34,14 @@ def age_days(ts: datetime | date | str | None) -> int | None:
     return (datetime.now(UTC) - ts).days
 
 
+# The shape slugify() emits: lowercase ASCII alnum runs joined by single
+# hyphens. Used to validate fields that must already be slugs (an
+# observation's `target`), never to produce one. Anchored with \A/\Z, not
+# ^/$: `$` also matches before a trailing newline, so `.match("abc\n")`
+# would accept it. Safe under match, search or fullmatch alike.
+SLUG_RE = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+
+
 def slugify(text: str, max_len: int = 80) -> str:
     """Kebab-case ASCII slug, 1-80 chars, stripped of junk.
 

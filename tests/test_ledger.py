@@ -224,3 +224,164 @@ def test_append_event_raises_on_short_write(tmp_vault, monkeypatch) -> None:
 
     with pytest.raises(ledger.LedgerError, match="short write"):
         ledger.append_event(kind="test.event", actor="t", subject="s", payload={"n": 1})
+
+
+# -- failure classes: "may the line be on disk?" (IDD §10, D15, Demonstrate c1) ----
+#
+# A caller that mutated a file before appending (transition_observation)
+# restores it iff the ledger line cannot be on disk. That is decidable only
+# by exception type: LedgerWriteError for every failure from the first
+# write(2) through close, anything else before it. Each row injects at the
+# OS boundary -- the real ledger file object's write/close, ledger._fsync,
+# Path.mkdir/open -- never by mocking append_event, which could not tell
+# the classes apart. The assertion is the c1 rule: the exception class
+# matches what is actually on disk, with ENOSPC-at-0-bytes the one known
+# conservative row.
+
+_REAL_OPEN = Path.open
+
+
+class _LedgerFileProxy:
+    """Wraps the real ledger file object; misbehaves in one named way."""
+
+    def __init__(self, f: Any, mode: str) -> None:
+        self.f, self.mode = f, mode
+
+    def __enter__(self) -> _LedgerFileProxy:
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        self.f.close()
+        if self.mode == "close":
+            raise OSError(5, "injected: close EIO")
+        return False
+
+    def fileno(self) -> int:
+        return self.f.fileno()
+
+    def write(self, data: bytes) -> int:
+        if self.mode == "short":
+            return self.f.write(data[: len(data) // 2])
+        if self.mode == "write-eio-partial":
+            self.f.write(data[:10])
+            raise OSError(5, "injected: write EIO after 10 bytes")
+        if self.mode == "enospc":
+            raise OSError(28, "injected: ENOSPC, nothing written")
+        return self.f.write(data)
+
+
+def _proxy_open(mode: str):
+    def opener(self: Path, *args: Any, **kwargs: Any) -> Any:
+        f = _REAL_OPEN(self, *args, **kwargs)
+        return _LedgerFileProxy(f, mode) if self == ledger.EVENTS_JSONL else f
+
+    return opener
+
+
+def _inject(monkeypatch, name: str) -> dict:
+    """Install injection `name`; return extra append_event kwargs."""
+    if name == "mkdir":
+
+        def bad_mkdir(self: Path, *a: Any, **k: Any) -> None:
+            raise PermissionError(13, "injected: mkdir")
+
+        monkeypatch.setattr(Path, "mkdir", bad_mkdir)
+    elif name == "event-build":
+        return {"payload": {"x": 1.5}}  # floats are rejected while building
+    elif name == "open":
+
+        def bad_open(self: Path, *a: Any, **k: Any) -> Any:
+            if self == ledger.EVENTS_JSONL:
+                raise PermissionError(13, "injected: open (read-only mount)")
+            return _REAL_OPEN(self, *a, **k)
+
+        monkeypatch.setattr(Path, "open", bad_open)
+    elif name == "fsync":
+
+        def bad_fsync(fd: int) -> None:
+            raise OSError(5, "injected: fsync EIO")
+
+        monkeypatch.setattr(ledger, "_fsync", bad_fsync)
+    else:  # enospc | write-eio-partial | short | close
+        monkeypatch.setattr(Path, "open", _proxy_open(name))
+    return {}
+
+
+@pytest.mark.parametrize(
+    ("injection", "on_disk", "write_error"),
+    [
+        # pre-write: nothing reached the file → plain exception, caller may restore
+        ("mkdir", "none", False),
+        ("event-build", "none", False),
+        ("open", "none", False),
+        # post-write: bytes may be on disk → LedgerWriteError, caller must not restore
+        ("enospc", "none", True),  # known conservative row (indistinguishable from EIO)
+        ("write-eio-partial", "partial", True),
+        ("short", "partial", True),
+        ("fsync", "full", True),
+        ("close", "full", True),
+    ],
+)
+def test_append_failure_class_matches_what_is_on_disk(
+    tmp_vault, injection, on_disk, write_error
+) -> None:
+    # Steady state: the ledger already exists with one good line.
+    ledger.append_event(kind="seed", actor="t", subject="s", payload={"n": 0})
+    before = ledger.EVENTS_JSONL.read_bytes()
+
+    kwargs = {"kind": "observation.resolved", "actor": "t", "subject": "s", "payload": {"n": 1}}
+    # A scoped MonkeyPatch, not the fixture's: undoing that one would also
+    # undo tmp_vault's path redirects.
+    with pytest.MonkeyPatch.context() as mp:
+        kwargs |= _inject(mp, injection)
+        with pytest.raises(
+            (OSError, TypeError, ledger.LedgerError), match="injected|float|short write"
+        ) as excinfo:
+            ledger.append_event(**kwargs)
+
+    after = ledger.EVENTS_JSONL.read_bytes()
+    assert after.startswith(before), "a failed append must never rewrite earlier lines"
+    tail = after[len(before) :]
+    observed = "none" if not tail else ("full" if tail.endswith(b"\n") else "partial")
+    assert observed == on_disk
+
+    assert isinstance(excinfo.value, ledger.LedgerWriteError) is write_error, (
+        f"{injection}: got {type(excinfo.value).__name__}"
+    )
+    if write_error:
+        assert isinstance(excinfo.value, ledger.LedgerError)  # existing handlers still catch it
+        assert "opsctl verify" in str(excinfo.value)
+    if on_disk != "none":
+        # The safety property itself: bytes on disk ⇒ never a restorable class.
+        assert write_error
+
+
+def test_open_and_fsync_failures_are_now_distinguishable(tmp_vault) -> None:
+    # Demonstrate c1 (a): before LedgerWriteError both raised a bare OSError,
+    # so a caller could not decide whether to restore.
+    ledger.append_event(kind="seed", actor="t", subject="s", payload={})
+    with pytest.MonkeyPatch.context() as mp:
+        _inject(mp, "open")
+        with pytest.raises(OSError, match="injected: open") as open_exc:
+            ledger.append_event(kind="x", actor="t", subject="s", payload={})
+    with pytest.MonkeyPatch.context() as mp:
+        _inject(mp, "fsync")
+        with pytest.raises(ledger.LedgerWriteError, match="injected: fsync") as fsync_exc:
+            ledger.append_event(kind="x", actor="t", subject="s", payload={})
+    assert not isinstance(open_exc.value, ledger.LedgerWriteError)
+    assert isinstance(fsync_exc.value.__cause__, OSError)  # original cause kept
+
+
+# -- the clock --------------------------------------------------------------------
+
+
+def test_today_is_the_utc_date_of_now(monkeypatch) -> None:
+    from datetime import UTC, date, datetime
+
+    # 23:30 in UTC-10 is already the next day in UTC: today() must follow UTC.
+    fixed = datetime(2026, 10, 23, 9, 30, tzinfo=UTC)
+    monkeypatch.setattr(ledger, "now", lambda: fixed)
+    assert ledger.today() == date(2026, 10, 23)
+    fixed_late = datetime(2026, 10, 23, 23, 59, tzinfo=UTC)
+    monkeypatch.setattr(ledger, "now", lambda: fixed_late)
+    assert ledger.today() == date(2026, 10, 23)
