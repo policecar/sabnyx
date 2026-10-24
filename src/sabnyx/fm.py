@@ -7,13 +7,15 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import secrets
 import stat
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import frontmatter
 import yaml
+from frontmatter.default_handlers import YAMLHandler
 from pydantic import ValidationError
 
 from . import paths
@@ -30,6 +32,38 @@ class FrontmatterError(Exception):
         self.kind = kind
         self.errors = errors
         super().__init__(f"{path}: {kind} frontmatter invalid: {errors}")
+
+
+class _SafeYAML(YAMLHandler):
+    """YAML frontmatter through yaml.safe_load, passed explicitly at every
+    parse site in this module (and nowhere else parses frontmatter: a
+    source guard in tests/test_source_guards.py enforces both).
+
+    python-frontmatter's own YAMLHandler already *defaults* to SafeLoader
+    (``kwargs.setdefault("Loader", SafeLoader)``, read from its source), but
+    a default is a library choice a kwarg can override; this handler ignores
+    loader kwargs entirely. A tag such as ``!!python/object/apply`` raises
+    a YAMLError instead of constructing anything (IDD §10a).
+
+    Passing a handler explicitly also skips the library's format detection
+    (so a ``+++`` TOML or ``{`` JSON header is never parsed), and with it the
+    ``detect()`` check that the text *starts* with a fence. ``split`` keeps
+    that rule: without it, a file with no frontmatter but two ``---`` rules
+    in its body would have the text between them parsed as frontmatter.
+    """
+
+    def load(self, fm: str, **kwargs: object) -> Any:
+        return yaml.safe_load(fm)
+
+    def split(self, text: str) -> tuple[str, str]:
+        if not self.FM_BOUNDARY.match(text):
+            # parse() treats ValueError as "no frontmatter": the same result
+            # auto-detection gives for text that doesn't start with a fence.
+            raise ValueError("no frontmatter fence at the start of the text")
+        return super().split(text)
+
+
+_SAFE_YAML = _SafeYAML()
 
 
 def classify(path: Path) -> FileKind:
@@ -63,7 +97,7 @@ def load(path: Path) -> tuple[dict, str, FileKind]:
     """
     kind = classify(path)
     try:
-        post = frontmatter.load(str(path))
+        post = frontmatter.load(str(path), handler=_SAFE_YAML)
     except yaml.YAMLError as e:
         # Malformed YAML (unclosed bracket, a tab in the block, ...) must be
         # the same recoverable error as a schema violation, not a raw parser
@@ -90,7 +124,20 @@ def load(path: Path) -> tuple[dict, str, FileKind]:
 def write(path: Path, meta: dict, body: str) -> None:
     """Write a file with frontmatter. Does NOT validate — use after load/build.
 
-    Atomic: renders the full content, writes it to a sibling temp file, then
+    Renders meta + body, then writes through write_text_atomic (below),
+    which owns the atomicity, permission and durability guarantees.
+    """
+    # Assign .metadata rather than passing **meta: a frontmatter key named
+    # "content" or "handler" would collide with Post's own parameters.
+    post = frontmatter.Post(body)
+    post.metadata = dict(meta)
+    write_text_atomic(path, frontmatter.dumps(post) + "\n")
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write `text` to `path` atomically. Does NOT validate.
+
+    Atomic: writes the full content to a sibling temp file, then
     `os.replace`s it over `path`. A reader (or a crash) never observes a
     half-written file — either the old content or the new content, never a
     truncated mix. The temp file is created with `os.open(..., 0o666)`, not
@@ -115,12 +162,6 @@ def write(path: Path, meta: dict, body: str) -> None:
     exists for is already satisfied by the point `os.replace` returns.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Assign .metadata rather than passing **meta: a frontmatter key named
-    # "content" or "handler" would collide with Post's own parameters.
-    post = frontmatter.Post(body)
-    post.metadata = dict(meta)
-    content = frontmatter.dumps(post) + "\n"
-
     old_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
 
     tmp_name = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
@@ -130,8 +171,10 @@ def write(path: Path, meta: dict, body: str) -> None:
         # File hardcodes 0600 regardless of umask, which would silently
         # tighten every brand-new vault file's permissions.
         fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
-        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
-            tmp.write(content)
+        # newline="": write exactly `text`, no "\n" → os.linesep translation
+        # on any platform (CRLF files keep their bytes).
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp:
+            tmp.write(text)
             tmp.flush()
             os.fsync(tmp.fileno())
         if old_mode is not None:
@@ -147,3 +190,126 @@ def write(path: Path, meta: dict, body: str) -> None:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp_name)
         raise
+
+
+# -- frontmatter patcher (observation transitions) ----------------------------
+#
+# @decision DEC-FM-001: transitions patch frontmatter text in place instead
+#   of load → modify → frontmatter.dumps.
+# @rationale: frontmatter.dumps writes keys in alphabetical order (probe,
+#   design D11), so a round-trip would reorder every hand-written file a
+#   resolve touches. The patcher copies every byte it does not own; the
+#   only lines that change are the ones it renders. It then re-parses its
+#   own output and refuses unless the parsed metadata equals the input's
+#   plus exactly the updates, and the body is unchanged. Correctness is
+#   checked, not assumed from the line arithmetic.
+
+
+class PatchError(ValueError):
+    """patch_frontmatter refused: the input is outside the shape it can
+    patch without touching bytes it does not own."""
+
+
+# Keys the patcher may set, and the order appended keys take.
+_APPENDED_KEYS = ("resolved", "resolution", "resolution_kind")
+_PATCHABLE_KEYS = frozenset({"status", *_APPENDED_KEYS})
+# One fence line (after an optional trailing "\r"): the per-line reading of
+# YAMLHandler.FM_BOUNDARY (r"^-{3,}\s*$", MULTILINE).
+_FENCE_LINE = re.compile(r"-{3,}\s*")
+# A column-0 mapping key. Indented lines and "- item" lines never match.
+_KEY_LINE = re.compile(r"([A-Za-z_][A-Za-z0-9_-]*)[ \t]*:")
+
+
+def _render_line(key: str, value: object) -> str:
+    """One `key: value` line, no line terminator. Raises unless the YAML
+    is a single line that parses back to exactly `value`."""
+    text = yaml.safe_dump(
+        {key: value},
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
+        width=float("inf"),
+    )
+    # One "\n"-terminated line, and no other break str.splitlines sees
+    # (NEL/LS/PS are emitted raw by allow_unicode; NEL fails the round-trip).
+    if not text.endswith("\n") or text.count("\n") != 1 or len(text.splitlines()) != 1:
+        raise PatchError(f"{key}: value does not render as one line: {value!r}")
+    if yaml.safe_load(text) != {key: value}:
+        raise PatchError(f"{key}: value does not round-trip through YAML: {value!r}")
+    return text[:-1]
+
+
+def patch_frontmatter(raw: str, updates: dict[str, object]) -> str:
+    """Return `raw` with `updates` applied to its frontmatter, every other
+    byte copied.
+
+    - `status`: its column-0 line is replaced in place; if the file has no
+      status line, one is inserted after the column-0 `category` line.
+    - `resolved`, `resolution`, `resolution_kind`: appended in that order
+      before the closing fence; refused if any is already present.
+
+    The file is split on "\\n" only, matching python-frontmatter's MULTILINE
+    fence regex, never str.splitlines (which also breaks on NEL/LS/PS).
+    Rendered lines take the newline of the file's first line (CRLF is
+    preserved). Raises PatchError when the input is not a flat frontmatter
+    block opening on line 1, when a key it owns cannot be located
+    unambiguously, or when its own output does not re-parse to the input
+    metadata plus exactly `updates` with the body unchanged.
+    """
+    unknown = set(updates) - _PATCHABLE_KEYS
+    if unknown:
+        raise PatchError(f"not patchable: {sorted(unknown)}")
+
+    lines = raw.split("\n")  # each element keeps its "\r" in a CRLF file
+    cr = "\r" if lines[0].endswith("\r") else ""
+
+    def bare(line: str) -> str:
+        return line[:-1] if line.endswith("\r") else line
+
+    if not _FENCE_LINE.fullmatch(bare(lines[0])):
+        raise PatchError("frontmatter must open with a --- fence on line 1")
+    close = next((i for i in range(1, len(lines)) if _FENCE_LINE.fullmatch(bare(lines[i]))), None)
+    if close is None:
+        raise PatchError("frontmatter has no closing --- fence")
+
+    try:
+        before, before_body = frontmatter.parse(raw, handler=_SAFE_YAML)
+    except yaml.YAMLError as e:
+        raise PatchError(f"malformed YAML: {e}") from e
+    if any(isinstance(v, dict) for v in before.values()):
+        raise PatchError("nested frontmatter is not patchable")
+    present = sorted(k for k in _APPENDED_KEYS if k in updates and k in before)
+    if present:
+        raise PatchError(f"already present: {present}")
+
+    block = lines[1:close]
+    keys_at = {}
+    for i, line in enumerate(block):
+        m = _KEY_LINE.match(line)
+        if m:
+            keys_at.setdefault(m.group(1), []).append(i)
+    for key in ("status", "category"):
+        if len(keys_at.get(key, [])) > 1:
+            raise PatchError(f"more than one column-0 {key!r} line")
+
+    new_block = list(block)
+    if "status" in updates:
+        status_line = _render_line("status", updates["status"]) + cr
+        if "status" in keys_at:
+            new_block[keys_at["status"][0]] = status_line
+        elif "status" in before:
+            # parsed, but not as a plain column-0 line (quoted key, ...):
+            # inserting a second one would leave the old one in the file.
+            raise PatchError("status key present but not on a column-0 line")
+        elif "category" in keys_at:
+            new_block.insert(keys_at["category"][0] + 1, status_line)
+        else:
+            raise PatchError("no status line, and no category line to insert it after")
+    new_block += [_render_line(k, updates[k]) + cr for k in _APPENDED_KEYS if k in updates]
+
+    out = "\n".join([lines[0], *new_block, *lines[close:]])
+
+    after, after_body = frontmatter.parse(out, handler=_SAFE_YAML)
+    if after != {**before, **updates} or after_body != before_body:
+        raise PatchError("patched output does not re-parse to the input plus the updates")
+    return out
