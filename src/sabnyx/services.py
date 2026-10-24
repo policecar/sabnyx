@@ -541,9 +541,9 @@ def apply_ingest(
         if rel:
             written.append(rel)
     for ob in proposal.changeset.observations:
-        rel = writers.write_observation(ob, actor=actor, console=console)
-        if rel:
-            written.append(rel)
+        out = writers.write_observation(ob, producer="ingest", actor=actor, console=console)
+        if out.kind in ("written", "reopened"):
+            written.append(out.rel)
 
     writers.append_knowledge_log(
         "ingest",

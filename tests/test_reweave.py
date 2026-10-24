@@ -190,6 +190,27 @@ def test_reweave_pending_applies_guarded_changeset(tmp_vault, monkeypatch):
     assert "nothing to do" in result2.output
 
 
+def test_reweave_observation_records_producer_reweave(tmp_vault, monkeypatch):
+    from sabnyx import observations
+
+    concepts = tmp_vault["ATLAS_CONCEPTS"]
+    target = _make_atlas_file(concepts, "alpha", "a concept about alpha things, long enough yes")
+    _make_atlas_file(concepts, "beta", "a concept about beta things, also long enough to pass")
+    _make_atlas_file(concepts, "gamma", "a concept about gamma things, long enough to pass too")
+    _propose_reweave(str(target.relative_to(tmp_vault["DATA_ROOT"])))
+
+    result, _ = _run_reweave(monkeypatch, ["--yes"])
+    assert result.exit_code == 0, result.output
+    (o,) = observations.observations("all")
+    assert o.fm.producer == "reweave"
+    assert o.fm.source_agent == "sabnyx-reweave"
+    (ev,) = [e for e in ledger.replay() if e.kind == "observation.created"]
+    assert ev.subject == o.rel
+    assert ev.payload["producer"] == "reweave"
+    (done,) = [e for e in ledger.replay() if e.kind == "reweave.completed"]
+    assert done.payload["observations"] == [o.rel]
+
+
 def test_reweave_dry_run_writes_nothing(tmp_vault, monkeypatch):
     concepts = tmp_vault["ATLAS_CONCEPTS"]
     target = _make_atlas_file(concepts, "alpha", "a concept about alpha things, long enough yes")

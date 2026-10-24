@@ -74,6 +74,24 @@ def test_scan_writes_contradiction(tmp_vault, monkeypatch):
     assert "scan.completed" in kinds
 
 
+def test_scan_observation_records_producer_scan(tmp_vault, monkeypatch):
+    from sabnyx import observations
+
+    c = tmp_vault["ATLAS_CONCEPTS"]
+    _atlas(c, "alpha", "a concept about alpha, long enough to satisfy the schema")
+    _atlas(c, "beta", "a concept about beta, also long enough to satisfy the schema")
+
+    result, _ = _run_scan(monkeypatch, ["--yes"])
+    assert result.exit_code == 0, result.output
+    (o,) = observations.observations("all")
+    assert o.fm.producer == "scan"
+    (ev,) = [e for e in ledger.replay() if e.kind == "observation.created"]
+    assert ev.subject == o.rel
+    assert ev.payload["producer"] == "scan"
+    # both involves name real pages and the actor is trusted: identity-bearing
+    assert ev.payload["obs_id"].startswith("sha256:")
+
+
 def test_scan_dedupes_against_pending(tmp_vault, monkeypatch):
     c = tmp_vault["ATLAS_CONCEPTS"]
     _atlas(c, "alpha", "a concept about alpha, long enough to satisfy the schema")

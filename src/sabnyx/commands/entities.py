@@ -193,12 +193,13 @@ def gaps_cmd(threshold: int, dry_run: bool) -> None:
                 f"page. Create an entity page (`sabnyx promote --as person|org|project`) "
                 f"or fix the links.\n\n" + "\n".join(f"- {r}" for r in refs)
             )
-            rel = writers.write_observation(
+            out = writers.write_observation(
                 ProposedObservation(category="gap", title=key, body=body, involves=refs),
+                producer="entities",
                 actor=ACTOR_ENTITIES,
                 console=console,
             )
-            if rel:
+            if out.kind in ("written", "reopened"):
                 written += 1
                 action = "filed gap"
             else:

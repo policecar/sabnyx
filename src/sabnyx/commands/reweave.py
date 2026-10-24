@@ -247,9 +247,9 @@ def reweave_one(
     modified = _apply_links(tgt, changeset, index, console)
     obs_written: list[str] = []
     for ob in changeset.observations:
-        written = writers.write_observation(ob, actor=actor, console=console)
-        if written:
-            obs_written.append(written)
+        out = writers.write_observation(ob, producer="reweave", actor=actor, console=console)
+        if out.kind in ("written", "reopened"):
+            obs_written.append(out.rel)
 
     ledger.append_event(
         kind="reweave.completed",

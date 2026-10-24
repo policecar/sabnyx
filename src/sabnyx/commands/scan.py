@@ -136,6 +136,7 @@ def scan_cmd(role: ModelRole, yes: bool, dry_run: bool) -> None:
     written = 0
     for f in fresh:
         f.category = "contradiction"  # enforce regardless of model
-        if writers.write_observation(f, actor=ACTOR, console=console):
+        out = writers.write_observation(f, producer="scan", actor=ACTOR, console=console)
+        if out.kind in ("written", "reopened"):
             written += 1
     console.print(f"\n[green]filed {written} contradiction observation(s)[/green]")

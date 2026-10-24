@@ -220,6 +220,21 @@ class TestEntitiesGaps:
         assert meta["category"] == "gap"
         assert len(meta["involves"]) == 3
 
+    def test_gap_records_producer_entities(self, tmp_vault):
+        from sabnyx import observations
+
+        self._seed_referrers(tmp_vault, "missing-person", 3)
+
+        result = _run(["gaps"])
+        assert result.exit_code == 0, result.output
+        (o,) = observations.observations("all")
+        assert o.fm.producer == "entities"
+        assert o.fm.target is None  # no target until develop.producers-deterministic
+        (ev,) = [e for e in ledger.replay() if e.kind == "observation.created"]
+        assert ev.subject == o.rel
+        assert ev.payload["producer"] == "entities"
+        assert "target" not in ev.payload
+
     def test_below_threshold_is_no_gap(self, tmp_vault):
         self._seed_referrers(tmp_vault, "rarely-named", 2)
 
