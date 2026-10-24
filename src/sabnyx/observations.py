@@ -417,3 +417,75 @@ def closable_gaps(
         elif isinstance(found, Ambiguous):
             ambiguous.append((o, o.fm.target, found.claimants))
     return closable, ambiguous
+
+
+# -- integrity warnings (IDD §6 health, D8b, D9) ------------------------------------
+
+WarningKind = Literal[
+    "duplicate_pending",  # one id, two or more pending records
+    "multi_head",  # one id, no unique chain head (ties, self-supersede, forged cycle)
+    "dangling_supersedes",  # supersedes names a file that does not exist
+    "mismatched_supersedes",  # supersedes names a record with another id, or none
+    "ambiguous_alias",  # an alias claimed by two or more pages, no stem claims it
+    "ambiguous_stem",  # two or more page stems that slugify alike
+]
+
+
+@dataclass(frozen=True, order=True)
+class IntegrityWarning:
+    """One health warning. Ordered (kind, subject, detail): the text is a
+    golden for Cycle 2, so the order and wording must not depend on the walk."""
+
+    kind: WarningKind
+    subject: str  # an observation rel, a 12-hex id, or a name token
+    detail: str
+
+    def text(self) -> str:
+        return f"{self.kind}: {self.subject} — {self.detail}"
+
+
+def _short(oid: str) -> str:
+    return oid.removeprefix("sha256:")[:12]
+
+
+def integrity_warnings(idx: ObsIndex, resolver: Resolver) -> list[IntegrityWarning]:
+    """Warnings derived from an ObsIndex and a Resolver, sorted. Pure.
+
+    Reads only the index's by-products (pending lists, multi_head, dangling,
+    mismatched) and the resolver's claim maps: nothing is enumerated again.
+    Warnings, not failures: a vault with all of these still works; the
+    operator reads them and fixes the files.
+    """
+    out: list[IntegrityWarning] = []
+    for oid, recs in idx.pending.items():
+        if len(recs) > 1:
+            rels = ", ".join(sorted(o.rel for o in recs))
+            out.append(IntegrityWarning("duplicate_pending", _short(oid), f"pending: {rels}"))
+    for oid, heads in idx.multi_head.items():
+        rels = ", ".join(sorted(o.rel for o in heads))
+        out.append(IntegrityWarning("multi_head", _short(oid), f"head candidates: {rels}"))
+    for o in idx.dangling:
+        out.append(
+            IntegrityWarning(
+                "dangling_supersedes", o.rel, f"supersedes {o.fm.supersedes}, which does not exist"
+            )
+        )
+    for o in idx.mismatched:
+        out.append(
+            IntegrityWarning(
+                "mismatched_supersedes",
+                o.rel,
+                f"supersedes {o.fm.supersedes}, a record with a different id or none",
+            )
+        )
+    for token, slugs in resolver.alias.items():
+        if len(slugs) > 1 and token not in resolver.stem:  # a stem would win (D8b)
+            out.append(
+                IntegrityWarning("ambiguous_alias", token, f"pages: {', '.join(sorted(slugs))}")
+            )
+    for token, slugs in resolver.stem.items():
+        if len(slugs) > 1:
+            out.append(
+                IntegrityWarning("ambiguous_stem", token, f"pages: {', '.join(sorted(slugs))}")
+            )
+    return sorted(out)

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from .. import context, fm, ledger
@@ -131,6 +132,8 @@ def health_cmd(quick: bool) -> None:
 
     # Observations: one parse; malformed files are reported, never counted.
     valid_obs, malformed_obs = obs.load_all()
+    resolver = obs.resolver()
+    integrity = obs.integrity_warnings(obs.index(valid_obs, resolver), resolver)
     pending_obs = sum(1 for o in valid_obs if o.fm.status == "pending")
 
     # Report
@@ -144,6 +147,7 @@ def health_cmd(quick: bool) -> None:
     table.add_row("intake:atlas ratio (Gate 6 cost)", f"{cost_ratio:.2f}")
     table.add_row("pending observations", str(pending_obs))
     table.add_row("malformed observations", str(len(malformed_obs)))
+    table.add_row("observation integrity warnings", str(len(integrity)))
     table.add_row("broken wikilinks", str(len(broken_links)))
     if not quick:
         table.add_row("atlas orphans", str(len(orphans)))
@@ -177,6 +181,13 @@ def health_cmd(quick: bool) -> None:
         if len(untracked) > 20:
             console.print(f"  ... and {len(untracked) - 20} more")
 
+    if integrity:
+        # Warnings, not failures: the exit code does not change. Sorted, and
+        # printed whole (no truncation): Cycle 2 freezes this text.
+        console.print("\n[yellow]observation integrity:[/yellow]")
+        for w in integrity:
+            console.print(f"  {escape(w.text())}", soft_wrap=True)  # one line each
+
     if malformed_obs:
         console.print("\n[yellow]malformed observations (not counted):[/yellow]")
         for path, err in malformed_obs[:20]:
@@ -204,6 +215,7 @@ def health_cmd(quick: bool) -> None:
             "cost_ratio": f"{cost_ratio:.3f}",
             "observations": pending_obs,
             "malformed_observations": len(malformed_obs),
+            "integrity_warnings": len(integrity),
             "broken_links": len(broken_links),
             "orphans": len(orphans) if not quick else None,
             "dead_ends": len(dead_ends) if not quick else None,
