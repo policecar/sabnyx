@@ -352,6 +352,8 @@ class TestEntitiesGapsRecurrence:
             "already_tracked": 1,
             "suppressed": 1,
             "invalid": 0,
+            "closed": 0,  # closure is reported beside the partition, not in it
+            "ambiguous": 0,
         }
 
     def test_second_run_files_nothing(self, tmp_vault):

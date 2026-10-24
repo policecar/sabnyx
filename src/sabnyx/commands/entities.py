@@ -166,52 +166,58 @@ def gaps_cmd(threshold: int, dry_run: bool) -> None:
     ensure_tree()
     console = Console()
 
+    if dry_run:
+        console.print("[bold yellow]dry run[/bold yellow] — no observations will be written")
+
+    # Close first (D3): a pending gap whose target now has a page is resolved
+    # (kind done), so it neither counts as pending nor shadows this scan.
+    closure = writers.close_resolved_gaps(actor=ACTOR_ENTITIES, dry_run=dry_run, console=console)
+
     counts = _broken_link_counts()
     candidates = sorted(
         ((key, refs) for key, refs in counts.items() if len(refs) >= threshold),
         key=lambda kr: (-len(kr[1]), kr[0]),
     )
 
-    if dry_run:
-        console.print("[bold yellow]dry run[/bold yellow] — no observations will be written")
-
-    if not candidates:
-        console.print(
-            f"[dim]no gaps: no target referenced by >= {threshold} file(s) lacks a page[/dim]"
-        )
-        return
-
-    table = Table(title=f"entity gaps (>= {threshold} referrers, no page)")
-    table.add_column("missing target")
-    table.add_column("referrers", justify="right")
-    table.add_column("action")
-
     # One write_observation per candidate, through the recurrence policy: a
     # gap filed by an earlier run is already_pending, a dismissed one is
     # suppressed, a fixed-and-back one is reopened. Dry runs ask the same
     # policy (D5), so the preview cannot drift from a real run.
     outcomes: list[writers.WriteOutcome] = []
-    for key, refs in candidates:
-        body = (
-            f"`[[{key}]]` is referenced by {len(refs)} vault file(s) but has no "
-            f"page. Create an entity page (`sabnyx promote --as person|org|project`) "
-            f"or fix the links.\n\n" + "\n".join(f"- {r}" for r in refs)
+    if not candidates:
+        console.print(
+            f"[dim]no gaps: no target referenced by >= {threshold} file(s) lacks a page[/dim]"
         )
-        out = writers.write_observation(
-            ProposedObservation(category="gap", title=key, body=body, involves=refs),
-            producer="entities",
-            actor=ACTOR_ENTITIES,
-            target=key,  # _broken_link_counts keys are already slugs
-            dry_run=dry_run,
-            console=console,
-        )
-        outcomes.append(out)
-        table.add_row(key, str(len(refs)), _gap_action(out))
+    else:
+        table = Table(title=f"entity gaps (>= {threshold} referrers, no page)")
+        table.add_column("missing target")
+        table.add_column("referrers", justify="right")
+        table.add_column("action")
+        for key, refs in candidates:
+            body = (
+                f"`[[{key}]]` is referenced by {len(refs)} vault file(s) but has no "
+                f"page. Create an entity page (`sabnyx promote --as person|org|project`) "
+                f"or fix the links.\n\n" + "\n".join(f"- {r}" for r in refs)
+            )
+            out = writers.write_observation(
+                ProposedObservation(category="gap", title=key, body=body, involves=refs),
+                producer="entities",
+                actor=ACTOR_ENTITIES,
+                target=key,  # _broken_link_counts keys are already slugs
+                dry_run=dry_run,
+                console=console,
+            )
+            outcomes.append(out)
+            table.add_row(key, str(len(refs)), _gap_action(out))
+        console.print(table)
 
     written = sum(1 for o in outcomes if o.kind in ("written", "reopened"))
-    console.print(table)
     if not dry_run:
-        console.print(f"[green]{written}[/green] new gap observation(s) filed")
+        if candidates:
+            console.print(f"[green]{written}[/green] new gap observation(s) filed")
+        # Ledgered on every real run, candidates or not: a run that only
+        # closed gaps (their pages now exist, so their links resolve) is
+        # still a run, and its closure count belongs in its summary.
         ledger.append_event(
             plane="projection",
             kind="entities.gaps_scanned",
@@ -228,6 +234,9 @@ def gaps_cmd(threshold: int, dry_run: bool) -> None:
                 ),
                 "suppressed": sum(1 for o in outcomes if o.kind == "suppressed"),
                 "invalid": sum(1 for o in outcomes if o.kind == "invalid"),
+                # Closure is separate from the candidate partition.
+                "closed": len(closure.closed),
+                "ambiguous": len(closure.ambiguous),
             },
         )
         writers.ledger_suppressed(outcomes, actor=ACTOR_ENTITIES)

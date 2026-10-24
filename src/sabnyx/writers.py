@@ -578,3 +578,72 @@ def transition_observation(
             ) from restore_err
         raise
     return t
+
+
+# -- gap closure (IDD §6, D3; M5) -----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ClosureReport:
+    """What close_resolved_gaps did (or would do, on a dry run).
+
+    closed:    one Transition per gap closed (dry run: would close).
+    ambiguous: (rel, target, claimant slugs) for gaps left pending because
+               their target names more than one page (D8b).
+    refused:   (rel, reason) for gaps transition_observation refused; the
+               run continues past them.
+    """
+
+    closed: tuple[Transition, ...]
+    ambiguous: tuple[tuple[str, str, tuple[str, ...]], ...]
+    refused: tuple[tuple[str, str], ...]
+
+
+def close_resolved_gaps(*, actor: str, dry_run: bool = False, console: Console) -> ClosureReport:
+    """Resolve (kind done) every pending gap whose target page now exists.
+
+    Each gap goes through transition_observation with reason
+    "page now exists: <slug>", so the file change and the
+    observation.resolved event are the manual `observations resolve` ones by
+    construction (M5). Ambiguous targets are left pending and named;
+    gaps without a target and Missing targets are not touched. An
+    ObservationRefused (e.g. a file the patcher cannot touch) is recorded
+    and the run continues; infrastructure errors propagate.
+
+    Runs at the start of `entities gaps` (actor sabnyx-entities) and in tend
+    before the health summary (actor sabnyx-tend), as the health-agent role.
+    Cost: reads every observation file and every vault page's frontmatter,
+    plus one resolver per closed gap (transition_observation's id snapshot).
+    """
+    closable, ambiguous = obs.closable_gaps(obs.observations(), obs.resolver())
+    closed: list[Transition] = []
+    refused: list[tuple[str, str]] = []
+    for gap, slug in closable:
+        try:
+            t = transition_observation(
+                gap.path,
+                kind="done",
+                reason=f"page now exists: {slug}",
+                actor=actor,
+                dry_run=dry_run,
+            )
+        except ObservationRefused as e:
+            refused.append((gap.rel, e.reason))
+            console.print(f"  [yellow]gap not closed ({e.reason}):[/yellow] {escape(e.detail)}")
+            continue
+        closed.append(t)
+        if dry_run:
+            console.print(f"  [dim]would close:[/dim] {t.rel} → {escape(slug)}")
+    if closed and not dry_run:
+        console.print(f"  [green]closed {len(closed)} gap(s)[/green]")
+    if ambiguous:
+        console.print(f"  [dim]{len(ambiguous)} gap(s) ambiguous, left pending[/dim]")
+        for gap, target, claimants in ambiguous:
+            console.print(
+                f"  [dim]  {gap.rel}: {escape(target)} → {escape(', '.join(claimants))}[/dim]"
+            )
+    return ClosureReport(
+        closed=tuple(closed),
+        ambiguous=tuple((g.rel, t, c) for g, t, c in ambiguous),
+        refused=tuple(refused),
+    )

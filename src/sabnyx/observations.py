@@ -388,3 +388,32 @@ def recurrence_policy(idx: ObsIndex, oid: str) -> Policy:
     if head is not None:
         return Suppressed(head)
     return New()
+
+
+# -- gap closure (IDD §6, D3, D8b; M5) ----------------------------------------------
+
+
+def closable_gaps(
+    pending: Iterable[Observation], resolver: Resolver
+) -> tuple[list[tuple[Observation, str]], list[tuple[Observation, str, tuple[str, ...]]]]:
+    """Pending gaps whose `target` now names a page: (closable, ambiguous).
+
+    closable:  (gap, slug) for each gap whose target lookup is Found.
+    ambiguous: (gap, target, claimants) for each Ambiguous lookup; never
+               closed, never guessed (D8b), so the operator can see why.
+    Gaps without a target (legacy, prose) and Missing targets are neither.
+    Uses lookup(), the same rule identity uses, so "the page exists" means
+    the same thing to closure, identity and health. Pure: reads nothing
+    beyond the records and the resolver handed in; filename order.
+    """
+    closable: list[tuple[Observation, str]] = []
+    ambiguous: list[tuple[Observation, str, tuple[str, ...]]] = []
+    for o in sorted(pending, key=_by_name):
+        if o.fm.status != "pending" or o.fm.category != "gap" or o.fm.target is None:
+            continue
+        found = lookup(o.fm.target, resolver)
+        if isinstance(found, Found):
+            closable.append((o, found.slug))
+        elif isinstance(found, Ambiguous):
+            ambiguous.append((o, o.fm.target, found.claimants))
+    return closable, ambiguous
