@@ -32,15 +32,30 @@ class LedgerError(RuntimeError):
 class LedgerWriteError(LedgerError):
     """An append failed after its first write(2): the line may be on disk.
 
-    Raised by append_event for any failure from the first write(2) through
-    close -- a short write, or an OSError from write, _fsync or close. A
-    caller that mutated a file before appending must NOT restore it on this
-    error (the ledger may already record the mutation); run opsctl verify.
-    Failures before that point (OPS.mkdir, event construction, open)
-    propagate unchanged, so a caller can treat them as "nothing on disk".
-    Subclasses LedgerError so existing ``except LedgerError`` sites keep
-    catching the short write; LedgerError's own docstring (parse failures)
-    is deliberately not widened.
+    Raised by append_event for any exception from the first write(2) through
+    close -- a short write, or an OSError (or any other Exception) from
+    write, _fsync or close. A KeyboardInterrupt in the same region is
+    LedgerWriteInterrupted instead. A caller that mutated a file before
+    appending must NOT restore it on either (the ledger may already record
+    the mutation); run opsctl verify. Failures before that point
+    (OPS.mkdir, event construction, open) propagate unchanged, so a caller
+    can treat them as "nothing on disk". Subclasses LedgerError so existing
+    ``except LedgerError`` sites keep catching the short write;
+    LedgerError's own docstring (parse failures) is deliberately not
+    widened. See docs/decisions/0008-ledger-append-failure-semantics.md.
+    """
+
+
+class LedgerWriteInterrupted(KeyboardInterrupt):
+    """A KeyboardInterrupt that arrived after append_event's first write(2):
+    the line may be on disk, so a caller must not restore (as for
+    LedgerWriteError).
+
+    Still a KeyboardInterrupt, not an Exception: the interrupt keeps its
+    meaning (exit 130) and no ``except Exception`` handler can swallow it.
+    A KeyboardInterrupt before the first write(2) propagates unchanged.
+    Other BaseExceptions (SystemExit, GeneratorExit) are not classified;
+    callers treat them conservatively (no restore).
     """
 
 
@@ -165,8 +180,9 @@ def append_event(
 
     The append is the ledger's commit point: once this returns, the event
     is durable (see the fsync comment inline for exactly what "durable"
-    covers on each platform). Any failure from the first write(2) through
-    close raises LedgerWriteError: the event line may *already* be on disk,
+    covers on each platform). Any exception from the first write(2) through
+    close raises LedgerWriteError, and a Ctrl-C there raises
+    LedgerWriteInterrupted: the event line may *already* be on disk,
     so it is not proof the append didn't happen, and a short write in
     particular can't be undone (the partial line is on disk for good; the
     fix is to run opsctl verify, not to retry the write). Anything raised
@@ -213,8 +229,9 @@ def append_event(
     # Failure classes (IDD §10, D15): open() sits outside the try, so a
     # pre-write failure (read-only mount, permissions) propagates as itself
     # and the caller knows nothing reached the file. From the first write(2)
-    # through close, every failure becomes LedgerWriteError: bytes may be on
-    # disk, and the caller must not act as if the append never happened.
+    # through close, every exception becomes LedgerWriteError and a Ctrl-C
+    # becomes LedgerWriteInterrupted: bytes may be on disk, and the caller
+    # must not act as if the append never happened (ADR 0008).
     f = EVENTS_JSONL.open("ab", buffering=0)
     try:
         with f:
@@ -225,10 +242,16 @@ def append_event(
                     "line is on disk; run opsctl verify"
                 )
             _fsync(f.fileno())
-    except OSError as e:
+    except LedgerWriteError:
+        raise
+    except Exception as e:
         raise LedgerWriteError(
             f"ledger append failed after write began ({e}) — the line may be on "
             "disk; run opsctl verify"
+        ) from e
+    except KeyboardInterrupt as e:
+        raise LedgerWriteInterrupted(
+            "interrupted after the ledger write began — the line may be on disk; run opsctl verify"
         ) from e
     if created:
         _fsync_dir(EVENTS_JSONL.parent)

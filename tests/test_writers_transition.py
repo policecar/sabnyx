@@ -487,13 +487,32 @@ def _inject_pre(mp: pytest.MonkeyPatch, name: str) -> None:
             real_mkdir(self, *a, **k)
 
         mp.setattr(Path, "mkdir", bad_mkdir)
+    elif name == "mkdir-interrupt":
+        # The operator's Ctrl-C before any ledger byte is written: handled like
+        # any other pre-write failure (ADR 0008).
+        real_mkdir = Path.mkdir
+
+        def interrupted_mkdir(self: Path, *a: Any, **k: Any) -> None:
+            if self == ledger.OPS:
+                raise KeyboardInterrupt("injected: Ctrl-C at mkdir")
+            real_mkdir(self, *a, **k)
+
+        mp.setattr(Path, "mkdir", interrupted_mkdir)
+    elif name == "open-interrupt":
+        _inject(mp, "open-interrupt")
     else:
         raise AssertionError(name)
 
 
 @pytest.mark.parametrize(
     ("injection", "exc_type"),
-    [("open", PermissionError), ("event-build", TypeError), ("mkdir", PermissionError)],
+    [
+        ("open", PermissionError),
+        ("event-build", TypeError),
+        ("mkdir", PermissionError),
+        ("mkdir-interrupt", KeyboardInterrupt),
+        ("open-interrupt", KeyboardInterrupt),
+    ],
 )
 def test_pre_write_ledger_failure_restores_the_file_and_a_retry_succeeds(
     vault, injection, exc_type
@@ -506,6 +525,7 @@ def test_pre_write_ledger_failure_restores_the_file_and_a_retry_succeeds(
         with pytest.raises(exc_type, match="injected") as ei:
             _resolve(p)
     assert not isinstance(ei.value, ledger.LedgerWriteError)
+    assert not isinstance(ei.value, ledger.LedgerWriteInterrupted)  # re-raised as itself
 
     assert p.read_bytes() == before  # written, then restored byte for byte
     assert _lines() == lines
@@ -515,23 +535,38 @@ def test_pre_write_ledger_failure_restores_the_file_and_a_retry_succeeds(
     assert p.read_bytes() == _doc(_after(PENDING), nl="\r\n")
 
 
-@pytest.mark.parametrize("injection", ["short", "write-eio-partial", "fsync", "close"])
+@pytest.mark.parametrize(
+    ("injection", "exc_type"),
+    [
+        ("short", ledger.LedgerWriteError),
+        ("write-eio-partial", ledger.LedgerWriteError),
+        ("fsync", ledger.LedgerWriteError),
+        ("fsync-other", ledger.LedgerWriteError),
+        ("close", ledger.LedgerWriteError),
+        # A Ctrl-C after write(2): the full line is on disk, so no restore.
+        ("fsync-interrupt", ledger.LedgerWriteInterrupted),
+    ],
+)
 def test_post_write_ledger_failure_leaves_the_file_resolved_and_a_retry_is_refused(
-    vault, injection
+    vault, injection, exc_type
 ):
     p = _put("a.md", _doc(PENDING))
     lines = _lines()
 
     with pytest.MonkeyPatch.context() as mp:
         _inject(mp, injection)
-        with pytest.raises(ledger.LedgerWriteError):
+        # Any KeyboardInterrupt, then the exact type: a bare KeyboardInterrupt
+        # escaping pytest.raises(exc_type) would abort the whole session
+        # instead of failing this test.
+        with pytest.raises((ledger.LedgerWriteError, KeyboardInterrupt)) as ei:
             _resolve(p)
+    assert isinstance(ei.value, exc_type), f"{injection}: got {type(ei.value).__name__}"
 
     # No restore: the line may be on disk, so the file must agree with it.
     assert p.read_bytes() == _doc(_after(PENDING))
     meta, _body, _kind = fm.load(p)  # strictly valid
     assert meta["status"] == "promoted"
-    if injection in ("fsync", "close"):
+    if injection in ("fsync", "fsync-other", "close", "fsync-interrupt"):
         assert _lines() == lines + 1  # the full line is on disk
 
     _assert_refused(p, "not_pending", files=[p])

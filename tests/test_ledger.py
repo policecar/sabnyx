@@ -296,10 +296,26 @@ def _inject(monkeypatch, name: str) -> dict:
             return _REAL_OPEN(self, *a, **k)
 
         monkeypatch.setattr(Path, "open", bad_open)
-    elif name == "fsync":
+    elif name == "open-interrupt":
+        # The operator's Ctrl-C before any byte is written (ADR 0008).
+
+        def interrupted_open(self: Path, *a: Any, **k: Any) -> Any:
+            if self == ledger.EVENTS_JSONL:
+                raise KeyboardInterrupt("injected: Ctrl-C before open")
+            return _REAL_OPEN(self, *a, **k)
+
+        monkeypatch.setattr(Path, "open", interrupted_open)
+    elif name in ("fsync", "fsync-interrupt", "fsync-other"):
+        exc: BaseException = {
+            "fsync": OSError(5, "injected: fsync EIO"),
+            # A Ctrl-C after write(2) returned: the full line is on disk.
+            "fsync-interrupt": KeyboardInterrupt("injected: Ctrl-C at fsync"),
+            # Not an OSError: still after the write, still classified.
+            "fsync-other": ValueError("injected: non-OSError at fsync"),
+        }[name]
 
         def bad_fsync(fd: int) -> None:
-            raise OSError(5, "injected: fsync EIO")
+            raise exc
 
         monkeypatch.setattr(ledger, "_fsync", bad_fsync)
     else:  # enospc | write-eio-partial | short | close
@@ -308,23 +324,26 @@ def _inject(monkeypatch, name: str) -> dict:
 
 
 @pytest.mark.parametrize(
-    ("injection", "on_disk", "write_error"),
+    ("injection", "on_disk", "cls"),
     [
-        # pre-write: nothing reached the file → plain exception, caller may restore
-        ("mkdir", "none", False),
-        ("event-build", "none", False),
-        ("open", "none", False),
-        # post-write: bytes may be on disk → LedgerWriteError, caller must not restore
-        ("enospc", "none", True),  # known conservative row (indistinguishable from EIO)
-        ("write-eio-partial", "partial", True),
-        ("short", "partial", True),
-        ("fsync", "full", True),
-        ("close", "full", True),
+        # pre-write: nothing reached the file → the original exception (or the
+        # operator's KeyboardInterrupt) propagates unchanged; caller may restore
+        ("mkdir", "none", "plain"),
+        ("event-build", "none", "plain"),
+        ("open", "none", "plain"),
+        ("open-interrupt", "none", "plain"),
+        # post-write: bytes may be on disk → LedgerWriteError, or
+        # LedgerWriteInterrupted for a Ctrl-C; caller must not restore
+        ("enospc", "none", "write_error"),  # known conservative row (indistinguishable from EIO)
+        ("write-eio-partial", "partial", "write_error"),
+        ("short", "partial", "write_error"),
+        ("fsync", "full", "write_error"),
+        ("fsync-other", "full", "write_error"),
+        ("close", "full", "write_error"),
+        ("fsync-interrupt", "full", "interrupted"),
     ],
 )
-def test_append_failure_class_matches_what_is_on_disk(
-    tmp_vault, injection, on_disk, write_error
-) -> None:
+def test_append_failure_class_matches_what_is_on_disk(tmp_vault, injection, on_disk, cls) -> None:
     # Steady state: the ledger already exists with one good line.
     ledger.append_event(kind="seed", actor="t", subject="s", payload={"n": 0})
     before = ledger.EVENTS_JSONL.read_bytes()
@@ -335,7 +354,8 @@ def test_append_failure_class_matches_what_is_on_disk(
     with pytest.MonkeyPatch.context() as mp:
         kwargs |= _inject(mp, injection)
         with pytest.raises(
-            (OSError, TypeError, ledger.LedgerError), match="injected|float|short write"
+            (OSError, TypeError, ledger.LedgerError, KeyboardInterrupt),
+            match="injected|float|short write|interrupted after the ledger write began",
         ) as excinfo:
             ledger.append_event(**kwargs)
 
@@ -345,15 +365,29 @@ def test_append_failure_class_matches_what_is_on_disk(
     observed = "none" if not tail else ("full" if tail.endswith(b"\n") else "partial")
     assert observed == on_disk
 
-    assert isinstance(excinfo.value, ledger.LedgerWriteError) is write_error, (
-        f"{injection}: got {type(excinfo.value).__name__}"
+    e = excinfo.value
+    write_error = isinstance(e, ledger.LedgerWriteError)
+    interrupted = isinstance(e, ledger.LedgerWriteInterrupted)
+    assert (write_error, interrupted) == (cls == "write_error", cls == "interrupted"), (
+        f"{injection}: got {type(e).__name__}"
     )
     if write_error:
-        assert isinstance(excinfo.value, ledger.LedgerError)  # existing handlers still catch it
-        assert "opsctl verify" in str(excinfo.value)
+        assert isinstance(e, ledger.LedgerError)  # existing handlers still catch it
+        assert "opsctl verify" in str(e)
+    if interrupted:
+        assert "opsctl verify" in str(e)
+        assert isinstance(e.__cause__, KeyboardInterrupt)  # original interrupt kept
     if on_disk != "none":
         # The safety property itself: bytes on disk ⇒ never a restorable class.
-        assert write_error
+        assert write_error or interrupted
+
+
+def test_ledger_write_interrupted_is_an_interrupt_not_an_exception() -> None:
+    # ADR 0008: it keeps the interrupt's meaning (exit 130) and cannot be
+    # swallowed by an `except Exception` handler.
+    assert issubclass(ledger.LedgerWriteInterrupted, KeyboardInterrupt)
+    assert not issubclass(ledger.LedgerWriteInterrupted, Exception)
+    assert not issubclass(ledger.LedgerWriteInterrupted, ledger.LedgerError)
 
 
 def test_open_and_fsync_failures_are_now_distinguishable(tmp_vault) -> None:

@@ -450,15 +450,19 @@ def _check_reason(reason: str) -> str:
 #   cannot be on disk (D15, IDD §10).
 # @rationale: the file is written first and the ledger second, because the
 #   ledger records mutations that happened. append_event raises
-#   LedgerWriteError for every failure from the first write(2) through close:
-#   the line may be on disk, so restoring the file could leave the ledger
-#   recording a resolution that never happened; the file stays resolved and a
-#   retry is refused not_pending. Any other exception (OPS.mkdir, event
-#   construction, open: a read-only mount, permissions) means nothing reached
-#   the ledger, so the original bytes are put back and a retry works. Deciding
-#   by exception type is the only signal there is: a LedgerError-only rule is
-#   unsafe in 3 of 8 failure modes, the subclass in 0 (Demonstrate c1).
-#   ENOSPC with 0 bytes written is a LedgerWriteError too: conservative.
+#   LedgerWriteError (any exception) or LedgerWriteInterrupted (a Ctrl-C) from
+#   the first write(2) through close: the line may be on disk, so restoring
+#   the file could leave the ledger recording a resolution that never
+#   happened; the file stays resolved and a retry is refused not_pending. Any
+#   other Exception or KeyboardInterrupt (OPS.mkdir, event construction, open:
+#   a read-only mount, permissions, the operator's Ctrl-C) means nothing
+#   reached the ledger, so the original bytes are put back, the error is
+#   re-raised, and a retry works. Deciding by exception type is the only
+#   signal there is: a LedgerError-only rule is unsafe in 3 of 8 failure
+#   modes, the subclass in 0 (Demonstrate c1). ENOSPC with 0 bytes written is
+#   a LedgerWriteError too: conservative. Other BaseExceptions (SystemExit,
+#   GeneratorExit) are not classified and do not restore: conservative.
+#   ADR 0008.
 def transition_observation(
     path: Path,
     *,
@@ -482,8 +486,9 @@ def transition_observation(
     Then the file is written atomically and one `observation.resolved`
     (plane event) is appended, subject rel, payload {category, old_status,
     new_status, kind, resolution} plus obs_id and target when set. On a
-    ledger failure (DEC-003): LedgerWriteError propagates and the file stays
-    resolved with possibly no event; any other exception restores the
+    ledger failure (DEC-003): LedgerWriteError or LedgerWriteInterrupted
+    propagates and the file stays resolved with possibly no event; any other
+    exception, or a KeyboardInterrupt before the first write(2), restores the
     original bytes and propagates; if the restore fails too, a RuntimeError
     chained to both is raised and the file is left resolved with no ledger
     event. Both leftovers have the signature Cycle 2 `reconcile` detects: a
@@ -564,9 +569,9 @@ def transition_observation(
         ledger.append_event(
             plane="event", kind="observation.resolved", actor=actor, subject=rel, payload=payload
         )
-    except ledger.LedgerWriteError:
+    except (ledger.LedgerWriteError, ledger.LedgerWriteInterrupted):
         raise  # the line may be on disk: never restore (DEC-003)
-    except Exception as ledger_err:
+    except (Exception, KeyboardInterrupt) as ledger_err:
         try:
             fm.write_text_atomic(resolved_path, raw)
         except Exception as restore_err:
