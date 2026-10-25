@@ -6,6 +6,7 @@ One schedulable command that drives the self-maintaining vault cycle:
   2. LLM triage pass   — batched model call for deferred items (≥ threshold,
                           or any item past --max-age-days, whichever fires).
   3. Reweave pass       — consume pending reweave.proposed intents.
+     Gap closure        — resolve pending gaps whose target page now exists.
   4. Health pass        — print a concise audit summary.
 
 Every mutation is ledgered. --dry-run writes nothing and makes no calls to
