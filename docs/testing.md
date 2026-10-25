@@ -66,12 +66,14 @@ uv run sabnyx verify           # cheapest live: one structured call per role (co
 uv run sabnyx ask "..."        # read-only: answers from the vault, cites [[links]]
 uv run sabnyx lint             # no LLM: frontmatter + containment gates
 uv run sabnyx health           # no LLM: orphans, broken links, currency, cost
+uv run sabnyx observations list  # no LLM: pending observations, oldest first
 uv run sabnyx tend --dry-run   # the heartbeat — previews everything, writes NOTHING
 ```
 
 > ⚠️ **Mutating** (run only when you mean it — these write to `vault/` and
 > append to `ops/events.jsonl`): `sabnyx ingest`, `sabnyx promote`,
-> `sabnyx reweave`, `sabnyx scan`, `sabnyx tend --yes`.
+> `sabnyx reweave`, `sabnyx scan`, `sabnyx entities gaps`,
+> `sabnyx observations resolve|archive`, `sabnyx tend --yes`.
 
 ### halbor — project first (`ask` reads the projected face, not the vault)
 

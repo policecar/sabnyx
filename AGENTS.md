@@ -72,6 +72,11 @@ If during normal work you notice any of:
 the appropriate `category`. Cost: ~30 seconds. Value over time:
 enormous.
 
+Close an observation with `sabnyx observations resolve FILE --reason …`
+or `archive FILE --kind wontfix|duplicate|obsolete --reason …`. Never
+hand-edit `status`: lint rejects a status without its resolution
+fields, and the transition is ledgered.
+
 ## 5. Reweave after every promote
 
 `promote` emits a `reweave.proposed` event carrying a prompt. The
@@ -108,6 +113,7 @@ Stage 3 public surface will have a separate voice document.
   - Putting dates in filenames (slugs are atemporal)
   - Meeting notes or session scratch in atlas/
   - Instance specifics in tracked files (see 9)
+  - Hand-editing an observation's `status` instead of resolve/archive
 
 If you catch yourself doing any of these, STOP, write an observation
 with `category: friction`, and hand the task back to the operator.

@@ -30,7 +30,7 @@ the vault (and `opsctl` uses `SPEC.md` as its repo-root marker):
 | `AGENTS.md` | operator instructions for humans and LLMs on this vault |
 
 Everything else is in `docs/` — guides (`architecture.md`, `testing.md`,
-`deployment.md`), ADRs (`decisions/`), plans, dated reviews, and recon notes.
+`deployment.md`, `observations.md`), ADRs (`decisions/`), plans, dated reviews, and recon notes.
 `docs/README.md` is the index.
 
 ## Setup
@@ -71,6 +71,7 @@ uv run sabnyx promote <intake.md> --as concept   # move one file intake → atla
 uv run sabnyx reweave                     # LLM: backward-link recent promotions
 uv run sabnyx scan                        # LLM: contradiction scan across atlas
 uv run sabnyx entities                    # lightweight entity layer: list, gaps, resolve
+uv run sabnyx observations list           # pending observations; `resolve` / `archive` one
 uv run sabnyx lint                        # gates 1,2,4 (frontmatter + containment)
 uv run sabnyx health                      # orphans, broken links, currency, cost
 uv run sabnyx reconcile                   # diff the ledger against atlas/ (drift check)
@@ -124,6 +125,10 @@ One schedulable command that runs the whole self-maintenance cycle:
 3. **Reweave** — consume pending `reweave.proposed` intents (backward links +
    contradiction observations).
 4. **Health** — a concise audit summary.
+
+Between reweave and health, `tend` resolves every pending gap whose `target`
+page now exists (deterministic, no LLM; it runs even with `--no-health`, and
+`--dry-run` previews it). See `docs/observations.md`.
 
 ```sh
 uv run sabnyx tend --dry-run     # preview everything; writes NOTHING
