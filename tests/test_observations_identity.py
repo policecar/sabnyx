@@ -84,6 +84,17 @@ def _gap(name: str, target: str = "foo-page", **extra) -> Observation:
     return _rec(name, _meta("gap", target=target, **extra))
 
 
+def _oid(meta: ObservationFrontmatter, resolver: Resolver = EMPTY) -> str:
+    """obs_id of a meta the test expects to carry identity; fails on prose.
+
+    Without this, a None id would reach recurrence_policy as an unknown key
+    and come back New(), so a test asserting New() could pass on prose.
+    """
+    oid = obs.obs_id(meta, resolver)
+    assert oid is not None, f"expected an identity-bearing observation: {meta!r}"
+    return oid
+
+
 def _page(dir_: Path, name: str, aliases: list[str] | None = None) -> None:
     meta: dict = {"type": "concept", "description": "a synthetic page for the identity layer tests"}
     if aliases is not None:
@@ -273,7 +284,7 @@ def test_policy_nothing_is_new():
 def test_policy_already_pending_is_first_in_filename_order(tmp_vault):
     a, b = _gap("2026-06-12-gap-foo.md"), _gap("2026-06-12-gap-foo-2.md")
     idx = obs.index([a, b], EMPTY)
-    oid = obs.obs_id(a.fm, EMPTY)
+    oid = _oid(a.fm)
     assert idx.pending[oid] == [b, a]  # '-' sorts before '.': foo-2 first by name
     assert obs.recurrence_policy(idx, oid) == AlreadyPending(b)
 
@@ -315,7 +326,7 @@ def test_trust_gate_untrusted_cannot_suppress_or_reopen(tmp_vault, agent, kind):
     idx = obs.index(untrusted, EMPTY)
     assert idx == _idx()  # absent from every map
     for trusted in _signals("sabnyx-entities"):
-        assert obs.recurrence_policy(idx, obs.obs_id(trusted, EMPTY)) == New()
+        assert obs.recurrence_policy(idx, _oid(trusted)) == New()
 
     # Control: the same dismissed records from a trusted source DO suppress.
     trusted_recs = [
@@ -323,7 +334,7 @@ def test_trust_gate_untrusted_cannot_suppress_or_reopen(tmp_vault, agent, kind):
     ]
     tidx = obs.index(trusted_recs, EMPTY)
     for meta, rec in zip(_signals("sabnyx-entities"), trusted_recs, strict=True):
-        assert obs.recurrence_policy(tidx, obs.obs_id(meta, EMPTY)) == Suppressed(rec)
+        assert obs.recurrence_policy(tidx, _oid(meta)) == Suppressed(rec)
 
 
 # -- (5) chain head via supersedes, over the -2 sort trap ---------------------------
@@ -340,7 +351,7 @@ def test_chain_head_follows_supersedes_past_sort_trap(tmp_vault):
     foo2 = _gap(FOO2, supersedes=_rel(FOO), **_closed("wontfix", date(2026, 6, 14)))
     foo3 = _gap(FOO3, supersedes=_rel(FOO2), **_closed("done", date(2026, 6, 15)))
     idx = obs.index([foo, foo2, foo3], EMPTY)
-    oid = obs.obs_id(foo.fm, EMPTY)
+    oid = _oid(foo.fm)
     assert idx.resolved == {oid: foo3}
     assert idx.multi_head == {}
     assert obs.recurrence_policy(idx, oid) == Reopen(foo3)
@@ -352,7 +363,7 @@ def test_chain_head_middle_link_is_not_max_filename_nor_latest_date(tmp_vault):
     foo = _gap(FOO, **_closed("done", date(2026, 6, 20)))
     foo2 = _gap(FOO2, supersedes=_rel(FOO), **_closed("wontfix", date(2026, 6, 14)))
     idx = obs.index([foo, foo2], EMPTY)
-    oid = obs.obs_id(foo.fm, EMPTY)
+    oid = _oid(foo.fm)
     assert idx.resolved == {oid: foo2}
     assert obs.recurrence_policy(idx, oid) == Suppressed(foo2)
 
@@ -372,7 +383,7 @@ def test_chain_head_multi_head_tie_break_and_report(tmp_vault, a_dates, b_dates,
         "b.md", _meta("gap", target="foo", observed=b_dates[1], **_closed("wontfix", b_dates[0]))
     )
     idx = obs.index([b, a], EMPTY)
-    oid = obs.obs_id(a.fm, EMPTY)
+    oid = _oid(a.fm)
     assert idx.resolved[oid] == {"a": a, "b": b}[winner]
     assert idx.multi_head == {oid: (a, b)}
 
@@ -388,7 +399,7 @@ def test_chain_head_dangling_and_mismatched_reported(tmp_vault):
     assert idx.mismatched == (other, prose)  # another id, and no id at all
     # Neither edge removes a head: head and dangling are both candidates.
     assert idx.multi_head == {oid: (dangling, head)}
-    assert idx.resolved[obs.obs_id(other.fm, EMPTY)] == other
+    assert idx.resolved[_oid(other.fm)] == other
 
 
 @pytest.mark.parametrize("kind", ["wontfix", "done"])
@@ -396,7 +407,7 @@ def test_chain_head_forged_cycle_never_new(tmp_vault, kind):
     a = _gap("a.md", supersedes=_rel("b.md"), **_closed(kind, date(2026, 6, 13)))
     b = _gap("b.md", supersedes=_rel("a.md"), **_closed(kind, date(2026, 6, 14)))
     idx = obs.index([a, b], EMPTY)
-    oid = obs.obs_id(a.fm, EMPTY)
+    oid = _oid(a.fm)
     assert idx.multi_head == {oid: (a, b)}
     assert idx.resolved[oid] == b
     assert obs.recurrence_policy(idx, oid) != New()
@@ -405,7 +416,7 @@ def test_chain_head_forged_cycle_never_new(tmp_vault, kind):
 def test_chain_head_self_supersede_never_new(tmp_vault):
     a = _gap("a.md", supersedes=_rel("a.md"), **_closed("wontfix"))
     idx = obs.index([a], EMPTY)
-    oid = obs.obs_id(a.fm, EMPTY)
+    oid = _oid(a.fm)
     assert idx.multi_head == {oid: (a,)}
     assert obs.recurrence_policy(idx, oid) == Suppressed(a)
 
@@ -415,7 +426,7 @@ def test_chain_head_reopen_in_progress_is_pending_not_multi_head(tmp_vault):
     foo = _gap(FOO, **_closed("done"))
     foo2 = _gap(FOO2, supersedes=_rel(FOO))
     idx = obs.index([foo, foo2], EMPTY)
-    oid = obs.obs_id(foo.fm, EMPTY)
+    oid = _oid(foo.fm)
     assert idx.pending == {oid: [foo2]}
     assert idx.resolved == {}
     assert idx.multi_head == {}
@@ -465,12 +476,12 @@ def test_identity_contradiction_needs_exactly_two(involves):
 
 
 def test_identity_id_format():
-    oid = obs.obs_id(_contradiction("foo", "bar"), EMPTY)
+    oid = _oid(_contradiction("foo", "bar"))
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", oid)
 
 
 def test_identity_category_is_part_of_the_id():
-    gap = obs.obs_id(_meta("gap", target="foo"), EMPTY)
+    gap = _oid(_meta("gap", target="foo"))
     assert gap != obs.obs_id(_contradiction("foo", "bar"), EMPTY)
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", gap)
 

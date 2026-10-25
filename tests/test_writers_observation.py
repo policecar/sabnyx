@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from rich.console import Console
 from rich.markup import escape
 
 from sabnyx import fm, ledger, paths
@@ -26,14 +27,15 @@ TODAY = date(2026, 6, 20)
 TRUSTED = "sabnyx-scan"
 
 
-class _Lines:
-    """Console sink: records each print's markup string verbatim."""
+class _Lines(Console):
+    """A quiet Console that records each print's markup string verbatim."""
 
     def __init__(self) -> None:
+        super().__init__(quiet=True)
         self.lines: list[str] = []
 
-    def print(self, *args, **_kwargs) -> None:
-        self.lines.append(" ".join(str(a) for a in args))
+    def print(self, *objects: object, **_kw: object) -> None:
+        self.lines.append(" ".join(str(o) for o in objects))
 
 
 @pytest.fixture
@@ -106,7 +108,7 @@ def _write(ob: ProposedObservation, **kw) -> tuple[WriteOutcome, _Lines]:
     lines = _Lines()
     kw.setdefault("producer", "scan")
     kw.setdefault("actor", TRUSTED)
-    out = write_observation(ob, console=lines, **kw)  # ty: ignore[invalid-argument-type]
+    out = write_observation(ob, console=lines, **kw)
     return out, lines
 
 
@@ -170,6 +172,7 @@ def test_kind_written_identity_contradiction(vault):
     assert out.obs_id.startswith("sha256:")
     assert out.dry_run is False
     assert out.error is None
+    assert out.path is not None
     meta, body, _ = fm.load(out.path)
     assert meta["producer"] == "scan"
     assert meta["source_agent"] == TRUSTED
@@ -196,6 +199,7 @@ def test_kind_reopened_done_head_then_already_pending(vault):
 
     assert out.kind == "reopened"
     assert out.path == paths.OBSERVATIONS / f"{_base(ob)}.md"
+    assert out.path is not None
     meta, _, _ = fm.load(out.path)
     assert meta["supersedes"] == _rel(head)
     assert meta["status"] == "pending"
@@ -231,6 +235,7 @@ def test_reopen_validates_supersedes_before_either_exit(vault, monkeypatch, dry_
     assert out.kind == "invalid"
     assert out.path is None
     assert out.obs_id is not None
+    assert out.error is not None
     assert "supersedes" in out.error
     assert out.dry_run is dry_run
     assert lines.lines == ([] if dry_run else [f"  [red]invalid:[/red] {escape(out.error)}"])
@@ -327,6 +332,7 @@ def test_suffix_base_occupied_lands_on_2(vault):
     out, lines = _write(ob)
     assert out.kind == "written"
     assert out.path == paths.OBSERVATIONS / f"{_base(ob)}-2.md"
+    assert out.path is not None
     assert out.path.exists()
     assert lines.lines == [f"  [yellow]wrote[/yellow] {out.rel}"]
 
@@ -385,6 +391,7 @@ def test_dry_run_touches_neither_disk_nor_ledger(vault, head_kind, expected):
     assert out.obs_id is not None
     if expected != "suppressed":
         assert out.path == paths.OBSERVATIONS / f"{_base(ob)}.md"
+        assert out.path is not None
         assert not out.path.exists()
     assert _snapshot(vault["DATA_ROOT"]) == before
     assert list(ledger.replay()) == events
@@ -522,8 +529,8 @@ def test_pathlike_involves_open_nothing_outside_vault_and_ops(vault, monkeypatch
 @pytest.mark.parametrize("field", ["source_agent", "supersedes", "producer", "target"])
 def test_proposed_observation_forbids_provenance_fields(field):
     with pytest.raises(ValidationError):
-        ProposedObservation(
-            **{
+        ProposedObservation.model_validate(
+            {
                 "category": "contradiction",
                 "title": "t",
                 "body": "b",

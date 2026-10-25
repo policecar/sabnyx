@@ -112,6 +112,10 @@ def scan_cmd(role: ModelRole, yes: bool, dry_run: bool) -> None:
         elif pv.path in planned_paths:
             continue
         if pv.kind in ("written", "reopened"):
+            # Unreachable: WriteOutcome.__post_init__ gives every non-invalid
+            # outcome a path. Explicit, so the add below is a Path by narrowing.
+            if pv.path is None:
+                raise RuntimeError(f"{pv.kind} WriteOutcome without a path")
             planned_paths.add(pv.path)
         plan.append((f, pv))
     fresh = [f for f, pv in plan if pv.kind in ("written", "reopened")]

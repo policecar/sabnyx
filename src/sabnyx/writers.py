@@ -342,9 +342,11 @@ def ledger_suppressed(outcomes: Iterable[WriteOutcome], *, actor: str) -> int:
     """
     groups: dict[str, list[WriteOutcome]] = {}
     for o in outcomes:
-        # A suppressed outcome always has an obs_id: WriteOutcome.__post_init__
-        # raises otherwise, so the key below is never None.
         if o.kind == "suppressed" and not o.dry_run:
+            # Unreachable: WriteOutcome.__post_init__ requires an obs_id for
+            # suppressed. Explicit, so the key below is a str by narrowing.
+            if o.obs_id is None:
+                raise RuntimeError("suppressed WriteOutcome without an obs_id")
             groups.setdefault(o.obs_id, []).append(o)
     for oid, group in groups.items():
         first = group[0]

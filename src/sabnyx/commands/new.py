@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from typing import get_args
 
 import click
 from pydantic import ValidationError
@@ -10,7 +11,7 @@ from rich.console import Console
 
 from .. import fm, ledger, writers
 from ..paths import DATA_ROOT, INTAKE, ensure_tree
-from ..schemas import IntakeFrontmatter, ProposedObservation
+from ..schemas import IntakeFrontmatter, ObservationCategory, ProposedObservation
 from ..util import slugify
 
 
@@ -33,7 +34,7 @@ from ..util import slugify
 @click.option("--tags", default="", help="Comma-separated tags.")
 @click.option(
     "--category",
-    type=click.Choice(["gap", "contradiction", "connection", "friction", "structural"]),
+    type=click.Choice(get_args(ObservationCategory)),
     default=None,
     help="For type=observation only.",
 )
@@ -46,7 +47,7 @@ def new_cmd(
     source_url: str | None,
     source_date: str | None,
     tags: str,
-    category: str | None,
+    category: ObservationCategory | None,
 ) -> None:
     """Create an intake file with a valid frontmatter skeleton."""
     ensure_tree()
@@ -126,7 +127,7 @@ def new_cmd(
     click.echo(str(path))
 
 
-def _new_observation(title: str, description: str, category: str) -> None:
+def _new_observation(title: str, description: str, category: ObservationCategory) -> None:
     """`new --type observation` through the shared writer (D2): one filename
     and metadata path for every producer. Exit codes keep their meaning and
     precedence (validation never depends on disk): invalid → 3, a name

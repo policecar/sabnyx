@@ -22,10 +22,11 @@ from sabnyx.writers import close_resolved_gaps
 _DESC = "a synthetic page long enough to satisfy the atlas description schema"
 
 
-class _Lines:
-    """A console stand-in that records markup lines."""
+class _Lines(Console):
+    """A quiet Console that records each print's markup string verbatim."""
 
     def __init__(self) -> None:
+        super().__init__(quiet=True)
         self.lines: list[str] = []
 
     def print(self, *objects: object, **_kw: object) -> None:

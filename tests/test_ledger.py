@@ -278,8 +278,8 @@ def _proxy_open(mode: str):
     return opener
 
 
-def _inject(monkeypatch, name: str) -> dict:
-    """Install injection `name`; return extra append_event kwargs."""
+def _inject(monkeypatch, name: str) -> dict[str, object] | None:
+    """Install injection `name`; return a replacement payload, or None."""
     if name == "mkdir":
 
         def bad_mkdir(self: Path, *a: Any, **k: Any) -> None:
@@ -287,7 +287,7 @@ def _inject(monkeypatch, name: str) -> dict:
 
         monkeypatch.setattr(Path, "mkdir", bad_mkdir)
     elif name == "event-build":
-        return {"payload": {"x": 1.5}}  # floats are rejected while building
+        return {"x": 1.5}  # floats are rejected while building
     elif name == "open":
 
         def bad_open(self: Path, *a: Any, **k: Any) -> Any:
@@ -320,7 +320,7 @@ def _inject(monkeypatch, name: str) -> dict:
         monkeypatch.setattr(ledger, "_fsync", bad_fsync)
     else:  # enospc | write-eio-partial | short | close
         monkeypatch.setattr(Path, "open", _proxy_open(name))
-    return {}
+    return None
 
 
 @pytest.mark.parametrize(
@@ -348,16 +348,18 @@ def test_append_failure_class_matches_what_is_on_disk(tmp_vault, injection, on_d
     ledger.append_event(kind="seed", actor="t", subject="s", payload={"n": 0})
     before = ledger.EVENTS_JSONL.read_bytes()
 
-    kwargs = {"kind": "observation.resolved", "actor": "t", "subject": "s", "payload": {"n": 1}}
+    payload: dict[str, object] = {"n": 1}
     # A scoped MonkeyPatch, not the fixture's: undoing that one would also
     # undo tmp_vault's path redirects.
     with pytest.MonkeyPatch.context() as mp:
-        kwargs |= _inject(mp, injection)
+        payload = _inject(mp, injection) or payload
         with pytest.raises(
             (OSError, TypeError, ledger.LedgerError, KeyboardInterrupt),
             match="injected|float|short write|interrupted after the ledger write began",
         ) as excinfo:
-            ledger.append_event(**kwargs)
+            ledger.append_event(
+                kind="observation.resolved", actor="t", subject="s", payload=payload
+            )
 
     after = ledger.EVENTS_JSONL.read_bytes()
     assert after.startswith(before), "a failed append must never rewrite earlier lines"

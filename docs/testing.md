@@ -18,10 +18,12 @@ src/
 ## Layer 1 — Automated suites (free, no keys, the gate)
 
 ```sh
-# sabnyx — Python
+# sabnyx — Python: CI's python job runs the first three (.github/workflows/ci.yml)
 cd ../sabnyx
 uv run pytest -q                                  # all green (334 at last count)
 uv run ruff check . && uv run ruff format --check .
+uv run ty check                                   # type check
+uv run sabnyx lint                                # gates 1,2,4 on the vault
 
 # sabnyx — opsctl (Rust control plane) — NOT covered by pytest
 cd opsctl && cargo test           # ledger, root, query, project, supervise, verify

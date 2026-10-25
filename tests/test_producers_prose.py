@@ -18,7 +18,7 @@ from rich.console import Console
 
 from sabnyx import fm, ledger, paths, services, writers
 from sabnyx.commands import reweave as rw
-from sabnyx.schemas import IngestChangeset, ProposedObservation, ReweaveChangeset
+from sabnyx.schemas import IngestChangeset, ProposedObservation, ResolutionKind, ReweaveChangeset
 
 _DESC = "a concept page long enough to satisfy the atlas description schema"
 _QUIET = Console(quiet=True)
@@ -305,11 +305,13 @@ def test_new_observation_tracked_signal_exits_1_not_silently_0(tmp_vault, monkey
     from sabnyx.commands import new as new_mod
 
     p = paths.OBSERVATIONS / "2026-06-12-friction-x.md"
-    extra = {"resolution_kind": "wontfix"} if kind == "suppressed" else {}
+    resolution_kind: ResolutionKind | None = "wontfix" if kind == "suppressed" else None
     monkeypatch.setattr(
         new_mod.writers,
         "write_observation",
-        lambda *_a, **_k: writers.WriteOutcome(kind, p, obs_id="sha256:" + "0" * 64, **extra),
+        lambda *_a, **_k: writers.WriteOutcome(
+            kind, p, obs_id="sha256:" + "0" * 64, resolution_kind=resolution_kind
+        ),
     )
     result = _new(*_OBS_ARGS)
     assert result.exit_code == 1

@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import stat
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -56,7 +57,11 @@ class _SafeYAML(YAMLHandler):
         return yaml.safe_load(fm)
 
     def split(self, text: str) -> tuple[str, str]:
-        if not self.FM_BOUNDARY.match(text):
+        boundary = self.FM_BOUNDARY
+        if boundary is None:
+            # YAMLHandler sets it; None means the library changed under us.
+            raise RuntimeError("frontmatter YAMLHandler.FM_BOUNDARY is unset")
+        if not boundary.match(text):
             # parse() treats ValueError as "no frontmatter": the same result
             # auto-detection gives for text that doesn't start with a fence.
             raise ValueError("no frontmatter fence at the start of the text")
@@ -265,7 +270,7 @@ def _render_line(key: str, value: object) -> str:
     return text[:-1]
 
 
-def patch_frontmatter(raw: str, updates: dict[str, object]) -> str:
+def patch_frontmatter(raw: str, updates: Mapping[str, object]) -> str:
     """Return `raw` with `updates` applied to its frontmatter, every other
     byte copied.
 
