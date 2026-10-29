@@ -13,6 +13,11 @@ wire into a health check.
 A deliberate deletion is acknowledged with a compensating event (SPEC §10):
 append kind `atlas.removed` with subject = the DATA_ROOT-relative file path,
 and reconcile stops expecting that file.
+
+Observations are checked the same way, as warnings only: a pending file with
+no `observation.created`, and a resolved/archived file with no
+`observation.resolved`. Hand-dropped observations (AGENTS §4) land in the
+first list by design.
 """
 
 from __future__ import annotations
@@ -21,10 +26,21 @@ import sys
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from .. import services
 from ..paths import DATA_ROOT
+
+
+def _warn_list(console: Console, title: str, hint: str, rels: list[str]) -> None:
+    if not rels:
+        return
+    console.print(f"\n[yellow]{title}[/yellow] [dim]{hint}:[/dim]")
+    for rel in rels[:20]:
+        console.print(f"  {escape(rel)}")
+    if len(rels) > 20:
+        console.print(f"  ... and {len(rels) - 20} more")
 
 
 @click.command("reconcile")
@@ -36,12 +52,19 @@ def reconcile_cmd() -> None:
     """
     console = Console()
     r = services.reconcile_atlas()
+    o = services.reconcile_observations()
 
     table = Table(title="ledger ⇆ filesystem reconciliation")
     table.add_column("Check")
     table.add_column("Result", justify="right")
     table.add_row("atlas files without a promote event", str(len(r.unledgered)))
     table.add_row("promote events with a missing file", str(len(r.orphaned)))
+    table.add_row(
+        "pending observations without a created event", str(len(o.pending_without_created))
+    )
+    table.add_row(
+        "closed observations without a resolved event", str(len(o.resolved_without_resolved))
+    )
     console.print(table)
 
     if r.unledgered:
@@ -64,10 +87,24 @@ def reconcile_cmd() -> None:
         if len(r.orphaned) > 20:
             console.print(f"  ... and {len(r.orphaned) - 20} more")
 
+    _warn_list(
+        console,
+        "pending observations with no observation.created event",
+        "(dropped by hand, or pre-ledger)",
+        o.pending_without_created,
+    )
+    _warn_list(
+        console,
+        "closed observations with no observation.resolved event",
+        "(status edited by hand, or pre-ledger)",
+        o.resolved_without_resolved,
+    )
+
     if r.clean:
         console.print(f"\n[green]clean[/green] — ledger and atlas/ agree (under {DATA_ROOT}).")
 
-    # Orphaned events are a genuine inconsistency; unledgered files are expected
-    # (manual authoring is legitimate), so they don't fail the check.
+    # Orphaned events are a genuine inconsistency; unledgered files and the
+    # observation mismatches are expected (manual authoring is legitimate),
+    # so they don't fail the check.
     if r.orphaned:
         sys.exit(1)

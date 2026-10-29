@@ -237,6 +237,46 @@ def reconcile_atlas() -> Reconciliation:
     )
 
 
+@dataclass(frozen=True)
+class ObservationReconciliation:
+    """Observation files whose lifecycle the ledger does not record.
+
+    Both lists warn, never fail: observations dropped by hand (AGENTS §4)
+    legitimately have no `observation.created`, and pre-ledger closures have
+    no `observation.resolved`.
+    """
+
+    pending_without_created: list[str]  # rels, sorted
+    resolved_without_resolved: list[str]  # rels, sorted
+
+
+def reconcile_observations() -> ObservationReconciliation:
+    """Diff observation files against their ledger events, by rel.
+
+    Read-only. A pending file needs an `observation.created` whose subject
+    is its rel; a non-pending file needs an `observation.resolved` whose
+    subject is its rel (resolve/archive transition in place, so the rel does
+    not change). Malformed files are skipped: health reports them. Subjects
+    are compared as strings only; no path is built from one.
+    """
+    created: set[str] = set()
+    resolved: set[str] = set()
+    for e in ledger.replay():
+        if e.kind == "observation.created":
+            created.add(e.subject)
+        elif e.kind == "observation.resolved":
+            resolved.add(e.subject)
+    valid, _malformed = obs.load_all()
+    return ObservationReconciliation(
+        pending_without_created=sorted(
+            o.rel for o in valid if o.fm.status == "pending" and o.rel not in created
+        ),
+        resolved_without_resolved=sorted(
+            o.rel for o in valid if o.fm.status != "pending" and o.rel not in resolved
+        ),
+    )
+
+
 # -- auto-promote gate (pure, no IO) -------------------------------------------
 
 
