@@ -1958,6 +1958,21 @@ class TestTendAnomalyTrips:
         assert len(_kinds("tend.anomaly")) == 1
         assert "  none" in result.output
 
+    def test_persisting_finding_is_printed_without_a_new_record(self, tmp_vault):
+        # The report shows what is wrong now, not only what just tripped: a
+        # finding that persists from an earlier run is printed again, and
+        # this run writes no second record (the onset was an earlier run's).
+        slug = "vault/intake/made-up-heron.md"
+        for _ in range(4):
+            _tend_event("triage.decided", slug, decision="keep")
+            _tend_event("tend.completed")
+        _tend_event("triage.decided", slug, decision="keep")
+        result = _invoke_tend(["--no-reweave", "--no-health"])
+        assert result.exit_code == 0, result.output
+        assert _kinds("tend.anomaly") == []
+        assert f"stuck_slug  {slug}  (5 consecutive runs)" in result.output
+        assert "  none" not in result.output
+
 
 def test_item_age_days_defaults_to_the_ledger_clock(tmp_vault, monkeypatch):
     from sabnyx.commands import tend as tend_mod

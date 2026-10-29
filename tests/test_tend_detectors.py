@@ -292,6 +292,23 @@ def test_trips_stuck_slug_onset_persistence_clearance_recurrence() -> None:
     assert td.trips(s.events) == [td.Anomaly("stuck_slug", SLUG, 4, 4)]
 
 
+def test_trips_key_includes_subject() -> None:
+    # Two intake files stuck on `keep`, the second one starting later: its
+    # onset is its own finding, even while the first one's persists. Keyed on
+    # the detector alone, the second file would never reach the tend.anomaly
+    # record, only the full-state view.
+    s = Stream()
+    for _ in range(4):
+        s.keep(SLUG).completed()
+    assert td.trips(s.events) == [td.Anomaly("stuck_slug", SLUG, 4, 4)]
+    for _ in range(3):
+        s.keep(SLUG).keep(OTHER).completed()
+        assert td.trips(s.events) == []
+    s.keep(SLUG).keep(OTHER).completed()
+    assert td.trips(s.events) == [td.Anomaly("stuck_slug", OTHER, 4, 4)]
+    assert [a.subject for a in td.detect(s.events)] == [SLUG, OTHER]
+
+
 def test_trips_ceiling_hits_move_inside_window_without_retrip() -> None:
     s = Stream().budget_abort().budget_abort()
     assert td.trips(s.events) == [td.Anomaly("ceiling_hit", "vault/", 2, 2)]
