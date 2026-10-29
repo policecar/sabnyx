@@ -173,7 +173,7 @@ def _item_age_days(
          or invalid — scheduling only, never treated as knowledge data.
     """
     if now is None:
-        now = datetime.now(UTC)
+        now = ledger.now()
 
     subject = str(path.relative_to(DATA_ROOT))
     ts = created_ts.get(subject)

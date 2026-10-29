@@ -112,3 +112,15 @@ def test_set_marker_block_half_open_end_raises():
     body = "# T\n\n- [[a]]\n<!-- END sabnyx:related -->\n"
     with pytest.raises(ValueError, match="half-open marker block sabnyx:related.*END"):
         util.set_marker_block(body, "related", ["- [[b]]"])
+
+
+def test_age_days_reads_the_ledger_clock(monkeypatch):
+    """age_days goes through ledger.now(), the single clock seam, so a fixed
+    clock fixes every age health prints (goldens depend on it)."""
+    from datetime import UTC, date, datetime
+
+    from sabnyx import ledger
+
+    monkeypatch.setattr(ledger, "now", lambda: datetime(2030, 1, 11, tzinfo=UTC))
+    assert util.age_days(date(2030, 1, 1)) == 10
+    assert util.age_days("2030-01-10T00:00:00Z") == 1

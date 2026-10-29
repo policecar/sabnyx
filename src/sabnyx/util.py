@@ -31,7 +31,11 @@ def age_days(ts: datetime | date | str | None) -> int | None:
     elif isinstance(ts, date):
         # a bare YAML date (e.g. `last_verified: 2026-06-13`) -> midnight UTC
         ts = datetime(ts.year, ts.month, ts.day, tzinfo=UTC)
-    return (datetime.now(UTC) - ts).days
+    # Imported here, not at module level: ledger imports schemas, which
+    # imports this module (SLUG_RE), so a top-level import would be circular.
+    from . import ledger
+
+    return (ledger.now() - ts).days
 
 
 # The shape slugify() emits: lowercase ASCII alnum runs joined by single

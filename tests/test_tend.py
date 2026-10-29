@@ -1951,3 +1951,13 @@ class TestTendAnomalyTrips:
         assert result.exit_code == 0, result.output
         assert len(_kinds("tend.anomaly")) == 1
         assert "  none" in result.output
+
+
+def test_item_age_days_defaults_to_the_ledger_clock(tmp_vault, monkeypatch):
+    from sabnyx.commands import tend as tend_mod
+
+    p = _make_intake(tmp_vault["INTAKE"], "made-up-clock", _good_meta("note"))
+    subject = str(p.relative_to(tmp_vault["DATA_ROOT"]))
+    created = {subject: datetime(2030, 1, 1, tzinfo=UTC)}
+    monkeypatch.setattr(ledger, "now", lambda: datetime(2030, 1, 4, tzinfo=UTC))
+    assert tend_mod._item_age_days(p, created) == pytest.approx(3.0)
