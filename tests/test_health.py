@@ -260,3 +260,21 @@ def test_health_anomaly_subject_markup_prints_literally(tmp_vault):
     result = CliRunner().invoke(health_mod.health_cmd, [], catch_exceptions=False)
     assert result.exit_code == 0, result.output
     assert "stuck_slug  [red]x[/red]  (4 consecutive runs)" in result.output
+
+
+def test_health_atlas_listings_ignore_filesystem_order(tmp_vault, monkeypatch):
+    """The printed untracked-provenance list follows path order, not the
+    order the filesystem happens to return (APFS sorts, ext4 does not):
+    the goldens freeze this text."""
+    from sabnyx.commands import health as health_mod
+
+    for slug in ("made-up-alder", "made-up-birch", "made-up-cedar"):
+        _atlas(tmp_vault["ATLAS_CONCEPTS"], slug)
+    real_rglob = Path.rglob
+    monkeypatch.setattr(Path, "rglob", lambda self, pat: reversed(list(real_rglob(self, pat))))
+
+    result = CliRunner().invoke(health_mod.health_cmd, [], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    section = result.output.split("untracked provenance (Gate 3):")[1]
+    found = re.findall(r"made-up-(alder|birch|cedar)", section)
+    assert found == ["alder", "birch", "cedar"]

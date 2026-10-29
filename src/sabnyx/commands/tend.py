@@ -263,6 +263,12 @@ def _health_summary(console: Console) -> None:
     console.print(t)
 
 
+def _console() -> Console:
+    """The command's console. A seam: tests swap in a fixed-width, colourless
+    console so the report is byte-stable."""
+    return Console()
+
+
 def _record_anomalies(console: Console) -> None:
     """Append one tend.anomaly per newly tripped finding, then print the
     current findings. Real runs only, after the run's boundary event."""
@@ -376,7 +382,7 @@ def tend_cmd(
     Use --dry-run to preview without writing anything.
     """
     ensure_tree()
-    console = Console()
+    console = _console()
 
     if dry_run:
         console.print("[bold yellow]dry run[/bold yellow] — no mutations will be written")

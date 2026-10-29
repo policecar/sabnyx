@@ -79,6 +79,12 @@ def print_anomalies(console: Console, anomalies: list[tend_detectors.Anomaly]) -
         console.print(f"  {a.detector}  {escape(a.subject)}  ({span})", soft_wrap=True)
 
 
+def _console() -> Console:
+    """The command's console. A seam: tests swap in a fixed-width, colourless
+    console so the report is byte-stable."""
+    return Console()
+
+
 def pending_observation_count() -> int:
     """Pending observations, through the shared reader — the same count
     vault_pulse, triage, reweave and tend see."""
@@ -89,7 +95,7 @@ def pending_observation_count() -> int:
 @click.option("--quick", is_flag=True, help="Skip the expensive checks.")
 def health_cmd(quick: bool) -> None:
     """Report orphans, broken wikilinks, stale intake, ledger count."""
-    console = Console()
+    console = _console()
     idx = context.vault_slug_index()
 
     orphans: list[Path] = []
@@ -126,7 +132,8 @@ def health_cmd(quick: bool) -> None:
     stale_atlas: list[tuple[Path, int | None]] = []  # last_verified absent or > CURRENCY_DAYS
     untracked: list[Path] = []  # no provenance: not promoted, no source comment
     atlas_count = 0
-    for p in ATLAS.rglob("*.md"):
+    # Sorted: the printed stale/untracked lists must not follow filesystem order.
+    for p in sorted(ATLAS.rglob("*.md")):
         if not p.is_file():
             continue
         try:
