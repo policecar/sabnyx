@@ -50,12 +50,14 @@ def _git(*args, cwd: Path, env: dict | None = None) -> subprocess.CompletedProce
     return result
 
 
-def _write_fake_uv(shim_dir: Path, flag_file: Path) -> None:
+def _write_fake_uv(shim_dir: Path, flag_file: Path, calls_file: Path) -> None:
     """A fake `uv` that simulates `uv run sabnyx tend --yes`.
 
     Always appends one ledger line (tend.completed) to the vault's
     ops/events.jsonl; additionally edits vault/atlas/x.md when *flag_file*
-    exists, so tests can opt into a "real" (non-ledger) change.
+    exists, so tests can opt into a "real" (non-ledger) change. Each call
+    also appends a line to *calls_file* (outside the vault), so a test can
+    prove tend never ran.
     """
     shim_dir.mkdir(parents=True, exist_ok=True)
     uv = shim_dir / "uv"
@@ -63,6 +65,7 @@ def _write_fake_uv(shim_dir: Path, flag_file: Path) -> None:
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         ': "${SABNYX_DATA_DIR:?}"\n'
+        f'echo called >> "{calls_file}"\n'
         'echo \'{"kind":"tend.completed"}\' >> "$SABNYX_DATA_DIR/ops/events.jsonl"\n'
         f'if [ -f "{flag_file}" ]; then\n'
         '  printf "\\nupdated\\n" >> "$SABNYX_DATA_DIR/vault/atlas/x.md"\n'
@@ -137,6 +140,7 @@ def _setup(
     code = tmp_path / "code"
     shim_dir = tmp_path / "bin"
     flag_file = tmp_path / "touch_atlas"
+    tend_calls = tmp_path / "tend_calls"
     home = tmp_path / "home"
     code.mkdir()
     home.mkdir()
@@ -159,7 +163,7 @@ def _setup(
     _git("push", "-q", "-u", "origin", "main", cwd=vault)
 
     if race is None:
-        _write_fake_uv(shim_dir, flag_file)
+        _write_fake_uv(shim_dir, flag_file, tend_calls)
     else:
         _write_fake_uv_with_race(shim_dir, hub, conflicting=race)
 
@@ -179,6 +183,7 @@ def _setup(
         "vault": vault,
         "code": code,
         "flag_file": flag_file,
+        "tend_calls": tend_calls,
         "env": run_env,
     }
 
@@ -420,6 +425,131 @@ def test_pull_rebase_conflict_aborts_cleanly(tmp_path):
     assert "rebase in progress" not in status.lower(), status
     assert not (vault / ".git" / "rebase-merge").exists()
     assert not (vault / ".git" / "rebase-apply").exists()
+
+
+ATLAS_X = "---\ntype: concept\nstatus: final\ndescription: a synthetic concept used to exercise the heartbeat sync\n---\n\n{claim}\n"
+
+
+def _unmerged_paths(vault: Path) -> set[str]:
+    """Paths with unmerged index stages -- Git's own record of an open
+    conflict, independent of any (localized) warning text."""
+    out = _git("ls-files", "--unmerged", cwd=vault).stdout
+    return {line.split("\t", 1)[1] for line in out.splitlines()}
+
+
+def _autostash_conflict(tmp_path: Path) -> dict:
+    """Heartbeat clone with an uncommitted edit to the same line a peer has
+    already pushed: `git pull --rebase --autostash` fast-forwards, then
+    re-applying the autostash conflicts -- and git still exits 0."""
+    ctx = _setup(tmp_path)
+    vault, hub = ctx["vault"], ctx["hub"]
+    x = vault / "vault" / "atlas" / "x.md"
+    x.write_text(ATLAS_X.format(claim="base claim"), encoding="utf-8")
+    _git("commit", "-q", "-am", "base claim", cwd=vault)
+    _git("push", "-q", "origin", "main", cwd=vault)
+
+    peer = tmp_path / "peer"
+    _git("clone", "-q", str(hub), str(peer), cwd=tmp_path)
+    (peer / "vault" / "atlas" / "x.md").write_text(
+        ATLAS_X.format(claim="remote claim"), encoding="utf-8"
+    )
+    _git("commit", "-q", "-am", "remote claim", cwd=peer)
+    _git("push", "-q", "origin", "main", cwd=peer)
+
+    x.write_text(ATLAS_X.format(claim="local uncommitted claim"), encoding="utf-8")
+    ctx["peer_head"] = _git("rev-parse", "HEAD", cwd=peer).stdout.strip()
+    return ctx
+
+
+def _assert_conflict_held_not_published(ctx: dict, result: subprocess.CompletedProcess) -> None:
+    vault, hub = ctx["vault"], ctx["hub"]
+    detail = f"stdout={result.stdout!r} stderr={result.stderr!r}\nhub log:\n{_hub_log(hub)}"
+    assert result.returncode != 0, detail
+    assert "unresolved conflict" in result.stderr, detail
+    assert "rebase aborted" not in result.stderr, detail  # it was never a rebase failure
+
+    # The conflict and the local change are preserved for the operator.
+    assert _unmerged_paths(vault) == {"vault/atlas/x.md"}, detail
+    assert "autostash" in _git("stash", "list", cwd=vault).stdout, detail
+    assert "<<<<<<<" in (vault / "vault" / "atlas" / "x.md").read_text(encoding="utf-8")
+
+    # Nothing ran, nothing was committed, nothing reached the hub.
+    assert not ctx["tend_calls"].exists(), "tend ran on top of an unresolved conflict"
+    assert _git("rev-parse", "HEAD", cwd=vault).stdout.strip() == ctx["peer_head"], detail
+    assert _git("rev-parse", "main", cwd=hub).stdout.strip() == ctx["peer_head"], detail
+    hub_x = _git("show", "main:vault/atlas/x.md", cwd=hub).stdout
+    assert hub_x == ATLAS_X.format(claim="remote claim"), hub_x
+
+
+def test_autostash_conflict_is_not_published_as_a_resolution(tmp_path):
+    """`git pull --rebase --autostash` exits 0 when re-applying the autostash
+    conflicts. Without a guard, `git add -A` staged the conflict markers as
+    a resolution and the script pushed them into the hub's atlas and exited
+    0 (audit R01). The script must stop before tend, leave the conflict and
+    the stash in place, and fail visibly."""
+    ctx = _autostash_conflict(tmp_path)
+
+    result = _run_script(ctx["env"])
+
+    _assert_conflict_held_not_published(ctx, result)
+
+
+def test_unresolved_conflict_still_blocks_the_next_tick(tmp_path):
+    """The timer fires again 15 min later with the conflict still open. That
+    run must also refuse with the same accurate diagnostic -- not attempt a
+    pull and then misreport the failure as an aborted rebase."""
+    ctx = _autostash_conflict(tmp_path)
+    _run_script(ctx["env"])
+
+    result = _run_script(ctx["env"])
+
+    _assert_conflict_held_not_published(ctx, result)
+    assert len(_git("stash", "list", cwd=ctx["vault"]).stdout.splitlines()) == 1
+
+
+def test_operator_resolution_lets_the_next_tick_sync(tmp_path):
+    """The documented recovery works: fix the markers, `git add`, and the
+    next tick runs tend and publishes the operator's resolution. The stash
+    is still the operator's to drop -- the script never touches it."""
+    ctx = _autostash_conflict(tmp_path)
+    vault, hub = ctx["vault"], ctx["hub"]
+    _run_script(ctx["env"])
+    resolved = ATLAS_X.format(claim="remote claim, refined locally")
+    (vault / "vault" / "atlas" / "x.md").write_text(resolved, encoding="utf-8")
+    _git("add", "vault/atlas/x.md", cwd=vault)
+
+    result = _run_script(ctx["env"])
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert ctx["tend_calls"].exists()
+    assert _git("show", "main:vault/atlas/x.md", cwd=hub).stdout == resolved
+    assert "autostash" in _git("stash", "list", cwd=vault).stdout
+
+
+def test_nonconflicting_autostash_still_syncs(tmp_path):
+    """The guard must key on unmerged entries, not on "an autostash happened":
+    an uncommitted local edit to a file the hub didn't touch is re-applied
+    cleanly, tend runs, and both changes are published."""
+    ctx = _setup(tmp_path)
+    vault, hub = ctx["vault"], ctx["hub"]
+    peer = tmp_path / "peer"
+    _git("clone", "-q", str(hub), str(peer), cwd=tmp_path)
+    (peer / "vault" / "atlas" / "y.md").write_text("# y\n", encoding="utf-8")
+    _git("add", "-A", cwd=peer)
+    _git("commit", "-q", "-m", "peer adds y", cwd=peer)
+    _git("push", "-q", "origin", "main", cwd=peer)
+    (vault / "vault" / "atlas" / "x.md").write_text("# x\n\nlocal edit\n", encoding="utf-8")
+
+    result = _run_script(ctx["env"])
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert ctx["tend_calls"].exists()
+    assert _unmerged_paths(vault) == set()
+    assert _git("stash", "list", cwd=vault).stdout == ""
+    hub_head = _git("rev-parse", "main", cwd=hub).stdout.strip()
+    assert hub_head == _git("rev-parse", "HEAD", cwd=vault).stdout.strip()
+    assert _git("show", "main:vault/atlas/x.md", cwd=hub).stdout == "# x\n\nlocal edit\n"
+    assert _git("show", "main:vault/atlas/y.md", cwd=hub).stdout == "# y\n"
 
 
 def test_lock_file_never_staged_by_add(tmp_path):

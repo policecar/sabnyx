@@ -58,15 +58,38 @@ push_with_retry() {
   return 1
 }
 
+# Refuse to go on while the index has unmerged entries (an open conflict).
+# `git pull --rebase --autostash` exits 0 even when re-applying the autostash
+# conflicts, so its exit status alone can't be trusted: the `git add -A` below
+# would stage the conflict markers as a "resolution" and publish them. Never
+# resolve, reset or drop the stash here — that is the operator's call.
+refuse_if_unmerged() {
+  local unmerged
+  unmerged=$(git ls-files --unmerged) || { echo "sabnyx-sync-tend: git ls-files failed; refusing to sync" >&2; exit 1; }
+  [ -z "$unmerged" ] && return 0
+  {
+    echo "sabnyx-sync-tend: unresolved conflict in $SABNYX_DATA_DIR ($1) — not running tend; nothing staged, committed or pushed. Unmerged:"
+    printf '%s\n' "$unmerged" | cut -f2- | sort -u | sed 's/^/  /'
+    echo "  Resolve by hand: fix the conflict markers, 'git add' each file, check 'git diff --cached'; then 'git stash list' — an 'autostash' entry still holds your pre-pull local changes: drop it once they are in the tree. The next tick syncs normally."
+  } >&2
+  exit 1
+}
+
 cd "$SABNYX_DATA_DIR"
 # Sync whatever branch the clone is on (normally main); refuse a detached HEAD
 # rather than silently pushing a ref that is not what was just committed.
 BRANCH=$(git symbolic-ref --short -q HEAD) || { echo "sabnyx-sync-tend: $SABNYX_DATA_DIR is on a detached HEAD; refusing to sync" >&2; exit 1; }
+# A conflict left by an earlier tick (or a hand edit). Mid-rebase state is left
+# to the pull-failure path below, which aborts the rebase as before.
+if [ ! -d .git/rebase-merge ] && [ ! -d .git/rebase-apply ]; then
+  refuse_if_unmerged "left by an earlier run or a manual merge"
+fi
 if ! git pull --rebase --autostash origin "$BRANCH"; then
   abort_rebase || true
   echo "sabnyx-sync-tend: pull/rebase failed; rebase aborted (see above if not), local changes kept in stash or index — inspect $SABNYX_DATA_DIR" >&2
   exit 1
 fi
+refuse_if_unmerged "re-applying uncommitted local changes (autostash) after the pull conflicted"
 
 # 9>&- : don't let tend (or anything it spawns) inherit the lock fd.
 cd "$SABNYX_CODE_DIR" && uv run sabnyx tend --yes 9>&-
