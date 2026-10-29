@@ -125,7 +125,18 @@ def _apply_links(
     target: Path, changeset: ReweaveChangeset, index: dict[str, Path], console: Console
 ) -> list[str]:
     """Apply marker-block link additions with deterministic guards.
-    Returns relative paths of files actually modified."""
+    Returns relative paths of files actually modified.
+
+    @decision DEC-RW-001: patch the raw file text, never load → fm.write.
+    @rationale: a parse/serialize round trip drops YAML comments, reorders
+      and requotes keys, turns CRLF into LF and strips the body's leading
+      indentation (an indented code block becomes prose). Reweave may write
+      marker blocks only (AGENTS §2, SPEC §8), so it reads the file with no
+      newline translation, validates it with fm.load_text, edits only the
+      body half of fm.split_text via set_marker_block, and checks that the
+      frontmatter re-parses unchanged before the atomic write. Rendered
+      lines take the newline of the file's first line.
+    """
     modified: list[str] = []
     for add in changeset.related_additions:
         # index keys are lowercased slugs (context.slug_index)
@@ -133,8 +144,10 @@ def _apply_links(
         if path is None:
             console.print(f"  [yellow]drop[/yellow] unknown file slug: {add.file}")
             continue
+        # bytes → str without universal-newline translation (CRLF survives)
+        raw = path.read_bytes().decode("utf-8")
         try:
-            meta, body, _ = fm.load(path)
+            meta, body = fm.load_text(raw, fm.classify(path), path=path)
         except fm.FrontmatterError as e:
             console.print(f"  [red]skip (invalid frontmatter)[/red] {add.file}: {e.errors}")
             continue
@@ -158,17 +171,29 @@ def _apply_links(
         if not new_links:
             continue
 
-        current = get_marker_block(body, "related")
-        lines: list[str] = [ln for ln in (current or "").splitlines() if ln.strip()]
+        head, raw_body = fm.split_text(raw)
+        newline = "\r\n" if raw.split("\n", 1)[0].endswith("\r") else "\n"
+        current = get_marker_block(raw_body, "related") or ""
+        # split on "\n" only (not str.splitlines, which also breaks NEL/LS/PS)
+        lines: list[str] = [ln.removesuffix("\r") for ln in current.split("\n") if ln.strip()]
         lines += [f"- [[{link}]]" for link in new_links]
         try:
-            new_body = set_marker_block(body, "related", lines, heading="Related")
+            new_raw_body = set_marker_block(
+                raw_body, "related", lines, heading="Related", newline=newline
+            )
         except ValueError as e:
-            # half-open marker block (manual edit damage): report and skip the
-            # file rather than nest/duplicate markers (SPEC §8)
+            # half-open or ambiguous marker block (manual edit damage): report
+            # and skip the file rather than nest/duplicate markers (SPEC §8)
             console.print(f"  [red]skip (corrupt marker block)[/red] {add.file}: {e}")
             continue
-        fm.write(path, meta, new_body)
+        patched = head + new_raw_body
+        after_meta, _ = fm.load_text(patched, fm.classify(path), path=path)
+        if after_meta != meta:
+            # unreachable by construction (only body bytes change); never
+            # write a file whose metadata this edit would alter
+            console.print(f"  [red]skip (patch altered frontmatter)[/red] {add.file}")
+            continue
+        fm.write_text_atomic(path, patched)
 
         rel = str(path.relative_to(paths.DATA_ROOT))
         modified.append(rel)

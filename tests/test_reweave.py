@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from click.testing import CliRunner
 
 from sabnyx import fm, ledger, util
@@ -324,3 +325,189 @@ def test_reweave_explicit_target_rejects_non_atlas(tmp_vault, monkeypatch, tmp_p
     result = runner.invoke(rw.reweave_cmd, [str(stray)])
     assert result.exit_code == 2
     assert "not under vault/atlas/" in " ".join(result.output.split())
+
+
+# -- byte preservation outside the owned marker region (R03) ---------------------
+#
+# Reweave may write marker blocks only (AGENTS §2, SPEC §8). These fixtures
+# are complete raw files with every feature a parse/serialize round trip
+# normalizes: a YAML comment, quoting, CRLF, an indented first body line (a
+# Markdown code block a strip would turn into prose), trailing spaces, prose
+# after the block and trailing blank lines. Each test drives the real
+# _apply_links and compares the whole file on disk as bytes.
+
+BEGIN, END = "<!-- BEGIN sabnyx:related -->", "<!-- END sabnyx:related -->"
+
+_RAW_HEAD = (
+    "---\n"
+    "# hand-written metadata comment, kept verbatim\n"
+    "type: concept\n"
+    "status: 'final'\n"
+    'description: "a concept about alpha things, quoted and long enough"\n'
+    "tags: [\"kept\",   'quoted']\n"
+    "---\n"
+    "\n"
+    "    code starts with intentional indentation\n"
+    "\n"
+    "prose with trailing spaces   \n"
+)
+NEWLINES = pytest.mark.parametrize("nl", ["\n", "\r\n"], ids=["lf", "crlf"])
+
+
+def _write_raw(path, text, nl):
+    path.write_bytes(text.replace("\n", nl).encode("utf-8"))
+    return path.read_bytes()
+
+
+def _alpha_and_beta(tmp_vault, raw_text, nl):
+    concepts = tmp_vault["ATLAS_CONCEPTS"]
+    alpha = concepts / "alpha.md"
+    before = _write_raw(alpha, raw_text, nl)
+    _make_atlas_file(concepts, "beta", "a concept about beta things, also long enough to pass")
+    return alpha, before
+
+
+def _apply(target, links, *, file="alpha"):
+    from rich.console import Console
+
+    from sabnyx import context, paths
+    from sabnyx.commands import reweave as rw
+
+    console = Console(record=True, width=200)
+    changeset = ReweaveChangeset(
+        summary="link",
+        related_additions=[RelatedAddition(file=file, add_links=links, reason="related")],
+        observations=[],
+    )
+    modified = rw._apply_links(target, changeset, context.slug_index(paths.ATLAS), console)
+    return modified, console.export_text()
+
+
+def _reweaved():
+    return [e for e in ledger.replay() if e.kind == "atlas.reweaved"]
+
+
+@NEWLINES
+def test_apply_links_preserves_every_byte_outside_the_owned_region(tmp_vault, nl):
+    raw = _RAW_HEAD + f"\n## Related\n\n{BEGIN}\n{END}\n\nEnd.   \n\n\n"
+    alpha, before = _alpha_and_beta(tmp_vault, raw, nl)
+
+    modified, _ = _apply(alpha, ["beta"])
+
+    # only the owned interior changes, rendered in the file's own newline
+    expected = before.replace(
+        f"{BEGIN}{nl}{END}".encode(), f"{BEGIN}{nl}- [[beta]]{nl}{END}".encode()
+    )
+    assert expected != before
+    assert alpha.read_bytes() == expected
+    rel = str(alpha.relative_to(tmp_vault["DATA_ROOT"]))
+    assert modified == [rel]
+    (ev,) = _reweaved()
+    assert ev.subject == rel
+    assert ev.payload["added_links"] == ["beta"]
+
+
+@NEWLINES
+def test_apply_links_keeps_existing_entries_and_skips_identical_repeat(tmp_vault, monkeypatch, nl):
+    """Existing block lines are kept (blank lines inside dropped, as before);
+    an identical repeat writes nothing and emits no event."""
+    raw = _RAW_HEAD + f"\n{BEGIN}\n  - [[old-link]]  \n\n{END}\nafter\n"
+    alpha, before = _alpha_and_beta(tmp_vault, raw, nl)
+
+    _apply(alpha, ["beta"])
+    once = alpha.read_bytes()
+    assert once == before.replace(
+        f"{BEGIN}{nl}  - [[old-link]]  {nl}{nl}{END}".encode(),
+        f"{BEGIN}{nl}  - [[old-link]]  {nl}- [[beta]]{nl}{END}".encode(),
+    )
+
+    writes: list = []
+    monkeypatch.setattr(fm, "write_text_atomic", lambda *a: writes.append(a))
+    modified, output = _apply(alpha, ["beta", "BETA"])
+    assert modified == []
+    assert writes == []
+    assert alpha.read_bytes() == once
+    assert len(_reweaved()) == 1
+    assert "drop (unknown/self/duplicate): beta, BETA" in output
+
+
+@NEWLINES
+@pytest.mark.parametrize(
+    ("tail", "sep"),
+    [("End.", "\n\n"), ("End.\n", "\n"), ("End.\n\n", ""), ("End.\n\n\n", "")],
+    ids=["no-newline", "one-newline", "blank-line", "two-blank-lines"],
+)
+def test_apply_links_appends_related_section_when_block_missing(tmp_vault, nl, tail, sep):
+    """Insertion policy: the existing file is a byte-exact prefix; only the
+    separator needed to end in one blank line, then the documented section."""
+    alpha, before = _alpha_and_beta(tmp_vault, _RAW_HEAD + tail, nl)
+
+    modified, _ = _apply(alpha, ["beta"])
+
+    section = f"{sep}## Related\n\n{BEGIN}\n- [[beta]]\n{END}\n".replace("\n", nl)
+    assert alpha.read_bytes() == before + section.encode()
+    assert len(modified) == 1
+
+
+def test_apply_links_ignores_marker_text_inside_frontmatter(tmp_vault):
+    """Markers are looked up in the body only: marker text in a frontmatter
+    value is neither edited nor counted as a pair."""
+    raw = (
+        f'---\ntype: concept\ndescription: "documents the {BEGIN} syntax for agents"\n---\n\nbody\n'
+    )
+    alpha, before = _alpha_and_beta(tmp_vault, raw, "\n")
+
+    _apply(alpha, ["beta"])
+
+    assert alpha.read_bytes() == before + f"\n## Related\n\n{BEGIN}\n- [[beta]]\n{END}\n".encode()
+
+
+@NEWLINES
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        f"{BEGIN}\n- [[old]]\n",  # half-open: END lost
+        f"- [[old]]\n{END}\n",  # half-open: BEGIN lost
+        f"{END}\nmiddle prose\n{BEGIN}\n",  # inverted pair
+        f"{BEGIN}\n{END}\n\n{BEGIN}\n{END}\n",  # two blocks
+        f"{BEGIN}\n{BEGIN}\n{END}\n",  # nested BEGIN
+    ],
+    ids=["no-end", "no-begin", "end-first", "two-blocks", "nested"],
+)
+def test_apply_links_refuses_malformed_marker_blocks(tmp_vault, nl, corrupt):
+    alpha, before = _alpha_and_beta(tmp_vault, _RAW_HEAD + "\n" + corrupt, nl)
+
+    modified, output = _apply(alpha, ["beta"])
+
+    assert "corrupt marker block" in output
+    assert alpha.read_bytes() == before
+    assert modified == []
+    assert _reweaved() == []
+
+
+@NEWLINES
+def test_apply_links_never_rewrites_invalid_frontmatter(tmp_vault, nl):
+    """Invalid metadata is skipped, not cleaned up by a re-serialization."""
+    raw = _RAW_HEAD.replace("type: concept", "type: not-a-type") + f"\n{BEGIN}\n{END}\n"
+    alpha, before = _alpha_and_beta(tmp_vault, raw, nl)
+
+    modified, output = _apply(alpha, ["beta"])
+
+    assert "invalid frontmatter" in output
+    assert alpha.read_bytes() == before
+    assert modified == []
+    assert _reweaved() == []
+
+
+def test_apply_links_keeps_file_mode(tmp_vault):
+    """The established atomic writer's mode preservation still applies."""
+    import os
+    import stat
+
+    alpha, _ = _alpha_and_beta(tmp_vault, _RAW_HEAD + f"\n{BEGIN}\n{END}\n", "\n")
+    os.chmod(alpha, 0o600)
+
+    _apply(alpha, ["beta"])
+
+    assert stat.S_IMODE(alpha.stat().st_mode) == 0o600
+    assert b"- [[beta]]" in alpha.read_bytes()

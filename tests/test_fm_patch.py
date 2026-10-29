@@ -379,3 +379,33 @@ def test_loader_and_patcher_agree_on_which_files_have_frontmatter(tmp_vault, raw
     except fm.PatchError:
         patches = False
     assert loads == patches
+
+
+# -- split_text: raw (head, body) for byte-preserving body edits ------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "body"),
+    [
+        # FM_BOUNDARY's greedy `\s*$` ends the closing fence at the last line
+        # break before the next non-blank line: the cut is the parser's own
+        ("---\na: 1\n---\n\n    indented\n\n", "\n    indented\n\n"),
+        ("---\r\na: 1\r\n---\r\nx\r\n", "\nx\r\n"),
+        ("\n  ---\na: 1\n---\nx", "\nx"),
+        ("---\na: 1\n---", ""),
+    ],
+    ids=["lf", "crlf", "leading-whitespace", "no-body"],
+)
+def test_split_text_is_exact_and_matches_the_parser(text, body):
+    head, got = fm.split_text(text)
+    assert head + got == text
+    assert got == body
+    # the cut is the parser's: what it calls the body is in the body half
+    _meta, parsed_body = fm.frontmatter.parse(text, handler=fm._SAFE_YAML)
+    assert parsed_body.strip() == got.strip()
+
+
+@pytest.mark.parametrize("text", ["no fence\n", "---\na: 1\n", "x\n---\na: 1\n---\n"])
+def test_split_text_refuses_text_without_a_leading_block(text):
+    with pytest.raises(ValueError, match="no fenced frontmatter"):
+        fm.split_text(text)

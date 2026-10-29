@@ -112,3 +112,24 @@ def test_set_marker_block_half_open_end_raises():
     body = "# T\n\n- [[a]]\n<!-- END sabnyx:related -->\n"
     with pytest.raises(ValueError, match="half-open marker block sabnyx:related.*END"):
         util.set_marker_block(body, "related", ["- [[b]]"])
+
+
+def test_set_marker_block_renders_the_given_newline_only_inside_its_region():
+    body = "a  \r\n\r\n<!-- BEGIN sabnyx:related -->\r\n<!-- END sabnyx:related -->\r\ntail\r\n"
+    out = util.set_marker_block(body, "related", ["- [[a]]", "- [[b]]"], newline="\r\n")
+    assert out == body.replace("-->\r\n<!-- END", "-->\r\n- [[a]]\r\n- [[b]]\r\n<!-- END")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<!-- END sabnyx:related -->\nx\n<!-- BEGIN sabnyx:related -->\n",
+        "<!-- BEGIN sabnyx:related -->\n<!-- END sabnyx:related -->\n" * 2,
+        "<!-- BEGIN sabnyx:related -->\n<!-- BEGIN sabnyx:related -->\n<!-- END sabnyx:related -->\n",
+    ],
+    ids=["end-first", "two-blocks", "nested"],
+)
+def test_set_marker_block_refuses_ambiguous_layouts(body):
+    # the old split(begin)[0] + split(end)[1] duplicated "x" for end-first
+    with pytest.raises(ValueError, match="sabnyx:related"):
+        util.set_marker_block(body, "related", ["- [[b]]"])
