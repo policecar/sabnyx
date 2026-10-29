@@ -278,3 +278,14 @@ def test_health_atlas_listings_ignore_filesystem_order(tmp_vault, monkeypatch):
     section = result.output.split("untracked provenance (Gate 3):")[1]
     found = re.findall(r"made-up-(alder|birch|cedar)", section)
     assert found == ["alder", "birch", "cedar"]
+
+
+def test_health_broken_link_target_prints_literally(tmp_vault):
+    """`[[target]]` is Rich markup syntax: unescaped, the target was eaten
+    and every broken-link line read `-> []`."""
+    from sabnyx.commands import health as health_mod
+
+    _atlas(tmp_vault["ATLAS_CONCEPTS"], "made-up-heron", body="see [[made-up-nowhere]].\n")
+    result = CliRunner().invoke(health_mod.health_cmd, [], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert "vault/atlas/concepts/made-up-heron.md  -> [[made-up-nowhere]]" in result.output

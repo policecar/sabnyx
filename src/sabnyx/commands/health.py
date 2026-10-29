@@ -194,7 +194,8 @@ def health_cmd(quick: bool) -> None:
     if broken_links:
         console.print("\n[yellow]broken wikilinks:[/yellow]")
         for path, target in broken_links[:20]:
-            console.print(f"  {path.relative_to(DATA_ROOT)}  -> [[{target}]]")
+            # `[[...]]` is Rich markup syntax: escape the whole link.
+            console.print(f"  {path.relative_to(DATA_ROOT)}  -> {escape(f'[[{target}]]')}")
         if len(broken_links) > 20:
             console.print(f"  ... and {len(broken_links) - 20} more")
 
