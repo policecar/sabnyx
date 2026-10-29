@@ -10,9 +10,10 @@ Everything else lives here:
 | `architecture.md` | plain-English tour of the whole system (the gentle version) |
 | `testing.md` | test playbook: free suites → live smoke tests |
 | `deployment.md` | production playbook: two-repo split, systemd, Telegram, R1 |
+| `observations.md` | developer notes on observations: lifecycle, identity, recurrence, gap closure, ledger failures |
 | `reserved-syntax.md` | ZK/x402 HTML-comment syntax, reserved for stage 3 |
 | `spec/jibot.md` | local-only (gitignored) copy of the jibot/Switchboard source spec sabnyx adapts |
-| `decisions/` | ADRs 0001–0007 — one decision each, immutable |
+| `decisions/` | ADRs 0001–0008 — one decision each, immutable |
 | `plans/` | historical roadmap/build-out plus scoped future experiments and implementation plans |
 | `reviews/` | dated reviews: architecture, simplification, codebase-vs-spec, and post-hardening jibot divergence |
 | `recon/` | notes from scouting external systems (Amplifier, obs-dailynotes, Rabbit R1, jilog + ai-agent-learnings) |
@@ -24,11 +25,12 @@ documents the Rabbit R1 client next to its code.
 Current scoped plans:
 
 - `plans/observations-and-age-triage.md` — manual observation lifecycle and a
-  deterministic starvation fix;
+  deterministic starvation fix (implemented; see `observations.md`);
 - `plans/atlas-update-intents-experiment.md` — interactive source-backed
   amendment experiment, with unattended application explicitly deferred;
 - `plans/feedback-telemetry.md` — precise outcome events before analytics or
   notifications;
 - `plans/jilog-borrowings.md` — deterministic signal hygiene borrowed from
   Joi's jilog: stable observation identity, reopen policy, golden report
-  tests, heartbeat anomaly detectors, an operator-request channel.
+  tests, heartbeat anomaly detectors, an operator-request channel (Cycle 1,
+  identity and reopen, implemented).

@@ -14,7 +14,7 @@ import hashlib
 import json
 import os
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -27,6 +27,36 @@ class LedgerError(RuntimeError):
     """A ledger line failed to parse. Carries the 1-based line number in its
     message (parity with opsctl's read_events) so the operator can find and
     append a compensating fix instead of guessing which line bricked replay."""
+
+
+class LedgerWriteError(LedgerError):
+    """An append failed after its first write(2): the line may be on disk.
+
+    Raised by append_event for any exception from the first write(2) through
+    close -- a short write, or an OSError (or any other Exception) from
+    write, _fsync or close. A KeyboardInterrupt in the same region is
+    LedgerWriteInterrupted instead. A caller that mutated a file before
+    appending must NOT restore it on either (the ledger may already record
+    the mutation); run opsctl verify. Failures before that point
+    (OPS.mkdir, event construction, open) propagate unchanged, so a caller
+    can treat them as "nothing on disk". Subclasses LedgerError so existing
+    ``except LedgerError`` sites keep catching the short write;
+    LedgerError's own docstring (parse failures) is deliberately not
+    widened. See docs/decisions/0008-ledger-append-failure-semantics.md.
+    """
+
+
+class LedgerWriteInterrupted(KeyboardInterrupt):
+    """A KeyboardInterrupt that arrived after append_event's first write(2):
+    the line may be on disk, so a caller must not restore (as for
+    LedgerWriteError).
+
+    Still a KeyboardInterrupt, not an Exception: the interrupt keeps its
+    meaning (exit 130) and no ``except Exception`` handler can swallow it.
+    A KeyboardInterrupt before the first write(2) propagates unchanged.
+    Other BaseExceptions (SystemExit, GeneratorExit) are not classified;
+    callers treat them conservatively (no restore).
+    """
 
 
 def _reject_floats(value: object, _path: str = "payload") -> None:
@@ -81,6 +111,15 @@ def content_hash(payload: dict) -> str:
 def now() -> datetime:
     """UTC timestamp, tz-aware. Use this instead of datetime.now()."""
     return datetime.now(UTC)
+
+
+def today() -> date:
+    """UTC calendar date. Use this instead of date.today().
+
+    The single clock seam (with now()): observation dates and filenames
+    derive from it, so goldens are timezone-independent. A filing late in
+    the evening east of UTC is dated the previous day."""
+    return now().date()
 
 
 def _fsync(fd: int) -> None:
@@ -141,11 +180,14 @@ def append_event(
 
     The append is the ledger's commit point: once this returns, the event
     is durable (see the fsync comment inline for exactly what "durable"
-    covers on each platform). If the write itself lands but the short-write
-    check or the fsync afterward raises, the event line may *already* be on
-    disk — a LedgerError here is not proof the append didn't happen, and a
-    short write in particular can't be undone (the partial line is on disk
-    for good; the fix is to run opsctl verify, not to retry the write).
+    covers on each platform). Any exception from the first write(2) through
+    close raises LedgerWriteError, and a Ctrl-C there raises
+    LedgerWriteInterrupted: the event line may *already* be on disk,
+    so it is not proof the append didn't happen, and a short write in
+    particular can't be undone (the partial line is on disk for good; the
+    fix is to run opsctl verify, not to retry the write). Anything raised
+    earlier (OPS.mkdir, event construction, open) is not a LedgerWriteError
+    and means no byte reached the ledger file.
     Callers must therefore not blindly retry a failed append: retrying a
     `wire.received` or `tend.completed` just produces a harmless duplicate
     audit entry, not corruption. (services.ingest_text already handles this
@@ -183,16 +225,38 @@ def append_event(
     # directory entry itself is only fsync'd the first time the ledger file
     # is created (_fsync_dir below) — later appends don't touch the
     # directory. opsctl's appender mirrors both of these.
-    with EVENTS_JSONL.open("ab", buffering=0) as f:
-        n = f.write(data)
-        if n != len(data):
-            raise LedgerError(
-                f"short write to ledger: {n} of {len(data)} bytes — the partial "
-                "line is on disk; run opsctl verify"
-            )
-        _fsync(f.fileno())
-    if created:
-        _fsync_dir(EVENTS_JSONL.parent)
+    #
+    # Failure classes (IDD §10, D15): open() sits outside the try, so a
+    # pre-write failure (read-only mount, permissions) propagates as itself
+    # and the caller knows nothing reached the file. From the first write(2)
+    # through close, and through the first append's directory sync, every
+    # exception becomes LedgerWriteError and a Ctrl-C becomes
+    # LedgerWriteInterrupted: bytes may be on disk, and the caller must not
+    # act as if the append never happened (ADR 0008). _fsync_dir itself
+    # swallows OSError (best effort); anything else it raises is classified.
+    f = EVENTS_JSONL.open("ab", buffering=0)
+    try:
+        with f:
+            n = f.write(data)
+            if n != len(data):
+                raise LedgerWriteError(
+                    f"short write to ledger: {n} of {len(data)} bytes — the partial "
+                    "line is on disk; run opsctl verify"
+                )
+            _fsync(f.fileno())
+        if created:
+            _fsync_dir(EVENTS_JSONL.parent)
+    except LedgerWriteError:
+        raise
+    except Exception as e:
+        raise LedgerWriteError(
+            f"ledger append failed after write began ({e}) — the line may be on "
+            "disk; run opsctl verify"
+        ) from e
+    except KeyboardInterrupt as e:
+        raise LedgerWriteInterrupted(
+            "interrupted after the ledger write began — the line may be on disk; run opsctl verify"
+        ) from e
     return event
 
 

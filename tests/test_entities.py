@@ -220,6 +220,22 @@ class TestEntitiesGaps:
         assert meta["category"] == "gap"
         assert len(meta["involves"]) == 3
 
+    def test_gap_records_producer_entities(self, tmp_vault):
+        from sabnyx import observations
+
+        self._seed_referrers(tmp_vault, "missing-person", 3)
+
+        result = _run(["gaps"])
+        assert result.exit_code == 0, result.output
+        (o,) = observations.observations("all")
+        assert o.fm.producer == "entities"
+        assert o.fm.target == "missing-person"  # identity-bearing since 6a
+        (ev,) = [e for e in ledger.replay() if e.kind == "observation.created"]
+        assert ev.subject == o.rel
+        assert ev.payload["producer"] == "entities"
+        assert ev.payload["target"] == "missing-person"
+        assert ev.payload["obs_id"].startswith("sha256:")
+
     def test_below_threshold_is_no_gap(self, tmp_vault):
         self._seed_referrers(tmp_vault, "rarely-named", 2)
 
@@ -283,6 +299,155 @@ class TestEntitiesGaps:
         result = _run(["gaps", "--threshold", "2"])
         assert result.exit_code == 0, result.output
         assert len(list(tmp_vault["OBSERVATIONS"].glob("*-gap-missing-person.md"))) == 1
+
+
+class TestEntitiesGapsRecurrence:
+    """6a: entities gaps through write_observation with a target (M3, M4)."""
+
+    def _seed_referrers(self, tmp_vault, target: str, n: int = 3) -> None:
+        # Referrer names are per target, so seeding two targets keeps both.
+        for i in range(n):
+            _make_referrer(tmp_vault["ATLAS_CONCEPTS"], f"ref-{target}-{i}", target)
+
+    def _seed_gap(self, tmp_vault, name: str, *, target: str | None, kind: str | None):
+        meta = {
+            "type": "observation",
+            "category": "gap",
+            "observed": "2026-06-12",
+            "source_agent": "sabnyx-entities",
+            "status": "pending",
+            "involves": [],
+        }
+        if target is not None:
+            meta["target"] = target
+        if kind is not None:
+            meta |= {
+                "status": "promoted" if kind == "done" else "archived",
+                "resolved": "2026-06-13",
+                "resolution": f"closed as {kind}",
+                "resolution_kind": kind,
+            }
+        p = tmp_vault["OBSERVATIONS"] / name
+        fm.write(p, meta, f"# {name}\n")
+        return p
+
+    def _files(self, tmp_vault) -> list[str]:
+        return sorted(p.name for p in tmp_vault["OBSERVATIONS"].glob("*.md"))
+
+    def _kinds(self, kind: str) -> list:
+        return [e for e in ledger.replay() if e.kind == kind]
+
+    def test_gaps_scanned_counts_partition_the_candidates(self, tmp_vault):
+        self._seed_referrers(tmp_vault, "fresh-one")
+        self._seed_referrers(tmp_vault, "pending-one")
+        self._seed_referrers(tmp_vault, "gone-one")
+        self._seed_gap(tmp_vault, "2026-06-12-gap-pending-one.md", target="pending-one", kind=None)
+        self._seed_gap(tmp_vault, "2026-06-12-gap-gone-one.md", target="gone-one", kind="duplicate")
+        assert _run(["gaps"]).exit_code == 0
+        (scan,) = self._kinds("entities.gaps_scanned")
+        assert scan.payload == {
+            "threshold": 3,
+            "candidates": 3,
+            "filed": 1,
+            "already_tracked": 1,
+            "suppressed": 1,
+            "invalid": 0,
+            "closed": 0,  # closure is reported beside the partition, not in it
+            "ambiguous": 0,
+        }
+
+    def test_second_run_files_nothing(self, tmp_vault):
+        # M3: the filename glob is gone; the policy stops the re-file.
+        self._seed_referrers(tmp_vault, "missing-person")
+        assert _run(["gaps"]).exit_code == 0
+        files, created = self._files(tmp_vault), len(self._kinds("observation.created"))
+        assert created == 1
+
+        second = _run(["gaps"])
+        assert second.exit_code == 0, second.output
+        assert self._files(tmp_vault) == files  # 0 files
+        assert len(self._kinds("observation.created")) == created  # 0 observation.created
+        assert "0 new gap observation(s) filed" in second.output
+        assert "exists" in second.output
+
+    def test_second_run_on_a_later_day_files_nothing(self, tmp_vault, monkeypatch):
+        # The case the old "*-gap-<slug>.md" glob existed for: a re-run on
+        # another day has a new date prefix, so no filename collides and only
+        # identity (target) stops the re-file.
+        from datetime import date
+
+        from sabnyx import ledger as ledger_mod
+
+        self._seed_referrers(tmp_vault, "missing-person")
+        monkeypatch.setattr(ledger_mod, "today", lambda: date(2026, 6, 12))
+        assert _run(["gaps"]).exit_code == 0
+        files, created = self._files(tmp_vault), len(self._kinds("observation.created"))
+        monkeypatch.setattr(ledger_mod, "today", lambda: date(2026, 6, 13))
+        second = _run(["gaps"])
+        assert second.exit_code == 0, second.output
+        assert self._files(tmp_vault) == files
+        assert len(self._kinds("observation.created")) == created
+
+    def test_dismissed_gap_is_suppressed_and_counted_once(self, tmp_vault):
+        # M4 (ledger-asserting): one observation.suppressed with count 1.
+        head = self._seed_gap(
+            tmp_vault, "2026-06-12-gap-missing-person.md", target="missing-person", kind="wontfix"
+        )
+        self._seed_referrers(tmp_vault, "missing-person")
+        result = _run(["gaps"])
+        assert result.exit_code == 0, result.output
+        assert self._files(tmp_vault) == [head.name]
+        assert self._kinds("observation.created") == []
+        (ev,) = self._kinds("observation.suppressed")
+        assert ev.actor == "sabnyx-entities"
+        assert ev.plane == "projection"
+        assert ev.subject == f"vault/intake/.observations/{head.name}"
+        assert ev.payload["count"] == 1
+        assert ev.payload["kind"] == "wontfix"
+        (scan,) = self._kinds("entities.gaps_scanned")
+        assert scan.payload["filed"] == 0
+        assert scan.payload["suppressed"] == 1
+        p = scan.payload  # the counts partition the candidates
+        assert p["filed"] + p["already_tracked"] + p["suppressed"] + p["invalid"] == p["candidates"]
+        assert "suppressed (wontfix)" in result.output
+
+    def test_done_gap_that_recurs_is_reopened(self, tmp_vault):
+        head = self._seed_gap(
+            tmp_vault, "2026-06-12-gap-missing-person.md", target="missing-person", kind="done"
+        )
+        self._seed_referrers(tmp_vault, "missing-person")
+        result = _run(["gaps"])
+        assert result.exit_code == 0, result.output
+        (ev,) = self._kinds("observation.created")
+        assert ev.payload["supersedes"] == f"vault/intake/.observations/{head.name}"
+        assert "reopened gap" in result.output
+        assert "1 new gap observation(s) filed" in result.output
+
+    def test_legacy_targetless_gap_no_longer_suppresses(self, tmp_vault):
+        # Accepted (A12, Demonstrate c4b): a legacy *-gap-<slug>.md without a
+        # `target` has no identity, so it neither blocks nor suppresses; the
+        # operator archives the legacy twin with --kind duplicate.
+        legacy = self._seed_gap(
+            tmp_vault, "2026-01-01-gap-missing-person.md", target=None, kind=None
+        )
+        self._seed_referrers(tmp_vault, "missing-person")
+        assert _run(["gaps"]).exit_code == 0
+        assert len(self._files(tmp_vault)) == 2
+        assert legacy.name in self._files(tmp_vault)
+
+    def test_dry_run_previews_through_the_policy(self, tmp_vault):
+        self._seed_referrers(tmp_vault, "missing-person")
+        self._seed_referrers(tmp_vault, "other-gap")
+        self._seed_gap(
+            tmp_vault, "2026-06-12-gap-other-gap.md", target="other-gap", kind="obsolete"
+        )
+        files, events = self._files(tmp_vault), ledger.count()
+        result = _run(["gaps", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "would file gap" in result.output
+        assert "suppressed (obsolete)" in result.output
+        assert self._files(tmp_vault) == files
+        assert ledger.count() == events  # dry runs ledger nothing, suppressions included
 
 
 # ---------------------------------------------------------------------------

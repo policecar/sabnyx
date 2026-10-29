@@ -13,16 +13,13 @@ import click
 from rich.console import Console
 
 from .. import fm, ledger
-from ..paths import DATA_ROOT, INTAKE, OBSERVATIONS, REVIEW, ensure_tree
+from .. import observations as obs
+from ..paths import DATA_ROOT, INTAKE, REVIEW, ensure_tree
 from ..util import age_days
 
 
 def _intake_files() -> list[Path]:
     return sorted([p for p in INTAKE.glob("*.md") if p.is_file()])
-
-
-def _obs_files() -> list[Path]:
-    return sorted([p for p in OBSERVATIONS.glob("*.md") if p.is_file()])
 
 
 def _recommend(meta: dict, kind: str) -> str:
@@ -51,14 +48,17 @@ def triage_cmd() -> None:
     console = Console()
 
     intake = _intake_files()
-    obs = _obs_files()
+    # Pending only, through the shared reader; malformed files are listed
+    # as [INVALID] below but never counted.
+    valid_obs, malformed_obs = obs.load_all()
+    pending = [o for o in valid_obs if o.fm.status == "pending"]
 
     lines: list[str] = []
     lines.append("# Triage queue")
     lines.append("")
     lines.append(f"Generated: {ledger.now().isoformat()}")
     lines.append("")
-    lines.append(f"intake files: {len(intake)}   observations: {len(obs)}")
+    lines.append(f"intake files: {len(intake)}   observations: {len(pending)}")
     lines.append("")
 
     if intake:
@@ -78,19 +78,15 @@ def triage_cmd() -> None:
             )
         lines.append("")
 
-    if obs:
+    if pending or malformed_obs:
         lines.append("## Observations (pending)")
         lines.append("")
-        for p in obs:
-            try:
-                meta, _body, _kind = fm.load(p)
-            except fm.FrontmatterError as e:
-                lines.append(f"- [INVALID] {p.relative_to(DATA_ROOT)}: {e.errors}")
-                continue
-            lines.append(
-                f"- `{p.relative_to(DATA_ROOT)}` "
-                f"(category: {meta.get('category')}, status: {meta.get('status')})"
-            )
+        # One filename-ordered list, as before the shared reader.
+        entries = [
+            (o.path.name, f"- `{o.rel}` (category: {o.fm.category}, status: {o.fm.status})")
+            for o in pending
+        ] + [(p.name, f"- [INVALID] {p.relative_to(DATA_ROOT)}: {err}") for p, err in malformed_obs]
+        lines.extend(line for _name, line in sorted(entries))
         lines.append("")
 
     out = REVIEW / "pending.md"
@@ -102,8 +98,8 @@ def triage_cmd() -> None:
         subject=str(out.relative_to(DATA_ROOT)),
         payload={
             "intake_count": len(intake),
-            "observation_count": len(obs),
+            "observation_count": len(pending),  # pending only (was: every file)
         },
     )
     console.print(f"[green]wrote[/green] {out.relative_to(DATA_ROOT)}")
-    console.print(f"intake: [bold]{len(intake)}[/bold]   observations: [bold]{len(obs)}[/bold]")
+    console.print(f"intake: [bold]{len(intake)}[/bold]   observations: [bold]{len(pending)}[/bold]")

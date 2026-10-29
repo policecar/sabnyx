@@ -224,3 +224,248 @@ def test_append_event_raises_on_short_write(tmp_vault, monkeypatch) -> None:
 
     with pytest.raises(ledger.LedgerError, match="short write"):
         ledger.append_event(kind="test.event", actor="t", subject="s", payload={"n": 1})
+
+
+# -- failure classes: "may the line be on disk?" (IDD §10, D15, Demonstrate c1) ----
+#
+# A caller that mutated a file before appending (transition_observation)
+# restores it iff the ledger line cannot be on disk. That is decidable only
+# by exception type: LedgerWriteError for every failure from the first
+# write(2) through close, anything else before it. Each row injects at the
+# OS boundary -- the real ledger file object's write/close, ledger._fsync,
+# Path.mkdir/open -- never by mocking append_event, which could not tell
+# the classes apart. The assertion is the c1 rule: the exception class
+# matches what is actually on disk, with ENOSPC-at-0-bytes the one known
+# conservative row.
+
+_REAL_OPEN = Path.open
+
+
+class _LedgerFileProxy:
+    """Wraps the real ledger file object; misbehaves in one named way."""
+
+    def __init__(self, f: Any, mode: str) -> None:
+        self.f, self.mode = f, mode
+
+    def __enter__(self) -> _LedgerFileProxy:
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        self.f.close()
+        if self.mode == "close":
+            raise OSError(5, "injected: close EIO")
+        return False
+
+    def fileno(self) -> int:
+        return self.f.fileno()
+
+    def write(self, data: bytes) -> int:
+        if self.mode == "short":
+            return self.f.write(data[: len(data) // 2])
+        if self.mode == "write-eio-partial":
+            self.f.write(data[:10])
+            raise OSError(5, "injected: write EIO after 10 bytes")
+        if self.mode == "enospc":
+            raise OSError(28, "injected: ENOSPC, nothing written")
+        return self.f.write(data)
+
+
+def _proxy_open(mode: str):
+    def opener(self: Path, *args: Any, **kwargs: Any) -> Any:
+        f = _REAL_OPEN(self, *args, **kwargs)
+        return _LedgerFileProxy(f, mode) if self == ledger.EVENTS_JSONL else f
+
+    return opener
+
+
+def _inject(monkeypatch, name: str) -> dict[str, object] | None:
+    """Install injection `name`; return a replacement payload, or None."""
+    if name == "mkdir":
+
+        def bad_mkdir(self: Path, *a: Any, **k: Any) -> None:
+            raise PermissionError(13, "injected: mkdir")
+
+        monkeypatch.setattr(Path, "mkdir", bad_mkdir)
+    elif name == "event-build":
+        return {"x": 1.5}  # floats are rejected while building
+    elif name == "open":
+
+        def bad_open(self: Path, *a: Any, **k: Any) -> Any:
+            if self == ledger.EVENTS_JSONL:
+                raise PermissionError(13, "injected: open (read-only mount)")
+            return _REAL_OPEN(self, *a, **k)
+
+        monkeypatch.setattr(Path, "open", bad_open)
+    elif name == "open-interrupt":
+        # The operator's Ctrl-C before any byte is written (ADR 0008).
+
+        def interrupted_open(self: Path, *a: Any, **k: Any) -> Any:
+            if self == ledger.EVENTS_JSONL:
+                raise KeyboardInterrupt("injected: Ctrl-C before open")
+            return _REAL_OPEN(self, *a, **k)
+
+        monkeypatch.setattr(Path, "open", interrupted_open)
+    elif name in ("fsync", "fsync-interrupt", "fsync-other"):
+        exc: BaseException = {
+            "fsync": OSError(5, "injected: fsync EIO"),
+            # A Ctrl-C after write(2) returned: the full line is on disk.
+            "fsync-interrupt": KeyboardInterrupt("injected: Ctrl-C at fsync"),
+            # Not an OSError: still after the write, still classified.
+            "fsync-other": ValueError("injected: non-OSError at fsync"),
+        }[name]
+
+        def bad_fsync(fd: int) -> None:
+            raise exc
+
+        monkeypatch.setattr(ledger, "_fsync", bad_fsync)
+    else:  # enospc | write-eio-partial | short | close
+        monkeypatch.setattr(Path, "open", _proxy_open(name))
+    return None
+
+
+@pytest.mark.parametrize(
+    ("injection", "on_disk", "cls"),
+    [
+        # pre-write: nothing reached the file → the original exception (or the
+        # operator's KeyboardInterrupt) propagates unchanged; caller may restore
+        ("mkdir", "none", "plain"),
+        ("event-build", "none", "plain"),
+        ("open", "none", "plain"),
+        ("open-interrupt", "none", "plain"),
+        # post-write: bytes may be on disk → LedgerWriteError, or
+        # LedgerWriteInterrupted for a Ctrl-C; caller must not restore
+        ("enospc", "none", "write_error"),  # known conservative row (indistinguishable from EIO)
+        ("write-eio-partial", "partial", "write_error"),
+        ("short", "partial", "write_error"),
+        ("fsync", "full", "write_error"),
+        ("fsync-other", "full", "write_error"),
+        ("close", "full", "write_error"),
+        ("fsync-interrupt", "full", "interrupted"),
+    ],
+)
+def test_append_failure_class_matches_what_is_on_disk(tmp_vault, injection, on_disk, cls) -> None:
+    # Steady state: the ledger already exists with one good line.
+    ledger.append_event(kind="seed", actor="t", subject="s", payload={"n": 0})
+    before = ledger.EVENTS_JSONL.read_bytes()
+
+    payload: dict[str, object] = {"n": 1}
+    # A scoped MonkeyPatch, not the fixture's: undoing that one would also
+    # undo tmp_vault's path redirects.
+    with pytest.MonkeyPatch.context() as mp:
+        payload = _inject(mp, injection) or payload
+        with pytest.raises(
+            (OSError, TypeError, ledger.LedgerError, KeyboardInterrupt),
+            match="injected|float|short write|interrupted after the ledger write began",
+        ) as excinfo:
+            ledger.append_event(
+                kind="observation.resolved", actor="t", subject="s", payload=payload
+            )
+
+    after = ledger.EVENTS_JSONL.read_bytes()
+    assert after.startswith(before), "a failed append must never rewrite earlier lines"
+    tail = after[len(before) :]
+    observed = "none" if not tail else ("full" if tail.endswith(b"\n") else "partial")
+    assert observed == on_disk
+
+    e = excinfo.value
+    write_error = isinstance(e, ledger.LedgerWriteError)
+    interrupted = isinstance(e, ledger.LedgerWriteInterrupted)
+    assert (write_error, interrupted) == (cls == "write_error", cls == "interrupted"), (
+        f"{injection}: got {type(e).__name__}"
+    )
+    if write_error:
+        assert isinstance(e, ledger.LedgerError)  # existing handlers still catch it
+        assert "opsctl verify" in str(e)
+    if interrupted:
+        assert "opsctl verify" in str(e)
+        assert isinstance(e.__cause__, KeyboardInterrupt)  # original interrupt kept
+    if on_disk != "none":
+        # The safety property itself: bytes on disk ⇒ never a restorable class.
+        assert write_error or interrupted
+
+
+def _fail_dir_fsync(mp: pytest.MonkeyPatch, exc: BaseException) -> None:
+    """Raise `exc` from ledger._fsync on a directory fd only: the first
+    append's directory sync, after the line is already on disk."""
+    real_fsync = ledger._fsync
+
+    def fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise exc
+        real_fsync(fd)
+
+    mp.setattr(ledger, "_fsync", fsync)
+
+
+@pytest.mark.parametrize(
+    ("exc", "cls"),
+    [
+        (KeyboardInterrupt("injected: Ctrl-C at dir fsync"), ledger.LedgerWriteInterrupted),
+        (ValueError("injected: non-OSError at dir fsync"), ledger.LedgerWriteError),
+    ],
+)
+def test_first_append_dir_sync_failure_is_a_post_write_class(tmp_vault, exc, cls) -> None:
+    """The append that creates events.jsonl fsyncs the directory after the
+    full line is written. A failure there must never surface as a
+    restorable (pre-write) class: the caller would undo a mutation the
+    ledger already records."""
+    assert not ledger.EVENTS_JSONL.exists()
+    with pytest.MonkeyPatch.context() as mp:
+        _fail_dir_fsync(mp, exc)
+        # Any KeyboardInterrupt, then the exact type (a bare one escaping
+        # pytest.raises would abort the session, not fail the test).
+        with pytest.raises((ledger.LedgerError, KeyboardInterrupt)) as ei:
+            ledger.append_event(kind="observation.resolved", actor="t", subject="s", payload={})
+    assert type(ei.value) is cls, f"got {type(ei.value).__name__}"
+    assert ei.value.__cause__ is exc
+    assert "opsctl verify" in str(ei.value)
+    assert ledger.count() == 1  # the full line is on disk
+
+
+def test_first_append_dir_sync_oserror_stays_best_effort(tmp_vault) -> None:
+    """An OSError from the directory sync is still swallowed: the line is
+    durable, only its directory entry might not survive a later crash."""
+    assert not ledger.EVENTS_JSONL.exists()
+    with pytest.MonkeyPatch.context() as mp:
+        _fail_dir_fsync(mp, OSError(5, "injected: dir fsync EIO"))
+        ledger.append_event(kind="observation.resolved", actor="t", subject="s", payload={})
+    assert ledger.count() == 1
+
+
+def test_ledger_write_interrupted_is_an_interrupt_not_an_exception() -> None:
+    # ADR 0008: it keeps the interrupt's meaning (exit 130) and cannot be
+    # swallowed by an `except Exception` handler.
+    assert issubclass(ledger.LedgerWriteInterrupted, KeyboardInterrupt)
+    assert not issubclass(ledger.LedgerWriteInterrupted, Exception)
+    assert not issubclass(ledger.LedgerWriteInterrupted, ledger.LedgerError)
+
+
+def test_open_and_fsync_failures_are_now_distinguishable(tmp_vault) -> None:
+    # Demonstrate c1 (a): before LedgerWriteError both raised a bare OSError,
+    # so a caller could not decide whether to restore.
+    ledger.append_event(kind="seed", actor="t", subject="s", payload={})
+    with pytest.MonkeyPatch.context() as mp:
+        _inject(mp, "open")
+        with pytest.raises(OSError, match="injected: open") as open_exc:
+            ledger.append_event(kind="x", actor="t", subject="s", payload={})
+    with pytest.MonkeyPatch.context() as mp:
+        _inject(mp, "fsync")
+        with pytest.raises(ledger.LedgerWriteError, match="injected: fsync") as fsync_exc:
+            ledger.append_event(kind="x", actor="t", subject="s", payload={})
+    assert not isinstance(open_exc.value, ledger.LedgerWriteError)
+    assert isinstance(fsync_exc.value.__cause__, OSError)  # original cause kept
+
+
+# -- the clock --------------------------------------------------------------------
+
+
+def test_today_is_the_utc_date_of_now(monkeypatch) -> None:
+    from datetime import UTC, date, datetime
+
+    # 23:30 in UTC-10 is already the next day in UTC: today() must follow UTC.
+    fixed = datetime(2026, 10, 23, 9, 30, tzinfo=UTC)
+    monkeypatch.setattr(ledger, "now", lambda: fixed)
+    assert ledger.today() == date(2026, 10, 23)
+    fixed_late = datetime(2026, 10, 23, 23, 59, tzinfo=UTC)
+    monkeypatch.setattr(ledger, "now", lambda: fixed_late)
+    assert ledger.today() == date(2026, 10, 23)

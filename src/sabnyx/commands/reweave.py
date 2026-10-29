@@ -27,6 +27,7 @@ import click
 from rich.console import Console
 
 from .. import context, fm, ledger, llm, paths, retrieval, writers
+from .. import observations as obs
 from ..schemas import ModelRole, ReweaveChangeset
 from ..util import extract_wikilinks, get_marker_block, set_marker_block
 
@@ -50,8 +51,9 @@ ReweaveChangeset. Rules, in addition to the SPEC and ROUTING contract above:
   already exist.
 - Contradiction scan: if the target makes a claim that conflicts with an
   existing atlas file (roles, dates, stances, mechanisms), propose an
-  observation with category: contradiction, BOTH files in `involves`, and a
-  suggested resolution in the body. This is how the vault detects stale claims.
+  observation with category: contradiction, exactly two files in `involves`
+  (the target and the conflicting file), and a suggested resolution in the
+  body. This is how the vault detects stale claims.
 - Gaps and recurring unlinked co-occurrences may become gap / connection
   observations. Be conservative; propose nothing if nothing qualifies.
 - Reasons are one line, specific, no filler."""
@@ -106,17 +108,14 @@ def _context_for(target: Path, index: dict[str, Path]) -> str:
         else "(the atlas contains no other files)",
     ]
 
-    obs = sorted(paths.OBSERVATIONS.glob("*.md"))
-    if obs:
+    # Pending only: an archived (dismissed) signal must not reach the model.
+    pending = obs.observations()
+    if pending:
         parts.append("## Pending observations")
-        for p in obs:
-            try:
-                meta, _body, _ = fm.load(p)
-            except Exception:
-                continue
-            involves = ", ".join(meta.get("involves", []))
+        for o in pending:
+            involves = ", ".join(o.fm.involves)
             parts.append(
-                f"- [{meta.get('category')}] {p.stem}"
+                f"- [{o.fm.category}] {o.path.stem}"
                 + (f" (involves: {involves})" if involves else "")
             )
     return "\n".join(parts)
@@ -248,10 +247,12 @@ def reweave_one(
 
     modified = _apply_links(tgt, changeset, index, console)
     obs_written: list[str] = []
+    outcomes: list[writers.WriteOutcome] = []
     for ob in changeset.observations:
-        written = writers.write_observation(ob, actor=actor, console=console)
-        if written:
-            obs_written.append(written)
+        out = writers.write_observation(ob, producer="reweave", actor=actor, console=console)
+        outcomes.append(out)
+        if out.kind in ("written", "reopened"):
+            obs_written.append(out.rel)
 
     ledger.append_event(
         kind="reweave.completed",
@@ -263,6 +264,9 @@ def reweave_one(
             "observations": obs_written,
         },
     )
+    # One run = one reweave_one call (IDD §6): dismissed signals it met are
+    # counted once each, after the completion event.
+    writers.ledger_suppressed(outcomes, actor=actor)
     return modified, obs_written
 
 

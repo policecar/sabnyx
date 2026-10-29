@@ -166,18 +166,26 @@ def test_alias_only_incoming_is_not_an_orphan(tmp_vault):
 
 def _observation(tmp_vault, slug: str, status: str) -> Path:
     p = tmp_vault["OBSERVATIONS"] / f"2026-06-12-gap-{slug}.md"
-    fm.write(
-        p,
-        {
-            "type": "observation",
-            "category": "gap",
-            "observed": "2026-06-12",
-            "source_agent": "manual",
-            "status": status,
-            "involves": [],
-        },
-        f"# {slug}\n\nnoted\n",
-    )
+    meta = {
+        "type": "observation",
+        "category": "gap",
+        "observed": "2026-06-12",
+        "source_agent": "manual",
+        "status": status,
+        "involves": [],
+    }
+    if status != "pending":
+        # The schema derives status from resolution_kind (strict): a resolved
+        # observation carries all three resolution fields.
+        meta |= {
+            "resolved": "2026-06-13",
+            "resolution": "noted elsewhere",
+            "resolution_kind": "done" if status == "promoted" else "wontfix",
+        }
+    fm.write(p, meta, f"# {slug}\n\nnoted\n")
+    # Valid on disk, so a count of 1 means "filtered by status", not
+    # "skipped as malformed".
+    fm.load(p)
     return p
 
 

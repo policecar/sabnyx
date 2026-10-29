@@ -197,6 +197,24 @@ def test_ingest_stdin_applies_changeset(tmp_vault, monkeypatch):
     assert "] ingest | Test Source" in log
 
 
+def test_ingest_observation_records_producer_ingest(tmp_vault, monkeypatch):
+    from sabnyx import observations
+
+    result, _ = _run_ingest(
+        tmp_vault,
+        monkeypatch,
+        ["--stdin", "--title", "Test Source", "--yes"],
+        input_text="a tiny source about markdown\n",
+    )
+    assert result.exit_code == 0, result.output
+    (o,) = observations.observations("all")
+    assert o.fm.producer == "ingest"
+    assert o.fm.source_agent == "sabnyx-ingest"
+    (ev,) = [e for e in ledger.replay() if e.kind == "observation.created"]
+    assert ev.subject == o.rel
+    assert ev.payload["producer"] == "ingest"
+
+
 def test_ingest_dry_run_writes_nothing(tmp_vault, monkeypatch):
     result, calls = _run_ingest(tmp_vault, monkeypatch, ["--stdin", "--title", "Dry", "--dry-run"])
     assert result.exit_code == 0, result.output

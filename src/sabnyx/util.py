@@ -34,24 +34,51 @@ def age_days(ts: datetime | date | str | None) -> int | None:
     return (datetime.now(UTC) - ts).days
 
 
+# The shape slugify() emits: lowercase ASCII alnum runs joined by single
+# hyphens. Used to validate fields that must already be slugs (an
+# observation's `target`), never to produce one. Anchored with \A/\Z, not
+# ^/$: `$` also matches before a trailing newline, so `.match("abc\n")`
+# would accept it. Safe under match, search or fullmatch alike.
+SLUG_RE = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+
+
+def _fold(text: str) -> str:
+    """The kebab-case ASCII fold of `text`; "" when nothing slug-able remains."""
+    t = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    t = t.lower()
+    return re.sub(r"[^a-z0-9]+", "-", t).strip("-")
+
+
+def _clamp(t: str, max_len: int) -> str:
+    return t[:max_len].rstrip("-") if len(t) > max_len else t
+
+
 def slugify(text: str, max_len: int = 80) -> str:
     """Kebab-case ASCII slug, 1-80 chars, stripped of junk.
 
     Rules from SPEC section 6: kebab-case, ASCII, 30-80 chars ideally.
     We enforce ASCII and kebab; length clamp is a warning not an error.
     """
-    t = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    t = t.lower()
-    t = re.sub(r"[^a-z0-9]+", "-", t).strip("-")
+    t = _fold(text)
     if not t:
         # The ASCII fold ate everything (e.g. a fully non-Latin title). Keep the
         # SPEC §6 ASCII rule but derive a stable suffix from the original text so
         # distinct titles don't all collapse to one colliding "untitled" slug.
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
         t = f"untitled-{digest}"
-    if len(t) > max_len:
-        t = t[:max_len].rstrip("-")
-    return t
+    return _clamp(t, max_len)
+
+
+def slug_fold(text: str, max_len: int = 80) -> str | None:
+    """slugify without the untitled fallback: None when the fold is empty.
+
+    For callers that must tell "this text has a slug" from "slugify made one
+    up" (an observation token with no slug-able content is no identity, not
+    an `untitled-<hash>` one). Equal to slugify(text, max_len) whenever it is
+    not None, so a page literally named "untitled" is unaffected.
+    """
+    t = _fold(text)
+    return _clamp(t, max_len) if t else None
 
 
 def file_hash(path: Path) -> str:

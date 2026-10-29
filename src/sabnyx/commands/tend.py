@@ -6,6 +6,7 @@ One schedulable command that drives the self-maintaining vault cycle:
   2. LLM triage pass   — batched model call for deferred items (≥ threshold,
                           or any item past --max-age-days, whichever fires).
   3. Reweave pass       — consume pending reweave.proposed intents.
+     Gap closure        — resolve pending gaps whose target page now exists.
   4. Health pass        — print a concise audit summary.
 
 Every mutation is ledgered. --dry-run writes nothing and makes no calls to
@@ -30,7 +31,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from .. import context, fm, ledger, llm, util
+from .. import context, fm, ledger, llm, util, writers
 from ..paths import ATLAS, DATA_ROOT, INTAKE, ensure_tree
 from ..services import (
     ACTOR_TEND,
@@ -590,6 +591,12 @@ def tend_cmd(
         else:
             console.print("\n[dim]pass 3: reweave skipped (--no-reweave)[/dim]")
 
+    # -- gap closure (D3): before the health summary, so its pending count is
+    #    current. Not tied to --no-health: a stale pending count is the bug
+    #    closure exists to fix, whether or not the table is printed.
+    console.print("\n[bold]closing resolved gaps[/bold]")
+    closure = writers.close_resolved_gaps(actor=ACTOR_TEND, dry_run=dry_run, console=console)
+
     # -- pass 4: health --
     if not no_health:
         console.print("\n[bold]pass 4: health[/bold]")
@@ -608,6 +615,7 @@ def tend_cmd(
                 "auto_promoted": len(auto_promoted),
                 "llm_triaged": llm_triaged,
                 "reweaved": reweaved,
+                "gaps_closed": len(closure.closed),
                 "dry_run": dry_run,
                 "triage_trigger": triage_trigger,
             },

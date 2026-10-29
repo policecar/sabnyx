@@ -1,6 +1,7 @@
 # Plan: borrowings from jilog — deterministic signal hygiene
 
-Status: proposed
+Status: Cycle 1 (B1, B2 and the companion plan) implemented — branch
+`feat/observation-lifecycle`; B3–B5 proposed (Cycles 2–3); B6 deferred.
 Depends on: `observations-and-age-triage.md` (shares the `resolution` field
 and the `observations()` reader; B2 needs its transition helper)
 Source: `docs/recon/jilog-and-ai-agent-learnings.md`
@@ -17,10 +18,14 @@ Success means, mechanically:
 
 - `scan`, `entities gaps`, and `reweave` agree on what "already observed"
   means — one `observation_id()` helper, no per-command globs;
-- re-running any observation producer on an unchanged vault files zero new
-  observations and emits zero new `observation.created` events;
-- an observation archived as `wontfix` / `duplicate` is never re-filed; one
-  resolved as `done` whose signal recurs is re-filed with `supersedes`;
+- re-running `entities gaps` or `scan` on an unchanged vault files zero new
+  observations and emits zero new `observation.created` events (the first
+  run after merge may file; the second must not). Prose observations
+  (manual `new`, `ingest`, `reweave` connections/clusters) are outside this
+  claim — see B1;
+- an observation archived as `wontfix` / `duplicate` / `obsolete` is never
+  re-filed; one resolved as `done` whose signal recurs is re-filed with
+  `supersedes`;
 - `tend --dry-run` and `health` outputs on the fixture vault match committed
   golden files; `UPDATE_GOLDEN=1` regenerates and the regen run *fails*;
 - a heartbeat that trips a detector appends one `tend.anomaly` event and
@@ -49,28 +54,80 @@ sabnyx adaptation — observations *are* files that persist through `archived`,
 so the lifecycle ledger is the observation set itself plus `ops/events.jsonl`;
 no TSV sidecar.
 
-- `schemas.ObservationFrontmatter` gains `obs_id: str` (`sha256:<hex>`,
-  required on new files; optional on legacy files for compatibility).
-- `observation_id(category, involves, target=None) -> str` in `util.py` or a
-  new `observations.py`: SHA-256 of the canonical JSON of
-  `{"category", "involves": sorted, "target"}` — same canonicalisation as
-  `ledger.content_hash` (sorted keys, no whitespace), so it is stable across
-  Python versions and matches `opsctl` if it ever needs to compute it.
+Refined in Cycle 1 Discover. Identity is narrower than first drafted: only
+signals the code can name mechanically get one; a false merge silently drops
+a signal, which is worse than a duplicate the operator archives in seconds.
+
+- Identity is a property of the *file* and its provenance. The `signal` is
+  derivable or absent (amended in Cycle 1 Design, D14: only files whose
+  `source_agent` is in `observations.IDENTITY_SOURCES` — the trusted local
+  writers — confer identity; remote channels confer none, so injected
+  content can neither block nor suppress a trusted producer's finding):
+  - `contradiction` with exactly two `involves` → the sorted pair;
+  - `gap` with `target` set → the target;
+  - `connection` / `friction` / `structural`, a contradiction naming ≠ 2
+    files, a gap without `target` → no signal, no identity (prose). Prose
+    observations get the lifecycle commands but no dedupe and no reopen.
+  Titles are never hashed: two rewordings are not "the same" in any way the
+  code can defend.
+- `observation_id(category, signal) -> str | None` in `observations.py`:
+  SHA-256 of the canonical JSON of `{"category", "signal"}` — same
+  canonicalisation as `ledger.content_hash` (sorted keys, no whitespace).
   Length-prefixing is unnecessary once the input is canonical JSON; note that
-  in the docstring so nobody re-adds FNV.
-- `observations.index(status=...) -> dict[obs_id, Path]` built on the
-  `observations()` reader from the companion plan. Legacy files without
-  `obs_id` get one computed on read (never written back silently).
-- `writers.write_observation` sets `obs_id`, refuses to write when the id is
-  already present in the pending index, and returns the existing path instead.
+  in the docstring so nobody re-adds FNV. No `producer` in the hash: actor
+  labels are not producers (`tend` writes as itself when running `reweave`),
+  and two producers of one signal *should* merge. `producer` is a fixed-enum
+  audit field in frontmatter, outside the hash.
+- Each signal component is normalised before hashing: canonical slug via the
+  alias-aware slug index when it resolves, else `slugify` of the value with
+  path and `.md` stripped. Identity is therefore f(file, vault state). It can
+  shift when a page or alias is created — the moment a gap closes — so the
+  drift coincides with resolution rather than causing a false re-file. This
+  is deliberate; do not "fix" it.
+- `obs_id` is **computed on every read and never stored** in frontmatter. A
+  stored-or-nothing id would treat every existing file as prose and re-file
+  pairs `scan` already suppresses today. No backfill, no lint-equality rule.
+  The id *is* written into ledger payloads (`observation.created`,
+  `.resolved`, `.suppressed`) as an immutable point-in-time snapshot, so
+  `opsctl query` can follow one signal across files.
+- `observations.index()` built on the companion plan's `observations()`
+  reader: pending files keyed by `obs_id`, resolved files in a secondary map
+  (B2).
+- `writers.write_observation` computes the id when the signal is derivable,
+  consults the pending index, and returns the existing path instead of
+  writing a duplicate. Prompts ask reweave/ingest for exactly two `involves`
+  on contradictions; the writer accepts any count and assigns identity only
+  at two (strictness would only drop signals).
 - Replace the ad-hoc dedupe in `commands/scan.py` (file-pair set, ~L50) and
   `commands/entities.py` (`*-gap-<slug>.md` glob, ~L180) with the index.
-- Health reports duplicate `obs_id`s across pending files (Gate 7 warning).
+  `scan`'s behaviour is unchanged: a pending contradiction on the pair from
+  any writer still suppresses it. `entities gaps` sets `target` on new gaps.
+- Nice-to-have: health reports duplicate `obs_id`s across pending files
+  (Gate 7 warning).
 
 Files: `schemas.py`, `writers.py`, `commands/scan.py`, `commands/entities.py`,
 `commands/health.py`, new `observations.py` (or fold into the companion
 plan's module), tests `test_observations.py`, extend `test_scan.py`,
 `test_entities.py`.
+
+**As built (Cycle 1).** Where the shipped design differs from the text above:
+
+- `obs_id` is computed on every read and never stored, as planned; the
+  helper is `observations.obs_id(frontmatter, resolver)` rather than
+  `observation_id(category, signal)`, because the writer needs the id of
+  metadata before any file exists.
+- Identity is gated on provenance (`IDENTITY_SOURCES`, above), a list kept
+  separate from `SABNYX_TRUSTED_SOURCES`.
+- A name two pages claim (alias-vs-alias, or two stems that slugify alike)
+  is never guessed: that component gives no identity. A token with no
+  slug-able content (`[[]]`, `!!!`) gives none either, instead of slugify's
+  `untitled-<hash>`.
+- The writer returns a typed outcome (`written`, `reopened`,
+  `already_pending`, `suppressed`, `exists`, `invalid`) rather than the
+  existing path; nothing returns a bare `None`.
+- The health nice-to-have shipped as six integrity warnings (duplicate
+  pending ids, several chain heads, dangling and mismatched `supersedes`,
+  alias-vs-alias and stem-stem ambiguity), warnings only.
 
 ### B2 — Resolution kind and reopen policy
 
@@ -78,25 +135,64 @@ jilog: a recurring signal reopens a closed issue only when `closed_reason ==
 done`; `wontfix` / `duplicate` / `superseded` and a *missing* reason are left
 alone (`trackers/kata.rs:82-101`).
 
+Refined in Cycle 1 Discover:
+
 - Companion plan's `resolution: str` stays; add
-  `resolution_kind: done | wontfix | duplicate | obsolete` (required whenever
-  `resolved` is present on a new transition; legacy = absent = treated as
-  "missing reason" → never reopen, matching jilog's schema-drift rule).
+  `resolution_kind: done | wontfix | duplicate | obsolete`, required whenever
+  `resolved` is present. A non-pending file without it is malformed (strict;
+  amended in Cycle 1 Design, D7b): sabnyx owns this schema, so the "missing
+  kind" state is made unreachable rather than tolerated. jilog's
+  "missing reason → never reopen" drift rule is for schemas it does not own.
+- `status` is **derived from the kind**, not a second axis: `done` →
+  `promoted`; `wontfix` / `duplicate` / `obsolete` → `archived`. Schema
+  validation rejects a mismatch. Commands: `resolve FILE --reason` (always
+  `done`) and `archive FILE --kind wontfix|duplicate|obsolete --reason`;
+  `archive --kind done` is refused. This supersedes the companion plan's
+  "archive" for deterministic gap closure: closing a gap is a *resolve*
+  (`done`), so a gap whose page later disappears is re-filed.
 - `observations.recurrence_policy(obs_id) -> "new" | "reopen" | "suppressed"`:
-  pending → `suppressed` (already tracked); archived/promoted with kind `done`
-  → `reopen`; any other kind or missing kind → `suppressed`.
+  pending → `suppressed` (already tracked); resolved with kind `done` →
+  `reopen`; any other kind or missing kind → `suppressed`.
 - `reopen` writes a *new* observation file (never un-archives the old one —
-  observations are append-only like the ledger) with
-  `supersedes: <old obs_id>` in frontmatter and payload; `obs_id` is the same
-  hash (identity is the signal, not the file), so the index must key pending
-  files only and keep resolved files in a secondary map.
+  observations are append-only like the ledger). `supersedes` holds the old
+  file's **vault-relative path** in frontmatter and payload — not its
+  `obs_id`, which equals the new file's (identity is the signal). Only the
+  recurrence path may set `supersedes`; the manual commands refuse it, so a
+  reopen chain cannot be hand-forged.
+- A same-day reopen collides with the old filename
+  (`<date>-<category>-<slug>.md`); the writer appends a deterministic `-2`,
+  `-3`, never a timestamp (Cycle 2 goldens).
 - Suppressed recurrences are counted, not written: one `observation.suppressed`
-  event per producer run with `{obs_id, count}` so the ledger shows a signal
-  that keeps firing against a `wontfix`.
-- `sabnyx observations resolve|archive` (companion plan) take `--kind`.
+  event per signal per producer run with `{obs_id, count}`, emitted only when
+  `count > 0`, so the ledger shows a signal that keeps firing against a
+  `wontfix` while a quiet heartbeat stays silent.
+- SPEC.md §3 observation schema gains `target`, `producer`, `resolution`,
+  `resolution_kind`, `supersedes` and the derived status rule in the same PR
+  (no `obs_id` field — it is computed). All new fields are optional on
+  existing files.
 
 Files: `schemas.py`, `writers.py` / `observations.py`, companion plan's
 command module, `test_observations.py`.
+
+**As built (Cycle 1).** Where the shipped design differs from the text above:
+
+- Status is derived from the kind and validated strictly in both directions;
+  a hand-set `status: archived` without the resolution fields is malformed.
+- `recurrence_policy` returns `already_pending` / `reopen` / `suppressed` /
+  `new`, checked in that order: a pending signal is its own outcome, not a
+  kind of suppression.
+- `supersedes` holds the superseded file's DATA_ROOT-relative path (the
+  ledger `subject` form), as planned. The chain head follows `supersedes`,
+  never filename order (`foo-2.md` sorts before `foo.md`).
+- Deterministic gap closure is a *resolve* (`done`, reason `page now exists:
+  <slug>`), as planned here, through the same `transition_observation` as the
+  manual command, so its event is the manual one by construction.
+- `observation.suppressed` is one event per id per run (one entry-point
+  call), payload `{obs_id, count, kind}`; `scan` counts suppressions on every
+  real run, including when the operator declines the write.
+- A transition restores the file on a ledger failure only if the ledger line
+  cannot be on disk (`ledger.LedgerWriteError` covers `write(2)` through
+  `close`).
 
 ### B3 — Golden tests for operator-facing reports
 
@@ -196,7 +292,8 @@ One coherent change to the observation data model and its readers:
 
 1. `observations-and-age-triage.md`: `observations()` reader,
    `transition_observation`, `sabnyx observations list|resolve|archive`,
-   deterministic gap closure, age trigger.
+   deterministic gap closure. (Its age trigger already shipped in PR #25 as
+   `tend --max-age-days`; out of this cycle.)
 2. **B1** `obs_id` + `observations.index()`; rewire `scan` / `entities`
    dedupe onto it.
 3. **B2** `resolution_kind`, `recurrence_policy`, reopen-with-`supersedes`,
@@ -207,6 +304,31 @@ reader (1) calls for — splitting them would mean building the same module
 twice. (1) and B1 are parallelizable; B2 follows both. Workflow: **full**
 (six stages) — this is a schema change plus a new command group and it
 deserves Demonstrate — or a chunky fast cycle if the operator prefers.
+
+#### Deferred from Cycle 1 (the one list)
+
+- `new --involves / --target`, so hand-filed contradictions and gaps get
+  identity (today `new` writes prose).
+- `observations list --involves SLUG` (in the companion plan's command
+  surface; not in the Cycle 1 design).
+- The two remaining `date.today()` calls in `services.py`; observation dates
+  already use `ledger.today()` (UTC).
+- Unify relative `FILE` resolution between `promote` (cwd) and
+  `observations resolve|archive` (DATA_ROOT).
+- A rate limit on `/status` (bearer-authenticated; each poll parses every
+  observation file).
+- Residual: a lone surrogate (`\udcXX`) reaching `write_observation` through
+  `involves` (LLM JSON can carry one) is written via YAML escaping, then the
+  ledger event fails to serialise before the ledger file is opened; the
+  writer does not restore, leaving a *pending* file with no
+  `observation.created`. Improbable and safe (the file is valid); Cycle 2's
+  reconcile check detects it.
+- `entities resolve` (entity-page collisions) and health's
+  `ambiguous_alias` / `ambiguous_stem` overlap for entity pages; both are
+  correct and answer different questions.
+- A forged `supersedes` cycle beside a live, unsuperseded chain tip of the
+  same id is not reported by health; the recurrence policy stays safe (never
+  `new`).
 
 ### Cycle 2 — `report-hygiene` (B4 then B3)
 
@@ -220,11 +342,16 @@ golden regen.
 Also in this cycle (assigned from Cycle 1's deferred list): `reconcile`
 asserts that every non-pending observation has an `observation.resolved`
 event for its `rel` — the file/ledger mismatch a failed restore can leave
-behind. ~15 read-only lines.
+behind — and that every pending observation has an `observation.created`
+event for its `rel` (the state a pre-write ledger failure in
+`write_observation` can leave; see the deferred list). ~20 read-only lines.
 
 Threat note: detectors read ledger payloads that carry model-derived fields
 (slugs, reasons). They are data for counting only — never interpolated into
 a path, a shell, or a prompt. Golden fixtures use made-up slugs (AGENTS §9).
+
+Follow the "Threat pass — every cycle" section and the cycle's own threat
+note; run `/security-review` before Verify closes.
 
 ### Cycle 3 — `review-requests` (B5), if at all
 
@@ -249,6 +376,9 @@ design must guarantee that what the operator saw is exactly what runs:
   lint rejects `type: request` outside `_review/`;
 - the answer path applies the action through the same `services.py` function
   the interactive prompt would have called — no second apply path.
+
+Follow the "Threat pass — every cycle" section and the cycle's own threat
+note; run `/security-review` before Verify closes.
 
 B6 builds nothing.
 

@@ -98,7 +98,27 @@ One command runs the whole self-maintenance cycle, so the brain tidies *itself*:
 3. **Reweave** — link new cards back to related old ones; flag contradictions.
 4. **Health** — a quick "how's the vault doing" report.
 
+Just before the health report, `tend` also crosses off any "this page is
+missing" note whose page now exists (see below).
+
 `sabnyx tend --dry-run` previews everything and writes nothing.
+
+### Notes to self (observations)
+
+While the brain works, it leaves itself sticky notes in
+`vault/intake/.observations/`: "this page is mentioned but missing" (a
+*gap*), "these two cards disagree" (a *contradiction*), "this was awkward"
+(*friction*). Each note is **pending** until someone deals with it. Then
+it is either **resolved** (fixed) or **archived** (won't fix, duplicate,
+no longer relevant), always with a one-line reason, and the change goes in
+the logbook. `sabnyx observations list` shows what's open.
+
+Some notes can recognise themselves: a contradiction between the same two
+cards, or a gap for the same missing page, is the same note however it's
+worded. So the brain doesn't file it twice. If a fixed problem comes back,
+it files a fresh note that points at the old one. If you said "won't fix",
+it stays quiet but keeps count in the logbook. The full story is in
+`observations.md`.
 
 ### The write path (atomic + locked)
 
@@ -245,6 +265,7 @@ you capture / ingest  ──▶  intake/  ──(tend: gates + AI)──▶  atl
 | Add knowledge | `sabnyx new` / `sabnyx ingest <url\|file>` |
 | Ask a question | `sabnyx ask "..."` |
 | Tidy the vault | `sabnyx tend --dry-run`, then `--yes` |
+| See and close open notes | `sabnyx observations list`, then `resolve` / `archive` |
 | Publish the face | `halbor project --vault ../sabnyx/vault --out build/site` |
 | Ask the face | `halbor ask "..."` |
 
@@ -260,6 +281,8 @@ src/sabnyx/
   llm.py         the single AI door — providers, roles, repair-retry, ledgering
   schemas.py     the frontmatter / structured-output contracts (incl. description)
   services.py    shared orchestration: ingest, ask, promote, triage
+  observations.py the one reader of observation notes: identity, recurrence policy
+  writers.py     every write of intake and observation files (and their ledger events)
   retrieval.py   the finder seam: GrepRetriever / VectorRetriever
   commands/      one file per CLI verb (ask, ingest, tend, verify, …)
   config.py      .env autoload, trusted sources

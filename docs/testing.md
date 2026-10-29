@@ -18,10 +18,12 @@ src/
 ## Layer 1 — Automated suites (free, no keys, the gate)
 
 ```sh
-# sabnyx — Python
+# sabnyx — Python: CI's python job runs the first three (.github/workflows/ci.yml)
 cd ../sabnyx
 uv run pytest -q                                  # all green (334 at last count)
 uv run ruff check . && uv run ruff format --check .
+uv run ty check                                   # type check
+uv run sabnyx lint                                # gates 1,2,4 on the vault
 
 # sabnyx — opsctl (Rust control plane) — NOT covered by pytest
 cd opsctl && cargo test           # ledger, root, query, project, supervise, verify
@@ -66,12 +68,14 @@ uv run sabnyx verify           # cheapest live: one structured call per role (co
 uv run sabnyx ask "..."        # read-only: answers from the vault, cites [[links]]
 uv run sabnyx lint             # no LLM: frontmatter + containment gates
 uv run sabnyx health           # no LLM: orphans, broken links, currency, cost
+uv run sabnyx observations list  # no LLM: pending observations, oldest first
 uv run sabnyx tend --dry-run   # the heartbeat — previews everything, writes NOTHING
 ```
 
 > ⚠️ **Mutating** (run only when you mean it — these write to `vault/` and
 > append to `ops/events.jsonl`): `sabnyx ingest`, `sabnyx promote`,
-> `sabnyx reweave`, `sabnyx scan`, `sabnyx tend --yes`.
+> `sabnyx reweave`, `sabnyx scan`, `sabnyx entities gaps`,
+> `sabnyx observations resolve|archive`, `sabnyx tend --yes`.
 
 ### halbor — project first (`ask` reads the projected face, not the vault)
 
