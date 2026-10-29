@@ -205,9 +205,15 @@ regen run never passes (`tests/golden_digest.rs`).
   (`tests/golden_vault.py`: a fixed set of intake/atlas/observation files with
   fixed `created` dates) on top of `tmp_vault` rather than checking a vault in.
 - Make `tend --dry-run` and `health` output deterministic: fixed clock by
-  monkeypatching `ledger.now` (the only clock seam — `ran it`), stable sort
+  monkeypatching `ledger.now`, stable sort
   order for every listed item, no absolute paths (relative to vault root),
   `Console(width=100, force_terminal=False, no_color=True)`.
+  *Correction (Cycle 2):* `ledger.now` was not the only clock seam, as this
+  bullet first claimed. `util.age_days` (health's stale ages) and
+  `tend._item_age_days` read `datetime.now(UTC)` directly; Cycle 2 routed
+  both through `ledger.now()`. Outside the reports, the adapters still read
+  the wall clock, and `services.py` keeps two `date.today()` calls (deferred
+  from Cycle 1).
 - `tests/golden/tend-dry-run.txt`, `tests/golden/health.txt`; one helper
   `assert_golden(name, actual)` that on `UPDATE_GOLDEN=1` rewrites the file
   and then `pytest.fail("golden regenerated — rerun without UPDATE_GOLDEN")`.
@@ -241,6 +247,17 @@ jilog: pure-function detectors with hard-coded thresholds over an event stream
 
 Files: new `tend_detectors.py`, `commands/tend.py`, `commands/health.py`,
 `test_tend_detectors.py` (synthetic event lists; no vault needed).
+
+*As built (Cycle 2)* — three departures from the sketch above:
+
+- A run is the tend-actor events ending at `tend.completed` **or**
+  `tend.aborted`. tend gained the abort record so budget and reweave
+  failures, which re-raise and never reach `tend.completed`, are countable.
+- `tend.anomaly` is written once per onset, keyed on `(detector, subject)`,
+  not once per finding per run (~96/day for one stuck slug).
+- `health` shows `detect(replay())`: the findings of the latest *recorded*
+  runs, not "newer than the last clean `tend.completed`". While tend is
+  stopped it shows neither recovery nor new failure.
 Coordinate with `feedback-telemetry.md`: detectors should read the
 `triage.decided` outcome field once it lands; until then key on existing
 `triage.*` kinds.
@@ -353,7 +370,31 @@ a path, a shell, or a prompt. Golden fixtures use made-up slugs (AGENTS §9).
 Follow the "Threat pass — every cycle" section and the cycle's own threat
 note; run `/security-review` before Verify closes.
 
+#### As built (Cycle 2)
+
+- B4 as described under B4's *As built*. Abort handling records and
+  re-raises; exit code and heartbeat behaviour are unchanged. Only the
+  exception's type name is ledgered. `ledger.LedgerError` and interrupts are
+  not recorded, and `--dry-run` writes nothing on any path.
+- `reconcile` lists both observation/ledger mismatches as warnings (exit 0);
+  only orphaned promote events fail, as before.
+- `health` and `tend --dry-run` are frozen in `tests/golden/`. Freezing them
+  found two pre-existing output bugs, fixed in their own commits: broken
+  wikilink targets printed as `-> []` (Rich ate `[target]` as markup), and
+  the duplicate-slug warning printed absolute paths wrapped at terminal
+  width.
+- Path form, frozen as is: the `ambiguous_alias` / `ambiguous_stem` lines
+  name pages vault-relative (`atlas/…`), every other report line
+  DATA_ROOT-relative (`vault/…`). Unifying them is a deliberate golden regen
+  in a later cycle, not a drive-by.
+
 ### Cycle 3 — `review-requests` (B5), if at all
+
+Candidate from Cycle 2, independent of B5: continue past a failed reweave
+target instead of aborting the run. Exit 0, and record the failures as
+`tend.completed {aborted_targets: [...]}`. `repeat_failure` needs no change:
+it counts `llm.failed`, which `llm.parse_structured` ledgers on every failed
+call whether or not the run aborts.
 
 Most new surface (new frontmatter type, new command, a lint containment
 rule, `tend` writing into `_review/`) and the least-proven value. Kept
