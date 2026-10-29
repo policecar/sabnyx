@@ -201,3 +201,26 @@ def test_link_candidates_non_string_alias_does_not_crash(tmp_vault):
     stem, alias = context.link_candidates(context.vault_md_files())
     assert stem["foo"] == _rel(foo)
     assert alias == {"bar-alias": _rel(bar)}
+
+
+def test_duplicate_slug_warning_is_data_root_relative_and_unwrapped(tmp_vault, capsys, monkeypatch):
+    """The warning lands in report output (health, tend): an absolute path
+    names the machine and its wrap point follows the terminal width, so
+    neither may reach a golden. Paths under DATA_ROOT print relative, on one
+    line at any width."""
+    monkeypatch.setenv("COLUMNS", "40")
+    for folder in ("concepts", "references"):
+        _atlas_file(
+            tmp_vault["ATLAS"] / folder,
+            "made-up-dupe",
+            description="a long enough description for a made-up duplicate",
+            body="b",
+        )
+    context.vault_slug_index()
+    err = capsys.readouterr().err
+    assert err == (
+        "warning: duplicate slug 'made-up-dupe': keeping "
+        "vault/atlas/concepts/made-up-dupe.md, shadowing "
+        "vault/atlas/references/made-up-dupe.md\n"
+    )
+    assert str(tmp_vault["DATA_ROOT"]) not in err
