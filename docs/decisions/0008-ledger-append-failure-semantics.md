@@ -48,7 +48,10 @@ and it would leave the operator unable to retry.
    `LedgerWriteError(LedgerError)` for any exception, and
    `LedgerWriteInterrupted(KeyboardInterrupt)` for a Ctrl-C.** The
    exceptions cover a short write and any error from `write`, `fsync` or
-   `close`. Both messages say the line may be on disk and to run `opsctl
+   `close`. The region also covers the directory sync that follows the
+   append creating `events.jsonl`: the line is already on disk there. That
+   sync swallows `OSError` (best effort); anything else it raises, and a
+   Ctrl-C, is classified like the rest of the region. Both messages say the line may be on disk and to run `opsctl
    verify`. `LedgerWriteInterrupted` is still an interrupt: exit 130, and
    no `except Exception` handler can swallow it. Failures before that point
    (`OPS.mkdir`, event construction, `open`, or a Ctrl-C there) propagate
@@ -106,5 +109,5 @@ replacing `append_event`.
 - `opsctl`'s Rust appender has no mutate-first callers today (`supervise`
   appends `task.*` events and changes no files). If it ever gains one, it
   must use the same classification: a distinct error (and a distinct
-  interrupt) from the first `write(2)` through `close`, and pass through
-  anything earlier unchanged.
+  interrupt) from the first `write(2)` through `close` and any directory
+  sync after it, and pass through anything earlier unchanged.

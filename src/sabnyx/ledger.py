@@ -229,9 +229,11 @@ def append_event(
     # Failure classes (IDD §10, D15): open() sits outside the try, so a
     # pre-write failure (read-only mount, permissions) propagates as itself
     # and the caller knows nothing reached the file. From the first write(2)
-    # through close, every exception becomes LedgerWriteError and a Ctrl-C
-    # becomes LedgerWriteInterrupted: bytes may be on disk, and the caller
-    # must not act as if the append never happened (ADR 0008).
+    # through close, and through the first append's directory sync, every
+    # exception becomes LedgerWriteError and a Ctrl-C becomes
+    # LedgerWriteInterrupted: bytes may be on disk, and the caller must not
+    # act as if the append never happened (ADR 0008). _fsync_dir itself
+    # swallows OSError (best effort); anything else it raises is classified.
     f = EVENTS_JSONL.open("ab", buffering=0)
     try:
         with f:
@@ -242,6 +244,8 @@ def append_event(
                     "line is on disk; run opsctl verify"
                 )
             _fsync(f.fileno())
+        if created:
+            _fsync_dir(EVENTS_JSONL.parent)
     except LedgerWriteError:
         raise
     except Exception as e:
@@ -253,8 +257,6 @@ def append_event(
         raise LedgerWriteInterrupted(
             "interrupted after the ledger write began — the line may be on disk; run opsctl verify"
         ) from e
-    if created:
-        _fsync_dir(EVENTS_JSONL.parent)
     return event
 
 

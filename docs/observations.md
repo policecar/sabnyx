@@ -280,7 +280,7 @@ the file is restored only if the ledger line **cannot** be on disk:
 | Failure | Exception | File | Retry |
 |---|---|---|---|
 | before the first `write(2)`: `OPS.mkdir`, event construction, `open`, or a Ctrl-C | the original one (a Ctrl-C stays a `KeyboardInterrupt`) | restored to its original bytes | works |
-| from the first `write(2)` through `close`: short write, any exception from `write` / `fsync` / `close` | `LedgerWriteError` | stays resolved | refused `not_pending` |
+| from the first `write(2)` through `close`, and the first append's directory sync: short write, any exception from `write` / `fsync` / `close` / the directory sync (except its swallowed `OSError`) | `LedgerWriteError` | stays resolved | refused `not_pending` |
 | a Ctrl-C in that same region | `LedgerWriteInterrupted` (a `KeyboardInterrupt`) | stays resolved | refused `not_pending` |
 | restore itself fails | `RuntimeError` chained to both | stays resolved, no event | refused `not_pending` |
 

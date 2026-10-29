@@ -384,6 +384,54 @@ def test_append_failure_class_matches_what_is_on_disk(tmp_vault, injection, on_d
         assert write_error or interrupted
 
 
+def _fail_dir_fsync(mp: pytest.MonkeyPatch, exc: BaseException) -> None:
+    """Raise `exc` from ledger._fsync on a directory fd only: the first
+    append's directory sync, after the line is already on disk."""
+    real_fsync = ledger._fsync
+
+    def fsync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise exc
+        real_fsync(fd)
+
+    mp.setattr(ledger, "_fsync", fsync)
+
+
+@pytest.mark.parametrize(
+    ("exc", "cls"),
+    [
+        (KeyboardInterrupt("injected: Ctrl-C at dir fsync"), ledger.LedgerWriteInterrupted),
+        (ValueError("injected: non-OSError at dir fsync"), ledger.LedgerWriteError),
+    ],
+)
+def test_first_append_dir_sync_failure_is_a_post_write_class(tmp_vault, exc, cls) -> None:
+    """The append that creates events.jsonl fsyncs the directory after the
+    full line is written. A failure there must never surface as a
+    restorable (pre-write) class: the caller would undo a mutation the
+    ledger already records."""
+    assert not ledger.EVENTS_JSONL.exists()
+    with pytest.MonkeyPatch.context() as mp:
+        _fail_dir_fsync(mp, exc)
+        # Any KeyboardInterrupt, then the exact type (a bare one escaping
+        # pytest.raises would abort the session, not fail the test).
+        with pytest.raises((ledger.LedgerError, KeyboardInterrupt)) as ei:
+            ledger.append_event(kind="observation.resolved", actor="t", subject="s", payload={})
+    assert type(ei.value) is cls, f"got {type(ei.value).__name__}"
+    assert ei.value.__cause__ is exc
+    assert "opsctl verify" in str(ei.value)
+    assert ledger.count() == 1  # the full line is on disk
+
+
+def test_first_append_dir_sync_oserror_stays_best_effort(tmp_vault) -> None:
+    """An OSError from the directory sync is still swallowed: the line is
+    durable, only its directory entry might not survive a later crash."""
+    assert not ledger.EVENTS_JSONL.exists()
+    with pytest.MonkeyPatch.context() as mp:
+        _fail_dir_fsync(mp, OSError(5, "injected: dir fsync EIO"))
+        ledger.append_event(kind="observation.resolved", actor="t", subject="s", payload={})
+    assert ledger.count() == 1
+
+
 def test_ledger_write_interrupted_is_an_interrupt_not_an_exception() -> None:
     # ADR 0008: it keeps the interrupt's meaning (exit 130) and cannot be
     # swallowed by an `except Exception` handler.

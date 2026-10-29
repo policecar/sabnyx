@@ -18,7 +18,7 @@ import pytest
 
 # The OS-boundary injection helpers from the ledger's own failure-class table
 # (tests/test_ledger.py): one definition of "short write", "close EIO", ...
-from test_ledger import _inject
+from test_ledger import _fail_dir_fsync, _inject
 
 from sabnyx import fm, ledger, paths
 from sabnyx import observations as obs
@@ -569,6 +569,24 @@ def test_post_write_ledger_failure_leaves_the_file_resolved_and_a_retry_is_refus
     if injection in ("fsync", "fsync-other", "close", "fsync-interrupt"):
         assert _lines() == lines + 1  # the full line is on disk
 
+    _assert_refused(p, "not_pending", files=[p])
+
+
+def test_ctrl_c_at_the_first_appends_dir_sync_leaves_the_file_resolved(vault):
+    """Fresh ledger: append_event creates events.jsonl, writes the full
+    line, then fsyncs the directory. A Ctrl-C there is post-write: no
+    restore, or the file would contradict observation.resolved."""
+    ledger.EVENTS_JSONL.unlink()
+    p = _put("a.md", _doc(PENDING))
+
+    with pytest.MonkeyPatch.context() as mp:
+        _fail_dir_fsync(mp, KeyboardInterrupt("injected: Ctrl-C at dir fsync"))
+        with pytest.raises(KeyboardInterrupt) as ei:
+            _resolve(p)
+    assert isinstance(ei.value, ledger.LedgerWriteInterrupted), type(ei.value).__name__
+
+    assert p.read_bytes() == _doc(_after(PENDING))  # not restored
+    assert len(_events()) == 1  # and the ledger says so
     _assert_refused(p, "not_pending", files=[p])
 
 
