@@ -33,6 +33,8 @@ from types import SimpleNamespace
 
 GATE_TIMEOUT_S = 10.0
 
+PathArg = str | bytes | os.PathLike[str] | os.PathLike[bytes]
+
 
 def main() -> int:
     data_dir = Path(os.environ["SABNYX_DATA_DIR"]).resolve()
@@ -63,21 +65,18 @@ def main() -> int:
                 raise RuntimeError(f"{worker}: gate timeout waiting for {names}; present={present}")
             time.sleep(0.005)
 
-    def in_sources(p: object) -> bool:
-        try:
-            return Path(os.fsdecode(p)).resolve().parent == source_dir  # type: ignore[arg-type]
-        except TypeError:
-            return False
+    def in_sources(p: PathArg) -> bool:
+        return Path(os.fsdecode(p)).resolve().parent == source_dir
 
     fired = False
 
-    def publish_gate(target: object) -> None:
+    def publish_gate(target: PathArg) -> None:
         nonlocal fired
         if (
             mode == "rendezvous"
             and not fired
             and in_sources(target)
-            and Path(os.fsdecode(target)).name == gate_name  # type: ignore[arg-type]
+            and Path(os.fsdecode(target)).name == gate_name
         ):
             fired = True
             signal(f"{worker}.ready")
@@ -87,11 +86,11 @@ def main() -> int:
     real_write_text, real_write_bytes = Path.write_text, Path.write_bytes
     source_fds: set[int] = set()
 
-    def link(src, dst, *a, **kw):  # type: ignore[no-untyped-def]
+    def link(src, dst, *a, **kw):
         publish_gate(dst)
         return real_link(src, dst, *a, **kw)
 
-    def open_(path, flags, *a, **kw):  # type: ignore[no-untyped-def]
+    def open_(path, flags, *a, **kw):
         if flags & os.O_CREAT:
             publish_gate(path)
         fd = real_open(path, flags, *a, **kw)
@@ -101,7 +100,7 @@ def main() -> int:
 
     paused = False
 
-    def write(fd, data):  # type: ignore[no-untyped-def]
+    def write(fd, data):
         nonlocal paused
         if mode == "pause-midwrite" and not paused and fd in source_fds and len(data) > 1:
             paused = True
@@ -111,24 +110,32 @@ def main() -> int:
             return n
         return real_write(fd, data)
 
-    def write_text(self, *a, **kw):  # type: ignore[no-untyped-def]
+    def write_text(self, *a, **kw):
         publish_gate(self)
         return real_write_text(self, *a, **kw)
 
-    def write_bytes(self, *a, **kw):  # type: ignore[no-untyped-def]
+    def write_bytes(self, *a, **kw):
         publish_gate(self)
         return real_write_bytes(self, *a, **kw)
 
-    os.link, os.open, os.write = link, open_, write
-    Path.write_text, Path.write_bytes = write_text, write_bytes  # type: ignore[method-assign]
-
+    # The hooks deliberately replace stdlib callables with looser signatures,
+    # so install them by name rather than by typed attribute assignment.
+    hooks: list[tuple[object, str, object]] = [
+        (os, "link", link),
+        (os, "open", open_),
+        (os, "write", write),
+        (Path, "write_text", write_text),
+        (Path, "write_bytes", write_bytes),
+    ]
     fake = os.environ.get("CAPTURE_FAKE_DIGEST")
     if fake:
         # Force different bodies onto the same hash-suffixed names, so the
         # suffix-selection loop itself is contended (a real short-hash
         # collision is not something a test can produce on demand).
         digest = SimpleNamespace(hexdigest=lambda: fake)
-        sources.hashlib = SimpleNamespace(sha256=lambda _data: digest)  # type: ignore[assignment]
+        hooks.append((sources, "hashlib", SimpleNamespace(sha256=lambda _data: digest)))
+    for owner, name, hook in hooks:
+        setattr(owner, name, hook)
 
     if mode == "after-paused":
         wait_for("paused")
