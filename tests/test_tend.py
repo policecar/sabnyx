@@ -1687,3 +1687,267 @@ class TestTendLedger:
         assert ledger.count() == events_before
         assert not [e for e in ledger.replay() if e.kind == "tend.completed"]
         assert not [e for e in ledger.replay() if e.kind == "atlas.promoted"]
+
+
+# ---------------------------------------------------------------------------
+# Abort record + anomaly trips (report-hygiene, B4)
+#
+# Why: a heartbeat that dies on its LLM budget or a failing reweave used to
+# leave no trace but a non-zero exit. The abort record makes those runs
+# countable; the trip record makes a persisting problem visible once, not
+# once per tick. The guarantees below are what keep that record honest:
+# the original exception always wins, the ledger's own failures are never
+# answered with another append, and --dry-run writes nothing.
+# ---------------------------------------------------------------------------
+
+
+def _tend_event(kind: str, subject: str = "vault/", **payload) -> None:
+    from sabnyx.services import ACTOR_TEND
+
+    ledger.append_event(
+        plane="projection", kind=kind, actor=ACTOR_TEND, subject=subject, payload=payload
+    )
+
+
+def _kinds(kind: str) -> list:
+    return [e for e in ledger.replay() if e.kind == kind]
+
+
+def _invoke_tend(args: list[str]):
+    from sabnyx.commands import tend as tend_mod
+
+    return CliRunner().invoke(tend_mod.tend_cmd, args)
+
+
+def _raise_in(monkeypatch, name: str, exc: BaseException) -> None:
+    """Make tend's helper `name` raise `exc` (pass 2: _ledger_memory,
+    pass 3: _reweave_pending)."""
+    from sabnyx.commands import tend as tend_mod
+
+    def boom(*_a, **_k):
+        raise exc
+
+    monkeypatch.setattr(tend_mod, name, boom)
+
+
+class TestTendAbort:
+    def _budget_stub(self, monkeypatch, tmp_vault) -> None:
+        """A real budget of 1 and a triage pass that makes two model calls
+        through llm.parse_structured (provider stubbed): the second call is
+        refused by the budget itself."""
+        from sabnyx import llm
+        from sabnyx.commands import tend as tend_mod
+        from sabnyx.services import ACTOR_TEND
+
+        monkeypatch.setenv("SABNYX_LLM_PROVIDER", "moonshot")
+        monkeypatch.setenv("SABNYX_MAX_LLM_CALLS", "1")
+        monkeypatch.setattr(llm, "_call_openai_compatible", lambda **k: (TriageBatch(), {}))
+
+        def two_calls(paths, *, role):
+            for _ in range(2):
+                llm.parse_structured(
+                    task_system="t",
+                    user="u",
+                    output_format=TriageBatch,
+                    role=role,
+                    actor=ACTOR_TEND,
+                    purpose="triage:batch",
+                )
+            return TriageBatch()
+
+        monkeypatch.setattr(tend_mod, "triage_batch", two_calls)
+        _make_intake(tmp_vault["INTAKE"], "made-up-lantern", _good_meta("note"))
+
+    def test_budget_exhaustion_records_abort_and_reraises(self, tmp_vault, monkeypatch):
+        from sabnyx import llm
+
+        self._budget_stub(monkeypatch, tmp_vault)
+        result = _invoke_tend(["--yes", "--threshold", "1", "--no-reweave", "--no-health"])
+
+        assert isinstance(result.exception, llm.LLMBudgetError)
+        assert result.exit_code != 0
+        aborted = _kinds("tend.aborted")
+        assert [e.payload for e in aborted] == [{"error": "LLMBudgetError", "pass": 2}]
+        assert aborted[0].subject == "vault/"
+        assert _kinds("tend.completed") == []
+
+    def test_two_budget_aborts_trip_ceiling_once(self, tmp_vault, monkeypatch):
+        self._budget_stub(monkeypatch, tmp_vault)
+        args = ["--yes", "--threshold", "1", "--retriage", "--no-reweave", "--no-health"]
+        _invoke_tend(args)
+        assert _kinds("tend.anomaly") == []  # one hit is not a pattern
+        _invoke_tend(args)
+        _invoke_tend(args)  # persists (3 of 3): no second event
+        anomalies = _kinds("tend.anomaly")
+        assert [e.payload for e in anomalies] == [
+            {"detector": "ceiling_hit", "subject": "vault/", "count": 2, "window": 2}
+        ]
+        assert len(_kinds("tend.aborted")) == 3
+
+    def test_pass3_failure_records_pass_3_type_only(self, tmp_vault, monkeypatch):
+        original = ValueError("made-up-marker-7f3a provider said something")
+        _raise_in(monkeypatch, "_reweave_pending", original)
+        result = _invoke_tend(["--no-health"])
+
+        assert result.exception is original
+        assert [e.payload for e in _kinds("tend.aborted")] == [{"error": "ValueError", "pass": 3}]
+        # Only the type name is ledgered: the message can carry model output.
+        assert "made-up-marker-7f3a" not in tmp_vault["EVENTS_JSONL"].read_text()
+
+    def test_pass2_failure_records_pass_2(self, tmp_vault, monkeypatch):
+        original = OSError("disk")
+        _raise_in(monkeypatch, "_ledger_memory", original)
+        result = _invoke_tend(["--no-health"])
+
+        assert result.exception is original
+        assert [e.payload for e in _kinds("tend.aborted")] == [{"error": "OSError", "pass": 2}]
+
+    def test_ledger_error_is_not_answered_with_an_append(self, tmp_vault, monkeypatch):
+        original = ledger.LedgerWriteError("short write")
+        _raise_in(monkeypatch, "_reweave_pending", original)
+        before = ledger.count()
+        result = _invoke_tend(["--no-health"])
+
+        assert result.exception is original
+        assert _kinds("tend.aborted") == []
+        assert ledger.count() == before
+
+    @pytest.mark.parametrize(
+        "interrupt", [KeyboardInterrupt(), ledger.LedgerWriteInterrupted()], ids=type
+    )
+    def test_interrupts_pass_through_untouched(self, tmp_vault, interrupt):
+        """Direct on the guard: click turns a KeyboardInterrupt into Abort, so
+        the CLI runner cannot show identity. Catch broadly, then assert."""
+        from rich.console import Console
+
+        from sabnyx.commands import tend as tend_mod
+
+        before = ledger.count()
+        caught: BaseException | None = None
+        try:
+            with tend_mod._AbortGuard(dry_run=False, console=Console()):
+                raise interrupt
+        except BaseException as e:  # noqa: BLE001 — asserting the type below
+            caught = e
+        assert caught is interrupt
+        assert ledger.count() == before
+
+    def test_interrupt_via_cli_writes_no_abort(self, tmp_vault, monkeypatch):
+        _raise_in(monkeypatch, "_reweave_pending", KeyboardInterrupt())
+        result = _invoke_tend(["--no-health"])
+        assert result.exit_code != 0
+        assert _kinds("tend.aborted") == []
+
+    def test_detector_failure_does_not_replace_original(self, tmp_vault, monkeypatch):
+        from sabnyx import tend_detectors
+
+        original = ValueError("reweave broke")
+        _raise_in(monkeypatch, "_reweave_pending", original)
+
+        def broken(_events):
+            raise RuntimeError("detector bug")
+
+        monkeypatch.setattr(tend_detectors, "trips", broken)
+        result = _invoke_tend(["--no-health"])
+
+        assert result.exception is original
+        assert len(_kinds("tend.aborted")) == 1
+        assert "anomaly detection failed" in result.output
+
+    def test_notice_print_failure_does_not_replace_original(self, tmp_vault, monkeypatch):
+        from rich.console import Console
+
+        from sabnyx.commands import tend as tend_mod
+
+        class BrokenConsole(Console):
+            def print(self, *_a, **_k):
+                raise OSError("stdout gone")
+
+        def broken(_console):
+            raise RuntimeError("detector bug")
+
+        monkeypatch.setattr(tend_mod, "_record_anomalies", broken)
+        original = ValueError("reweave broke")
+        caught: BaseException | None = None
+        try:
+            with tend_mod._AbortGuard(dry_run=False, console=BrokenConsole()):
+                raise original
+        except BaseException as e:  # noqa: BLE001 — asserting identity below
+            caught = e
+        assert caught is original
+        assert len(_kinds("tend.aborted")) == 1
+
+    def test_failed_abort_append_propagates_with_original_as_context(self, tmp_vault, monkeypatch):
+        original = ValueError("reweave broke")
+        _raise_in(monkeypatch, "_reweave_pending", original)
+        append_failure = RuntimeError("append failed")
+        attempts: list[str] = []
+        real_append = ledger.append_event
+
+        def flaky_append(**kwargs):
+            if kwargs["kind"] == "tend.aborted":
+                attempts.append(kwargs["kind"])
+                raise append_failure
+            return real_append(**kwargs)
+
+        monkeypatch.setattr(ledger, "append_event", flaky_append)
+        result = _invoke_tend(["--no-health"])
+
+        assert result.exception is append_failure
+        assert append_failure.__context__ is original
+        assert attempts == ["tend.aborted"]  # never retried
+        assert _kinds("tend.anomaly") == []
+
+    def test_guard_tracks_pass(self):
+        from rich.console import Console
+
+        from sabnyx.commands import tend as tend_mod
+
+        guard = tend_mod._AbortGuard(dry_run=True, console=Console())
+        assert guard.pass_ == 2
+
+
+class TestTendDryRunAnomalies:
+    def test_exception_in_dry_run_writes_nothing(self, tmp_vault, monkeypatch):
+        original = ValueError("prep broke")
+        _raise_in(monkeypatch, "_ledger_memory", original)
+        before = ledger.count()
+        result = _invoke_tend(["--dry-run", "--no-health"])
+
+        assert result.exception is original
+        assert ledger.count() == before
+
+    def test_dry_run_prints_anomalies_and_writes_nothing(self, tmp_vault):
+        for _ in range(4):
+            _tend_event("triage.decided", "vault/intake/made-up-heron.md", decision="keep")
+            _tend_event("tend.completed")
+        before = ledger.count()
+        result = _invoke_tend(["--dry-run", "--no-reweave", "--no-health"])
+
+        assert result.exit_code == 0, result.output
+        assert ledger.count() == before
+        assert "as of the last recorded tend run" in result.output
+        assert "stuck_slug  vault/intake/made-up-heron.md  (4 consecutive runs)" in result.output
+
+
+class TestTendAnomalyTrips:
+    def test_completed_run_trips_once_then_clears(self, tmp_vault):
+        slug = "vault/intake/made-up-heron.md"
+        for _ in range(3):
+            _tend_event("triage.decided", slug, decision="keep")
+            _tend_event("tend.completed")
+        # This run's own keep, recorded before its boundary.
+        _tend_event("triage.decided", slug, decision="keep")
+        result = _invoke_tend(["--no-reweave", "--no-health"])
+        assert result.exit_code == 0, result.output
+        assert [e.payload for e in _kinds("tend.anomaly")] == [
+            {"detector": "stuck_slug", "subject": slug, "count": 4, "window": 4}
+        ]
+        assert _kinds("tend.anomaly")[0].subject == slug
+        assert "stuck_slug" in result.output
+
+        # Next tick has no keep for the slug: cleared, nothing new written.
+        result = _invoke_tend(["--no-reweave", "--no-health"])
+        assert result.exit_code == 0, result.output
+        assert len(_kinds("tend.anomaly")) == 1
+        assert "  none" in result.output
