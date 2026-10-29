@@ -119,7 +119,11 @@ IDENTITY_SOURCES = frozenset(
 
 @dataclass(frozen=True)
 class Resolver:
-    """The vault's names: token -> claiming slugs, stem claims and alias claims apart."""
+    """The vault's names: token -> claiming pages, stem claims and alias claims apart.
+
+    A claimant is a page's vault-relative POSIX path (context.link_candidates),
+    so two pages sharing a stem stay two claimants.
+    """
 
     stem: Mapping[str, frozenset[str]]
     alias: Mapping[str, frozenset[str]]
@@ -131,7 +135,7 @@ def resolver() -> Resolver:
     Rebuilt on every call (D5, no cache). Cost: walks vault/ and parses every
     page's frontmatter once (context.link_candidates).
     """
-    stem, alias = context.link_candidates(context.vault_slug_index())
+    stem, alias = context.link_candidates(context.vault_md_files())
     return Resolver(stem=stem, alias=alias)
 
 
@@ -142,7 +146,7 @@ class Found:
 
 @dataclass(frozen=True)
 class Ambiguous:
-    claimants: tuple[str, ...]  # sorted
+    claimants: tuple[str, ...]  # pages (vault-relative paths), sorted
 
 
 @dataclass(frozen=True)
@@ -160,8 +164,15 @@ Lookup = Found | Ambiguous | Missing
 #   beats any alias, an alias claimed by two pages is ambiguous, and two stems
 #   that slugify alike ('Foo Bar.md', 'foo-bar.md') are ambiguous. Stem and
 #   alias claims are kept apart because a merged map cannot tell which
-#   claimant is the stem (Demonstrate c3). The stem keys match
+#   claimant is the stem (Demonstrate c3). Claimants are pages, not slugs:
+#   'concepts/x.md' and 'projects/x.md' share the slug 'x', and a first-wins
+#   slug index would quietly pick one. The stem keys match
 #   context.link_resolution_index, so a Found agrees with resolve_wikilink.
+def _claimant_slug(claimant: str) -> str:
+    """'atlas/concepts/Foo.md' -> 'foo': the lowercased stem, vault_slug_index's key."""
+    return claimant.rsplit("/", 1)[-1].removesuffix(".md").lower()
+
+
 def lookup(token: str, resolver: Resolver) -> Lookup:
     """What `token` names in the vault: Found(slug), Ambiguous(claimants) or Missing()."""
     slug_form = slugify(token)
@@ -173,7 +184,7 @@ def lookup(token: str, resolver: Resolver) -> Lookup:
         claims = table.get(key)
         if claims:
             if len(claims) == 1:
-                return Found(next(iter(claims)))
+                return Found(_claimant_slug(next(iter(claims))))
             return Ambiguous(tuple(sorted(claims)))
     return Missing()
 

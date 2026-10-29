@@ -97,7 +97,24 @@ def test_closable_gaps_splits_found_from_ambiguous(vault):
         (SLUG_HIT, "jane-doe"),  # by stem
     ]
     assert [(g.path.name, t, c) for g, t, c in ambiguous] == [
-        (AMBIGUOUS, "shared-name", ("alpha", "beta"))
+        (AMBIGUOUS, "shared-name", ("atlas/concepts/alpha.md", "atlas/concepts/beta.md"))
+    ]
+
+
+def test_a_gap_on_a_stem_two_pages_share_is_ambiguous_not_closed(vault):
+    """concepts/twin.md and projects/twin.md: the first-wins slug index keeps
+    one, but closure must not pick it; the gap stays pending."""
+    _page("twin")
+    fm.write(
+        paths.ATLAS / "projects" / "twin.md",
+        {"type": "project", "description": f"twin: {_DESC}"},
+        "# twin\n",
+    )
+    _gap("2026-06-12-gap-twin.md", target="twin")
+    closable, ambiguous = obs.closable_gaps(obs.observations(), obs.resolver())
+    assert "2026-06-12-gap-twin.md" not in [g.path.name for g, _ in closable]
+    assert ("2026-06-12-gap-twin.md", ("atlas/concepts/twin.md", "atlas/projects/twin.md")) in [
+        (g.path.name, c) for g, _t, c in ambiguous
     ]
 
 
@@ -138,12 +155,19 @@ def test_slug_and_alias_hits_close_the_rest_are_untouched(vault):
     for name in (AMBIGUOUS, MISSING, LEGACY):
         assert after[name] == before[name]  # byte-identical
     assert report.ambiguous == (
-        (f"vault/intake/.observations/{AMBIGUOUS}", "shared-name", ("alpha", "beta")),
+        (
+            f"vault/intake/.observations/{AMBIGUOUS}",
+            "shared-name",
+            ("atlas/concepts/alpha.md", "atlas/concepts/beta.md"),
+        ),
     )
     assert report.refused == ()
     assert "  [green]closed 2 gap(s)[/green]" in lines.lines
     assert "  [dim]1 gap(s) ambiguous, left pending[/dim]" in lines.lines
-    assert any("shared-name" in ln and "alpha, beta" in ln for ln in lines.lines)
+    assert any(
+        "shared-name" in ln and "atlas/concepts/alpha.md, atlas/concepts/beta.md" in ln
+        for ln in lines.lines
+    )
     resolved = _events("observation.resolved")
     assert [e.actor for e in resolved] == ["sabnyx-entities"] * 2
 

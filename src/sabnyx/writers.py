@@ -595,7 +595,7 @@ class ClosureReport:
     """What close_resolved_gaps did (or would do, on a dry run).
 
     closed:    one Transition per gap closed (dry run: would close).
-    ambiguous: (rel, target, claimant slugs) for gaps left pending because
+    ambiguous: (rel, target, claimant pages) for gaps left pending because
                their target names more than one page (D8b).
     refused:   (rel, reason) for gaps transition_observation refused; the
                run continues past them.

@@ -132,7 +132,11 @@ def test_alias_claimed_by_two_pages_warns(pages):
     _page("delta", aliases=["Shared Name"])
     _page("epsilon", aliases=["shared name"])
     (w,) = _warnings()
-    assert w == obs.IntegrityWarning("ambiguous_alias", "shared-name", "pages: delta, epsilon")
+    assert w == obs.IntegrityWarning(
+        "ambiguous_alias",
+        "shared-name",
+        "pages: atlas/concepts/delta.md, atlas/concepts/epsilon.md",
+    )
 
 
 def test_alias_shadowed_by_a_stem_does_not_warn(pages):
@@ -146,7 +150,19 @@ def test_two_stems_that_slugify_alike_warn(pages):
     _page("Foo Bar", folder="concepts")
     _page("foo-bar", folder="ideas")
     (w,) = _warnings()
-    assert w == obs.IntegrityWarning("ambiguous_stem", "foo-bar", "pages: foo bar, foo-bar")
+    assert w == obs.IntegrityWarning(
+        "ambiguous_stem", "foo-bar", "pages: atlas/concepts/Foo Bar.md, atlas/ideas/foo-bar.md"
+    )
+
+
+def test_one_stem_in_two_folders_warns(pages):
+    """The first-wins slug index hides the second page; health names both."""
+    _page("twin", folder="concepts")
+    _page("twin", folder="projects")
+    (w,) = _warnings()
+    assert w == obs.IntegrityWarning(
+        "ambiguous_stem", "twin", "pages: atlas/concepts/twin.md, atlas/projects/twin.md"
+    )
 
 
 # -- sorted text, every kind at once ---------------------------------------------------

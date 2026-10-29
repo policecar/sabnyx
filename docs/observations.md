@@ -156,7 +156,10 @@ Tokens are never used as paths: they reach only `_component` and
 `lookup(token, resolver)` returns `Found(slug)`, `Ambiguous(claimants)`
 or `Missing()`. The `Resolver` holds two maps built from every vault page:
 **stem claims** (`slug.lower()` and `slugify(slug)`, the same keys
-`context.link_resolution_index` registers) and **alias claims**. The first
+`context.link_resolution_index` registers) and **alias claims**. A claimant
+is a page (its vault-relative path), not a slug, so `concepts/x.md` and
+`projects/x.md` are two claimants of `x`, where the first-wins
+`vault_slug_index` would keep only one. The first
 of these keys with any claimant decides:
 
 1. `stem[token.strip().lower()]`
@@ -164,8 +167,9 @@ of these keys with any claimant decides:
 3. `alias[slugify(token)]`
 
 One claimant is Found; two or more is Ambiguous and never guessed. So a
-stem beats any alias, an alias claimed by two pages is ambiguous, and two
-stems that slugify alike (`Foo Bar.md`, `foo-bar.md`) are ambiguous. The
+stem beats any alias, an alias claimed by two pages is ambiguous, two
+stems that slugify alike (`Foo Bar.md`, `foo-bar.md`) are ambiguous, and so
+is one stem in two folders. The
 two maps are kept apart because a merged map cannot tell which claimant
 owns the stem. The same rule serves identity, gap closure and health
 (`observations.py` DEC-002), so "this page exists" means one thing

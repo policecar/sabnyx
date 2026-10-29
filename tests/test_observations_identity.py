@@ -201,6 +201,10 @@ def matrix_vault(tmp_vault):
     _page(concepts, "Foo Bar")
     _page(ideas, "foo-bar")  # stem-stem: both slugify to 'foo-bar'
     _page(people, "Mary Major")  # slug.lower() != slugify(slug)
+    _page(concepts, "shared")  # one stem, two folders: vault_slug_index keeps one
+    _page(tmp_vault["ATLAS_PROJECTS"], "shared")
+    _page(concepts, "Twin")  # case variants of one stem
+    _page(people, "twin")
     return tmp_vault
 
 
@@ -211,9 +215,14 @@ LOOKUP_MATRIX = [
     ("janie", Found("jane-doe")),
     ("bar", Found("bar")),  # stem beats qux's alias
     ("Bar", Found("bar")),
-    ("Shared Name", Ambiguous(("alpha", "beta"))),  # alias claimed twice
-    ("shared-name", Ambiguous(("alpha", "beta"))),
-    ("foo-bar", Ambiguous(("foo bar", "foo-bar"))),  # two stems slugify alike
+    # Claimants are pages (vault-relative paths): two pages can share a slug.
+    ("Shared Name", Ambiguous(("atlas/concepts/alpha.md", "atlas/concepts/beta.md"))),
+    ("shared-name", Ambiguous(("atlas/concepts/alpha.md", "atlas/concepts/beta.md"))),
+    # two stems slugify alike
+    ("foo-bar", Ambiguous(("atlas/concepts/Foo Bar.md", "atlas/ideas/foo-bar.md"))),
+    # one stem in two folders, and case variants: never first-in-walk-order
+    ("shared", Ambiguous(("atlas/concepts/shared.md", "atlas/projects/shared.md"))),
+    ("TWIN", Ambiguous(("atlas/concepts/Twin.md", "atlas/people/twin.md"))),
     ("Mary Major", Found("mary major")),  # by slug.lower()
     ("mary-major", Found("mary major")),  # by slugify(slug)
     ("nobody", Missing()),
@@ -234,6 +243,15 @@ def test_lookup_found_agrees_with_resolve_wikilink(matrix_vault):
     assert len(found) == 8
     for token, res in found:
         assert res.slug == context.resolve_wikilink(token, resolution), token
+
+
+def test_a_stem_shared_by_two_pages_gives_no_identity(matrix_vault):
+    """The first-wins slug index would name one of the two pages; identity
+    must not: no id for a gap on it or a contradiction involving it."""
+    r = obs.resolver()
+    assert obs.obs_id(_meta(target="shared"), r) is None
+    assert obs.obs_id(_meta("contradiction", involves=["shared", "foo"]), r) is None
+    assert obs.obs_id(_meta(target="foo"), r) is not None  # control: a unique stem
 
 
 def test_resolver_excludes_observations_and_is_rebuilt_per_call(tmp_vault):

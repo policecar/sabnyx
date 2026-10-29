@@ -48,15 +48,20 @@ def slug_index(dir_: Path) -> dict[str, Path]:
     return _index_paths(walk_vault_md(dir_))
 
 
+def vault_md_files() -> list[Path]:
+    """Every knowledge file under vault/, excluding observations, in walk order.
+
+    All of them, unlike vault_slug_index: two pages may share a stem.
+    References ``paths`` by module attribute so tests can redirect the vault
+    wholesale (matching writers.py)."""
+    return [p for p in walk_vault_md(paths.VAULT) if paths.OBSERVATIONS not in p.parents]
+
+
 def vault_slug_index() -> dict[str, Path]:
     """Lowercased slug -> path for every knowledge file under vault/, excluding
     observations. The lowercase key is the canonical form health/entities use
-    for case-insensitive wikilink matching.
-
-    References ``paths`` by module attribute so tests can redirect the vault
-    wholesale (matching writers.py)."""
-    files = [p for p in walk_vault_md(paths.VAULT) if paths.OBSERVATIONS not in p.parents]
-    return _index_paths(files)
+    for case-insensitive wikilink matching. First-wins on a shared stem."""
+    return _index_paths(vault_md_files())
 
 
 def link_resolution_index(idx: dict[str, Path]) -> dict[str, str]:
@@ -93,26 +98,30 @@ def resolve_wikilink(target: str, resolution: dict[str, str]) -> str | None:
 
 
 def link_candidates(
-    idx: dict[str, Path],
+    files: list[Path],
 ) -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
-    """(stem_claims, alias_claims): token -> every slug in ``idx`` claiming it.
+    """(stem_claims, alias_claims): token -> every page in ``files`` claiming it.
 
-    The same tokens ``link_resolution_index`` registers (stem: ``slug.lower()``
-    and ``slugify(slug)``; alias: each slugified ``aliases`` entry), but kept in
+    The same tokens ``link_resolution_index`` registers (stem: the lowercased
+    stem and its slugify; alias: each slugified ``aliases`` entry), but kept in
     two maps and with ALL claimants instead of first-wins: the observation
     identity layer must tell a stem claim from an alias claim (stem wins) and
-    see when a token is claimed twice (ambiguous, never guessed). Same
-    tolerance as ``link_resolution_index``: a page whose frontmatter can't be
-    loaded still claims by stem. Non-string alias entries are skipped.
+    see when a token is claimed twice (ambiguous, never guessed). A claimant
+    is a page, named by its vault-relative POSIX path, not a slug: two pages
+    in different folders can share a stem (``concepts/x.md``,
+    ``projects/x.md``), and a slug-keyed index (vault_slug_index, first-wins)
+    would make them one claimant. Same tolerance as ``link_resolution_index``:
+    a page whose frontmatter can't be loaded still claims by stem. Non-string
+    alias entries are skipped.
 
-    Cost: one frontmatter parse per page in ``idx``.
+    Cost: one frontmatter parse per page in ``files``.
     """
     stem: dict[str, set[str]] = {}
     alias: dict[str, set[str]] = {}
-    for slug in idx:
-        for tok in (slug.lower(), slugify(slug)):
-            stem.setdefault(tok, set()).add(slug)
-    for slug, p in idx.items():
+    for p in files:
+        rel, slug = p.relative_to(paths.VAULT).as_posix(), p.stem.lower()
+        for tok in (slug, slugify(slug)):
+            stem.setdefault(tok, set()).add(rel)
         try:
             meta, _body, _kind = fm.load(p)
         except Exception:
@@ -123,7 +132,7 @@ def link_candidates(
                 continue
             tok = slugify(a)
             if tok:
-                alias.setdefault(tok, set()).add(slug)
+                alias.setdefault(tok, set()).add(rel)
     return (
         {k: frozenset(v) for k, v in stem.items()},
         {k: frozenset(v) for k, v in alias.items()},
