@@ -1802,8 +1802,14 @@ class TestTendAbort:
         assert result.exception is original
         assert [e.payload for e in _kinds("tend.aborted")] == [{"error": "OSError", "pass": 2}]
 
-    def test_ledger_error_is_not_answered_with_an_append(self, tmp_vault, monkeypatch):
-        original = ledger.LedgerWriteError("short write")
+    @pytest.mark.parametrize(
+        "original",
+        [ledger.LedgerError("bad line 3"), ledger.LedgerWriteError("short write")],
+        ids=["LedgerError", "LedgerWriteError"],
+    )
+    def test_ledger_error_is_not_answered_with_an_append(self, tmp_vault, monkeypatch, original):
+        """The whole family bypasses the record, base class included: a guard
+        narrowed to LedgerWriteError must fail the LedgerError case."""
         _raise_in(monkeypatch, "_reweave_pending", original)
         before = ledger.count()
         result = _invoke_tend(["--no-health"])
