@@ -388,6 +388,28 @@ note; run `/security-review` before Verify closes.
   DATA_ROOT-relative (`vault/…`). Unifying them is a deliberate golden regen
   in a later cycle, not a drive-by.
 
+#### Deferred from Cycle 2
+
+- **Reweave target containment (own branch).** `reweave._pending_targets`
+  builds `DATA_ROOT / subject` from `reweave.proposed` subjects and checks
+  only `is_file()`. A local or synced ledger writer can supply a subject that
+  resolves outside the intended vault area (an absolute path, `..`
+  segments, or a symlink), and reweave then puts that file's contents
+  into its LLM prompt before any later path check fails. The Cycle 2 review
+  found no remote-ingest route to such a subject: only `promote_file` emits
+  `reweave.proposed`, with a fixed type folder plus a slug file name. The
+  fix:
+  - define the permitted reweave root (`vault/atlas/`, `.md` files only);
+  - resolve each candidate first, then enforce containment and skip
+    anything outside the root;
+  - test `..` traversal, an absolute subject, a symlink that escapes the
+    root, and a valid target that still queues.
+- Raw path prints in report output: `health` (stale atlas, untracked
+  provenance, malformed-observation and schema-drift lines) and `reconcile` (unledgered
+  and orphaned lists) print file paths without `rich.markup.escape`. Only a
+  local writer can name such a file. The broken-link line was fixed in
+  Cycle 2. Escaping the rest is a separate one-concern commit.
+
 ### Cycle 3 — `review-requests` (B5), if at all
 
 Candidate from Cycle 2, independent of B5: continue past a failed reweave
@@ -474,7 +496,7 @@ Treat all model output and all remote-ingress content (`sabnyx-telegram`,
   findings are part of Verify's evidence, not optional reading.
 
 AGENTS §2 roles are convention at stage 0 and hooks are discipline, not
-security (ADR 0004); the provenance gate and OS sandboxing are the real
+security; the provenance gate and OS sandboxing are the real
 boundaries, so designs must not lean on the roles table for safety.
 
 Agent brief (if delegating instead of running dew interactively): objective =
