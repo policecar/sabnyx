@@ -289,3 +289,18 @@ def test_health_broken_link_target_prints_literally(tmp_vault):
     result = CliRunner().invoke(health_mod.health_cmd, [], catch_exceptions=False)
     assert result.exit_code == 0, result.output
     assert "vault/atlas/concepts/made-up-heron.md  -> [[made-up-nowhere]]" in result.output
+
+
+def test_health_broken_link_path_with_markup_prints_literally(tmp_vault):
+    """The file path on a broken-link line is filesystem data: a name that
+    looks like Rich markup must print as written, next to its literal link."""
+    from sabnyx.commands import health as health_mod
+
+    _atlas(
+        tmp_vault["ATLAS_CONCEPTS"], "made-up-[red]heron[/red]", body="see [[made-up-nowhere]].\n"
+    )
+    result = CliRunner().invoke(health_mod.health_cmd, [], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert (
+        "vault/atlas/concepts/made-up-[red]heron[/red].md  -> [[made-up-nowhere]]" in result.output
+    )
