@@ -152,6 +152,30 @@ def load_text(text: str, kind: FileKind, *, path: Path) -> tuple[dict, str]:
     return meta, body
 
 
+def split_text(text: str) -> tuple[str, str]:
+    """Split raw file text at the end of its frontmatter: (head, body) with
+    ``head + body == text`` exactly.
+
+    `head` is any leading whitespace, the opening fence, the YAML and the
+    closing fence as load_text's handler matches them (FM_BOUNDARY, applied
+    after the same leading strip python-frontmatter does); `body` is every
+    byte after that, unnormalized (CRLF, indentation, trailing blanks kept).
+    For byte-preserving edits that must stay out of the frontmatter: validate
+    with load_text, edit `body`, rejoin. Raises ValueError when the text does
+    not open with a fenced block.
+    """
+    boundary = _SAFE_YAML.FM_BOUNDARY
+    if boundary is None:
+        raise RuntimeError("frontmatter YAMLHandler.FM_BOUNDARY is unset")
+    start = len(text) - len(text.lstrip())
+    fences = boundary.finditer(text[start:])
+    opening, closing = next(fences, None), next(fences, None)
+    if opening is None or opening.start() != 0 or closing is None:
+        raise ValueError("no fenced frontmatter block at the start of the text")
+    cut = start + closing.end()
+    return text[:cut], text[cut:]
+
+
 def write(path: Path, meta: dict, body: str) -> None:
     """Write a file with frontmatter. Does NOT validate — use after load/build.
 
