@@ -28,8 +28,13 @@ trips.
   destructive. LLM "discard" decisions are surfaced as report lines only.
 @decision DEC-03: abort handling records and re-raises; it never recovers
 @rationale: The exit code and the heartbeat's behaviour stay as they were; the
-  record only makes the failure countable. The ledger's own errors are
-  excluded, so a failed append is never answered with another append.
+  record only makes the failure countable. The ledger.LedgerError family
+  (parse errors, and LedgerWriteError from an append's first write(2)
+  onward, when the line may be on disk) bypasses the record, so such a
+  failure is never answered with another append. Not every ledger failure
+  is in that family: an append that fails before writing (serialisation,
+  OPS.mkdir, open) raises an ordinary exception, which is recorded like any
+  other abort.
 """
 
 from __future__ import annotations
@@ -294,11 +299,14 @@ def _record_anomalies(console: Console) -> None:
 class _AbortGuard:
     """Records `tend.aborted` when passes 2-3 raise; never suppresses.
 
-    Only ordinary exceptions outside the ledger.LedgerError family are
-    recorded, and only on a real run: a ledger failure must not be answered
-    with another append, interrupts pass through, and --dry-run writes
-    nothing. Only the exception's type name is ledgered, never its message
-    (provider errors can carry model output).
+    Recorded: an ordinary Exception on a real run. Not recorded: anything in
+    the ledger.LedgerError family (after an append's first write(2) the line
+    may be on disk, so it is never answered with another append),
+    interrupts (KeyboardInterrupt, LedgerWriteInterrupted), and every
+    exception under --dry-run. An append that fails *before* writing raises
+    an ordinary exception and is recorded; the exclusion covers the family,
+    not every ledger failure. Only the exception's type name is ledgered,
+    never its message (provider errors can carry model output).
     """
 
     def __init__(self, *, dry_run: bool, console: Console) -> None:
