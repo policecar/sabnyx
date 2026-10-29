@@ -1,0 +1,40 @@
+warning: duplicate slug 'made-up-twin': keeping vault/atlas/concepts/made-up-twin.md, shadowing vault/atlas/projects/made-up-twin.md
+                   sabnyx health                   
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
+┃ Check                                  ┃ Result ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
+│ files indexed                          │      8 │
+│ intake queue                           │      2 │
+│ atlas files                            │      7 │
+│ intake:atlas ratio (Gate 6 cost)       │   0.29 │
+│ pending observations                   │      1 │
+│ malformed observations                 │      0 │
+│ observation integrity warnings         │      2 │
+│ broken wikilinks                       │      1 │
+│ atlas orphans                          │      0 │
+│ atlas dead ends                        │      0 │
+│ stale intake (>60d)                    │      2 │
+│ stale atlas (Gate 5, >180d/unverified) │      1 │
+│ untracked provenance (Gate 3)          │      1 │
+│ schema drift                           │      0 │
+│ ledger events                          │     17 │
+│ tend anomalies                         │      3 │
+└────────────────────────────────────────┴────────┘
+
+tend anomalies (as of the last recorded tend run):
+  ceiling_hit  vault/  (2 of the last 5 runs)
+  repeat_failure  reweave:made-up-heron  (3 consecutive runs)
+  stuck_slug  vault/intake/made-up-lantern.md  (5 consecutive runs)
+
+broken wikilinks:
+  vault/atlas/concepts/made-up-heron.md  -> [[made-up-nowhere]]
+
+stale atlas (Gate 5, verify or refresh):
+  vault/atlas/references/made-up-almanac.md  (never verified)
+
+untracked provenance (Gate 3):
+  vault/atlas/references/made-up-almanac.md
+
+observation integrity:
+  ambiguous_alias: shared-lantern — pages: atlas/concepts/made-up-delta.md, atlas/concepts/made-up-epsilon.md
+  ambiguous_stem: made-up-twin — pages: atlas/concepts/made-up-twin.md, atlas/projects/made-up-twin.md

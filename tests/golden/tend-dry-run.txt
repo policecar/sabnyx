@@ -1,0 +1,40 @@
+dry run — no mutations will be written
+
+pass 1: auto-promote  (2 intake file(s), 6 atlas slug(s))
+  auto-promote made-up-bookmark.md → reference (dry run)
+  defer made-up-lantern.md  (needs judgment → LLM tier)
+  auto-promoted: 1  deferred: 1
+
+pass 2: LLM triage  (1 deferred, threshold 5)
+  below threshold (1 < 5); skipping LLM tier
+
+pass 3: reweave
+reweave: 1 pending target(s)
+warning: duplicate slug 'made-up-twin': keeping vault/atlas/concepts/made-up-twin.md, shadowing vault/atlas/projects/made-up-twin.md
+  reweave vault/atlas/concepts/made-up-heron.md
+    dry run: skipping LLM call
+
+closing resolved gaps
+  1 gap(s) ambiguous, left pending
+    vault/intake/.observations/2026-06-12-gap-made-up-twin.md: made-up-twin → 
+atlas/concepts/made-up-twin.md, atlas/projects/made-up-twin.md
+
+pass 4: health
+warning: duplicate slug 'made-up-twin': keeping vault/atlas/concepts/made-up-twin.md, shadowing vault/atlas/projects/made-up-twin.md
+         health summary          
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
+┃ Check                ┃ Result ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
+│ intake queue         │      2 │
+│ atlas files          │      7 │
+│ pending observations │      1 │
+│ broken wikilinks     │      1 │
+│ ledger events        │     17 │
+└──────────────────────┴────────┘
+
+tend anomalies (as of the last recorded tend run):
+  ceiling_hit  vault/  (2 of the last 5 runs)
+  repeat_failure  reweave:made-up-heron  (3 consecutive runs)
+  stuck_slug  vault/intake/made-up-lantern.md  (5 consecutive runs)
+
+tend complete  auto_promoted=1  llm_triaged=0  reweaved=0  (dry run)
