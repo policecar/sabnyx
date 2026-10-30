@@ -5,7 +5,7 @@ the vault on a timer. Companion to `architecture.md` (what the system is) and
 `README.md` (the CLI). Secrets never live in this repo — only in `~/sabnyx/.env`
 on the server (chmod 600). Nor does anything instance-specific: your domain,
 bot, keys and paths live in `.env`, the nginx site and the systemd units on the
-server. Examples here use placeholders (`sabnyx.example.net`, user `p`).
+server. Examples here use placeholders (`sabnyx.example.net`, user `USER`).
 
 ---
 

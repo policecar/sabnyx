@@ -73,8 +73,8 @@ uv run sabnyx scan                        # LLM: contradiction scan across atlas
 uv run sabnyx entities                    # lightweight entity layer: list, gaps, resolve
 uv run sabnyx observations list           # pending observations; `resolve` / `archive` one
 uv run sabnyx lint                        # gates 1,2,4 (frontmatter + containment)
-uv run sabnyx health                      # orphans, broken links, currency, cost
-uv run sabnyx reconcile                   # diff the ledger against atlas/ (drift check)
+uv run sabnyx health                      # orphans, broken links, currency, tend anomalies
+uv run sabnyx reconcile                   # diff the ledger against atlas/ and observations (drift check)
 
 # channels & ops
 uv run sabnyx serve                       # Telegram interface (trusted senders)
@@ -129,6 +129,14 @@ One schedulable command that runs the whole self-maintenance cycle:
 Between reweave and health, `tend` resolves every pending gap whose `target`
 page now exists (deterministic, no LLM; it runs even with `--no-health`, and
 `--dry-run` previews it). See `docs/observations.md`.
+
+A run that dies in passes 2–3 (budget ceiling, a failed reweave) ledgers
+`tend.aborted {error, pass}` (the exception's type name only) and re-raises;
+the exit code is unchanged. Anomaly detectors (`tend_detectors.py`) read the
+recorded runs: a slug triaged `keep` 4 runs in a row, the ceiling hit in 2 of
+the last 5 runs, the same promote/reweave failure 3 runs in a row. Each real
+run appends one `tend.anomaly` when a finding first trips; `tend` and
+`health` print the current findings.
 
 ```sh
 uv run sabnyx tend --dry-run     # preview everything; writes NOTHING

@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from .. import context, fm, ledger
+from .. import context, fm, ledger, tend_detectors
 from .. import observations as obs
 from ..paths import ATLAS, DATA_ROOT, INTAKE
 from ..util import age_days, extract_wikilinks
@@ -60,6 +60,31 @@ def scan_wikilinks(
     return broken_links, linked_slugs, schema_drift, has_outgoing
 
 
+ANOMALIES_HEADING = "tend anomalies (as of the last recorded tend run)"
+
+
+def print_anomalies(console: Console, anomalies: list[tend_detectors.Anomaly]) -> None:
+    """The anomaly section shared by `health` and `tend`. Findings describe
+    the latest *recorded* runs: while tend is stopped, this shows neither
+    recovery nor new failure. Subjects are ledger data, so escaped."""
+    console.print(f"\n[yellow]{ANOMALIES_HEADING}:[/yellow]")
+    if not anomalies:
+        console.print("  none")
+    for a in anomalies:
+        span = (
+            f"{a.count} consecutive runs"
+            if a.count == a.window and a.detector != "ceiling_hit"
+            else f"{a.count} of the last {a.window} runs"
+        )
+        console.print(f"  {a.detector}  {escape(a.subject)}  ({span})", soft_wrap=True)
+
+
+def _console() -> Console:
+    """The command's console. A seam: tests swap in a fixed-width, colourless
+    console so the report is byte-stable."""
+    return Console()
+
+
 def pending_observation_count() -> int:
     """Pending observations, through the shared reader — the same count
     vault_pulse, triage, reweave and tend see."""
@@ -70,7 +95,7 @@ def pending_observation_count() -> int:
 @click.option("--quick", is_flag=True, help="Skip the expensive checks.")
 def health_cmd(quick: bool) -> None:
     """Report orphans, broken wikilinks, stale intake, ledger count."""
-    console = Console()
+    console = _console()
     idx = context.vault_slug_index()
 
     orphans: list[Path] = []
@@ -107,7 +132,8 @@ def health_cmd(quick: bool) -> None:
     stale_atlas: list[tuple[Path, int | None]] = []  # last_verified absent or > CURRENCY_DAYS
     untracked: list[Path] = []  # no provenance: not promoted, no source comment
     atlas_count = 0
-    for p in ATLAS.rglob("*.md"):
+    # Sorted: the printed stale/untracked lists must not follow filesystem order.
+    for p in sorted(ATLAS.rglob("*.md")):
         if not p.is_file():
             continue
         try:
@@ -136,6 +162,8 @@ def health_cmd(quick: bool) -> None:
     integrity = obs.integrity_warnings(obs.index(valid_obs, resolver), resolver)
     pending_obs = sum(1 for o in valid_obs if o.fm.status == "pending")
 
+    anomalies = tend_detectors.detect(ledger.replay())
+
     # Report
     table = Table(title="sabnyx health")
     table.add_column("Check")
@@ -157,12 +185,19 @@ def health_cmd(quick: bool) -> None:
     table.add_row("untracked provenance (Gate 3)", str(len(untracked)))
     table.add_row("schema drift", str(len(schema_drift)))
     table.add_row("ledger events", str(ledger.count()))
+    table.add_row("tend anomalies", str(len(anomalies)))
     console.print(table)
+
+    if anomalies:
+        print_anomalies(console, anomalies)
 
     if broken_links:
         console.print("\n[yellow]broken wikilinks:[/yellow]")
         for path, target in broken_links[:20]:
-            console.print(f"  {path.relative_to(DATA_ROOT)}  -> [[{target}]]")
+            # `[[...]]` is Rich markup syntax, and a file name can look like
+            # markup too: escape both.
+            rel = escape(str(path.relative_to(DATA_ROOT)))
+            console.print(f"  {rel}  -> {escape(f'[[{target}]]')}")
         if len(broken_links) > 20:
             console.print(f"  ... and {len(broken_links) - 20} more")
 

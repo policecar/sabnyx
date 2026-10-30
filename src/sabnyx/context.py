@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape
 
 from . import fm, paths
 from .util import slugify, walk_vault_md
@@ -22,15 +23,26 @@ TOTAL_CHARS = 300_000
 _WARN_CONSOLE = Console(stderr=True)
 
 
+def _shown(p: Path) -> str:
+    """DATA_ROOT-relative when under it (the form every report line uses),
+    else as given: an absolute path names the machine."""
+    try:
+        return str(p.relative_to(paths.DATA_ROOT))
+    except ValueError:
+        return str(p)
+
+
 def _index_paths(files: list[Path]) -> dict[str, Path]:
     """Build the one canonical lowercased, first-wins slug index."""
     out: dict[str, Path] = {}
     for p in files:
         key = p.stem.lower()
         if key in out:
+            # soft_wrap: one line whatever the terminal width (report goldens).
             _WARN_CONSOLE.print(
-                f"[yellow]warning:[/yellow] duplicate slug {key!r}: keeping {out[key]}, "
-                f"shadowing {p}"
+                f"[yellow]warning:[/yellow] duplicate slug {escape(repr(key))}: "
+                f"keeping {escape(_shown(out[key]))}, shadowing {escape(_shown(p))}",
+                soft_wrap=True,
             )
             continue
         out[key] = p

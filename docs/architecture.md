@@ -77,7 +77,9 @@ shadow — a complete, replayable history **of what the agent did**.
 It is not an event-sourced mirror of the vault: **git is the source of truth**,
 and a manual file edit (the whole point of plain markdown) produces no ledger
 event. So the ledger and the filesystem can drift — `sabnyx reconcile` diffs the
-two (atlas files with no promote event; promote events whose file is gone).
+two (atlas files with no promote event; promote events whose file is gone;
+observations whose `observation.created` / `observation.resolved` is missing,
+as warnings).
 `ops/knowledge-log.md` is the human-readable version.
 
 ### The rules (gates)

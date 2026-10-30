@@ -32,6 +32,8 @@ _DATA_ROOT_FLOOR: str = tempfile.mkdtemp(prefix="sabnyx-pytest-data-")
 os.environ["SABNYX_DATA_DIR"] = _DATA_ROOT_FLOOR
 
 import ast  # noqa: E402
+import difflib  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
 from types import ModuleType  # noqa: E402
 
@@ -276,3 +278,47 @@ def modules_requiring_direct_patch() -> dict[str, set[str]]:
         if hit:
             found[_dotted_module_name(py_file)] = hit
     return found
+
+
+# --- fixed clock + golden files (report-hygiene, B3) ------------------------
+
+# The one instant every golden is rendered at. ledger.now() is the single
+# clock seam: event timestamps, util.age_days and tend's item ages all read it.
+FIXED_CLOCK = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+
+GOLDEN_DIR = Path(__file__).parent / "golden"
+GOLDEN_REGEN = "UPDATE_GOLDEN=1 uv run pytest tests/test_golden.py"
+
+
+@pytest.fixture
+def fixed_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
+    monkeypatch.setattr(ledger, "now", lambda: FIXED_CLOCK)
+    return FIXED_CLOCK
+
+
+def assert_golden(name: str, actual: str, *, golden_dir: Path = GOLDEN_DIR) -> None:
+    """Compare `actual` with golden_dir/name, byte for byte.
+
+    UPDATE_GOLDEN=1 rewrites the file and then FAILS, so a regen run can
+    never pass for a check: rerun without it, review `git diff`, commit.
+    A missing golden fails too (never created silently). Any other value of
+    UPDATE_GOLDEN, including "0", is an ordinary comparison.
+    """
+    path = golden_dir / name
+    if os.environ.get("UPDATE_GOLDEN") == "1":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(actual.encode("utf-8"))
+        pytest.fail(f"golden regenerated: {name} — review git diff, rerun without UPDATE_GOLDEN")
+    if not path.is_file():
+        pytest.fail(f"golden missing: {name} — generate with `{GOLDEN_REGEN}`, review, commit")
+    expected = path.read_bytes().decode("utf-8")
+    if actual != expected:
+        diff = "".join(
+            difflib.unified_diff(
+                expected.splitlines(keepends=True),
+                actual.splitlines(keepends=True),
+                fromfile=f"golden/{name}",
+                tofile="actual",
+            )
+        )
+        pytest.fail(f"golden mismatch: {name}\n{diff}", pytrace=False)

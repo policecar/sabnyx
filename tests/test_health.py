@@ -8,9 +8,11 @@ date used to crash the helper (`date` has no `.tzinfo`).
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from sabnyx import context, fm, ledger
@@ -201,3 +203,104 @@ def test_pending_observation_count_filters_status(tmp_vault):
     assert result.exit_code == 0, result.output
     audit = [e for e in ledger.replay() if e.kind == "health.audited"][-1]
     assert audit.payload["observations"] == 1
+
+
+# -- tend anomalies (report-hygiene, B4) -----------------------------------------
+# Why: health is where the operator looks; a heartbeat that misbehaves must
+# show up there in both modes, and ledger text must print as text (a subject
+# carrying Rich markup would otherwise restyle or hide the line).
+
+
+def _stuck_runs(subject: str, n: int = 4) -> None:
+    from sabnyx.services import ACTOR_TEND
+
+    for _ in range(n):
+        ledger.append_event(
+            plane="projection",
+            kind="triage.decided",
+            actor=ACTOR_TEND,
+            subject=subject,
+            payload={"decision": "keep"},
+        )
+        ledger.append_event(
+            plane="projection",
+            kind="tend.completed",
+            actor=ACTOR_TEND,
+            subject="vault/",
+            payload={},
+        )
+
+
+@pytest.mark.parametrize("args", [[], ["--quick"]], ids=["full", "quick"])
+def test_health_lists_anomalies(tmp_vault, args):
+    from sabnyx.commands import health as health_mod
+
+    _stuck_runs("vault/intake/made-up-heron.md")
+    result = CliRunner().invoke(health_mod.health_cmd, args, catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert re.search(r"tend anomalies\s.*\b1\b", result.output)
+    assert "as of the last recorded tend run" in result.output
+    assert "stuck_slug  vault/intake/made-up-heron.md  (4 consecutive runs)" in result.output
+
+
+@pytest.mark.parametrize("args", [[], ["--quick"]], ids=["full", "quick"])
+def test_health_no_anomalies_row_zero_no_section(tmp_vault, args):
+    from sabnyx.commands import health as health_mod
+
+    result = CliRunner().invoke(health_mod.health_cmd, args, catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert re.search(r"tend anomalies\s.*\b0\b", result.output)
+    assert "as of the last recorded tend run" not in result.output
+
+
+def test_health_anomaly_subject_markup_prints_literally(tmp_vault):
+    from sabnyx.commands import health as health_mod
+
+    _stuck_runs("[red]x[/red]")
+    result = CliRunner().invoke(health_mod.health_cmd, [], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert "stuck_slug  [red]x[/red]  (4 consecutive runs)" in result.output
+
+
+def test_health_atlas_listings_ignore_filesystem_order(tmp_vault, monkeypatch):
+    """The printed untracked-provenance list follows path order, not the
+    order the filesystem happens to return (APFS sorts, ext4 does not):
+    the goldens freeze this text."""
+    from sabnyx.commands import health as health_mod
+
+    for slug in ("made-up-alder", "made-up-birch", "made-up-cedar"):
+        _atlas(tmp_vault["ATLAS_CONCEPTS"], slug)
+    real_rglob = Path.rglob
+    monkeypatch.setattr(Path, "rglob", lambda self, pat: reversed(list(real_rglob(self, pat))))
+
+    result = CliRunner().invoke(health_mod.health_cmd, [], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    section = result.output.split("untracked provenance (Gate 3):")[1]
+    found = re.findall(r"made-up-(alder|birch|cedar)", section)
+    assert found == ["alder", "birch", "cedar"]
+
+
+def test_health_broken_link_target_prints_literally(tmp_vault):
+    """`[[target]]` is Rich markup syntax: unescaped, the target was eaten
+    and every broken-link line read `-> []`."""
+    from sabnyx.commands import health as health_mod
+
+    _atlas(tmp_vault["ATLAS_CONCEPTS"], "made-up-heron", body="see [[made-up-nowhere]].\n")
+    result = CliRunner().invoke(health_mod.health_cmd, [], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert "vault/atlas/concepts/made-up-heron.md  -> [[made-up-nowhere]]" in result.output
+
+
+def test_health_broken_link_path_with_markup_prints_literally(tmp_vault):
+    """The file path on a broken-link line is filesystem data: a name that
+    looks like Rich markup must print as written, next to its literal link."""
+    from sabnyx.commands import health as health_mod
+
+    _atlas(
+        tmp_vault["ATLAS_CONCEPTS"], "made-up-[red]heron[/red]", body="see [[made-up-nowhere]].\n"
+    )
+    result = CliRunner().invoke(health_mod.health_cmd, [], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    assert (
+        "vault/atlas/concepts/made-up-[red]heron[/red].md  -> [[made-up-nowhere]]" in result.output
+    )

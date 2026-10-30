@@ -296,7 +296,7 @@ This is the contract for every command that mutates a file and then
 appends (today only transitions implement the restore); see
 [ADR 0008](decisions/0008-ledger-append-failure-semantics.md). Both
 leftover states (a non-pending file with no `observation.resolved` event
-for its path) are what a future `reconcile` check detects.
+for its path) are what `sabnyx reconcile` lists, as warnings.
 
 ## 7. Invariants, failure modes, accepted edges
 

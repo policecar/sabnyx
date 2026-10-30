@@ -12,6 +12,12 @@ One schedulable command that drives the self-maintaining vault cycle:
 Every mutation is ledgered. --dry-run writes nothing and makes no calls to
 promote_file or the reweave apply path.
 
+A run that dies in passes 2-3 on an ordinary exception records
+`tend.aborted {error, pass}` before re-raising, so budget and reweave
+failures are visible to the anomaly detectors (tend_detectors). Each real
+run, completed or aborted, appends one `tend.anomaly` per finding that newly
+trips.
+
 @decision DEC-01: tend is a thin orchestrator; all logic lives in services
 @rationale: The four passes reuse services.promote_file, services.triage_batch,
   reweave._pending_targets/_apply_links, and health helpers. tend just coordinates
@@ -20,18 +26,29 @@ promote_file or the reweave apply path.
 @decision DEC-02: discard means "note it, do not delete"
 @rationale: Auto-deletion of vault files without explicit operator action is too
   destructive. LLM "discard" decisions are surfaced as report lines only.
+@decision DEC-03: abort handling records and re-raises; it never recovers
+@rationale: The exit code and the heartbeat's behaviour stay as they were; the
+  record only makes the failure countable. The ledger.LedgerError family
+  (parse errors, and LedgerWriteError from an append's first write(2)
+  onward, when the line may be on disk) bypasses the record, so such a
+  failure is never answered with another append. Not every ledger failure
+  is in that family: an append that fails before writing (serialisation,
+  OPS.mkdir, open) raises an ordinary exception, which is recorded like any
+  other abort.
 """
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import TracebackType
 
 import click
 from rich.console import Console
 from rich.table import Table
 
-from .. import context, fm, ledger, llm, util, writers
+from .. import context, fm, ledger, llm, tend_detectors, util, writers
 from ..paths import ATLAS, DATA_ROOT, INTAKE, ensure_tree
 from ..services import (
     ACTOR_TEND,
@@ -161,7 +178,7 @@ def _item_age_days(
          or invalid — scheduling only, never treated as knowledge data.
     """
     if now is None:
-        now = datetime.now(UTC)
+        now = ledger.now()
 
     subject = str(path.relative_to(DATA_ROOT))
     ts = created_ts.get(subject)
@@ -251,6 +268,86 @@ def _health_summary(console: Console) -> None:
     console.print(t)
 
 
+def _console() -> Console:
+    """The command's console. A seam: tests swap in a fixed-width, colourless
+    console so the report is byte-stable."""
+    return Console()
+
+
+def _record_anomalies(console: Console) -> None:
+    """Append one tend.anomaly per newly tripped finding, then print the
+    current findings. Real runs only, after the run's boundary event."""
+    from . import health as health_mod
+
+    events = list(ledger.replay())
+    for a in tend_detectors.trips(events):
+        ledger.append_event(
+            plane="projection",
+            kind="tend.anomaly",
+            actor=ACTOR_TEND,
+            subject=a.subject,
+            payload={
+                "detector": a.detector,
+                "subject": a.subject,
+                "count": a.count,
+                "window": a.window,
+            },
+        )
+    health_mod.print_anomalies(console, tend_detectors.detect(events))
+
+
+class _AbortGuard:
+    """Records `tend.aborted` when passes 2-3 raise; never suppresses.
+
+    Recorded: an ordinary Exception on a real run. Not recorded: anything in
+    the ledger.LedgerError family (after an append's first write(2) the line
+    may be on disk, so it is never answered with another append),
+    interrupts (KeyboardInterrupt, LedgerWriteInterrupted), and every
+    exception under --dry-run. An append that fails *before* writing raises
+    an ordinary exception and is recorded; the exclusion covers the family,
+    not every ledger failure. Only the exception's type name is ledgered,
+    never its message (provider errors can carry model output).
+    """
+
+    def __init__(self, *, dry_run: bool, console: Console) -> None:
+        self.dry_run = dry_run
+        self.console = console
+        self.pass_ = 2
+
+    def __enter__(self) -> _AbortGuard:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if exc is None or self.dry_run:
+            return
+        if not isinstance(exc, Exception) or isinstance(exc, ledger.LedgerError):
+            return
+        # If this append raises, its error propagates with `exc` as context;
+        # it is never retried.
+        ledger.append_event(
+            plane="projection",
+            kind="tend.aborted",
+            actor=ACTOR_TEND,
+            subject="vault/",
+            payload={"error": type(exc).__name__, "pass": self.pass_},
+        )
+        try:
+            _record_anomalies(self.console)
+        except Exception as detector_error:
+            # The original exception is the one that matters; nothing in the
+            # notice may replace it.
+            with contextlib.suppress(Exception):
+                self.console.print(
+                    f"[red]anomaly detection failed:[/red] {type(detector_error).__name__}"
+                )
+        # Returning None: the original exception propagates unchanged.
+
+
 @click.command("tend")
 @click.option("--dry-run", is_flag=True, help="Show the plan; write nothing.")
 @click.option("--yes", "-y", is_flag=True, help="Apply LLM triage decisions without prompting.")
@@ -293,7 +390,7 @@ def tend_cmd(
     Use --dry-run to preview without writing anything.
     """
     ensure_tree()
-    console = Console()
+    console = _console()
 
     if dry_run:
         console.print("[bold yellow]dry run[/bold yellow] — no mutations will be written")
@@ -366,7 +463,7 @@ def tend_cmd(
     # prompt or a huge queue can't spin the provider without limit.
     llm_triaged = 0
     reweaved = 0
-    with llm.call_budget():
+    with _AbortGuard(dry_run=dry_run, console=console) as guard, llm.call_budget():
         # -- pass 2: LLM triage --
         console.print(
             f"\n[bold]pass 2: LLM triage[/bold]  ({len(deferred)} deferred, threshold {threshold})"
@@ -585,6 +682,7 @@ def tend_cmd(
             )
 
         # -- pass 3: reweave --
+        guard.pass_ = 3
         if not no_reweave:
             console.print("\n[bold]pass 3: reweave[/bold]")
             reweaved = _reweave_pending(dry_run=dry_run, yes=yes, console=console)
@@ -620,6 +718,11 @@ def tend_cmd(
                 "triage_trigger": triage_trigger,
             },
         )
+        _record_anomalies(console)
+    else:
+        from . import health as health_mod
+
+        health_mod.print_anomalies(console, tend_detectors.detect(ledger.replay()))
 
     console.print(
         f"\n[bold green]tend complete[/bold green]  "

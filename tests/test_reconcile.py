@@ -110,3 +110,118 @@ def test_atlas_removed_compensates_deleted_file(tmp_vault):
 
     result = CliRunner().invoke(reconcile_cmd, [])
     assert result.exit_code == 0, result.output
+
+
+# -- observations vs their ledger events (report-hygiene) ------------------------
+# Why: an observation whose lifecycle the ledger never saw (dropped by hand,
+# or its status hand-edited) is invisible to every ledger-based audit. These
+# lists surface them. They warn and never fail: hand-dropping is legitimate
+# (AGENTS §4), so a vault full of them must still reconcile with exit 0.
+
+
+def _hand_drop(tmp_vault, slug: str, status: str = "pending") -> str:
+    from sabnyx import fm
+
+    p = tmp_vault["OBSERVATIONS"] / f"2026-06-12-gap-{slug}.md"
+    meta = {
+        "type": "observation",
+        "category": "gap",
+        "observed": "2026-06-12",
+        "source_agent": "manual",
+        "status": status,
+        "involves": [],
+    }
+    if status != "pending":
+        meta |= {"resolved": "2026-06-13", "resolution": "noted", "resolution_kind": "wontfix"}
+    fm.write(p, meta, f"# {slug}\n\nnoted\n")
+    fm.load(p)  # valid on disk: a listing means "unledgered", not "malformed"
+    return p.relative_to(tmp_vault["DATA_ROOT"]).as_posix()
+
+
+def _write_ledgered(slug: str):
+    from rich.console import Console
+
+    from sabnyx import writers
+    from sabnyx.schemas import ProposedObservation
+
+    out = writers.write_observation(
+        ProposedObservation(category="gap", title=f"made up {slug}", body="noted"),
+        producer="manual",
+        actor="operator",
+        console=Console(),
+    )
+    assert out.path is not None
+    return out.path
+
+
+def test_reconcile_observations_clean_when_empty(tmp_vault):
+    o = services.reconcile_observations()
+    assert o.pending_without_created == []
+    assert o.resolved_without_resolved == []
+
+
+def test_reconcile_observations_fully_ledgered_is_clean(tmp_vault):
+    from sabnyx import writers
+
+    _write_ledgered("made-up-otter")
+    closed = _write_ledgered("made-up-quill")
+    # Resolved in place: the rel does not change, so observation.resolved's
+    # subject still matches the file.
+    writers.transition_observation(closed, kind="wontfix", reason="no", actor="operator")
+    o = services.reconcile_observations()
+    assert o.pending_without_created == []
+    assert o.resolved_without_resolved == []
+
+
+def test_reconcile_lists_pending_without_created(tmp_vault):
+    rel = _hand_drop(tmp_vault, "made-up-otter")
+    o = services.reconcile_observations()
+    assert o.pending_without_created == [rel]
+    assert o.resolved_without_resolved == []
+
+    result = CliRunner().invoke(reconcile_cmd, [])
+    assert result.exit_code == 0, result.output
+    assert rel in result.output
+
+
+def test_reconcile_lists_closed_without_resolved(tmp_vault):
+    rel = _hand_drop(tmp_vault, "made-up-quill", status="archived")
+    o = services.reconcile_observations()
+    assert o.resolved_without_resolved == [rel]
+    assert o.pending_without_created == []
+
+    result = CliRunner().invoke(reconcile_cmd, [])
+    assert result.exit_code == 0, result.output
+    assert rel in result.output
+
+
+def test_reconcile_hand_edited_status_lists_only_missing_resolved(tmp_vault):
+    """Ledgered as created, then closed by hand: created is on record, the
+    resolution is not."""
+    from sabnyx import fm
+
+    path = _write_ledgered("made-up-otter")
+    meta, body, _kind = fm.load(path)
+    meta |= {
+        "status": "archived",
+        "resolved": "2026-06-13",
+        "resolution": "noted",
+        "resolution_kind": "wontfix",
+    }
+    fm.write(path, meta, body)
+    rel = path.relative_to(tmp_vault["DATA_ROOT"]).as_posix()
+    o = services.reconcile_observations()
+    assert o.resolved_without_resolved == [rel]
+    assert o.pending_without_created == []
+
+
+def test_reconcile_observations_sorted(tmp_vault):
+    rels = [_hand_drop(tmp_vault, s) for s in ("made-up-zebu", "made-up-auk", "made-up-mole")]
+    assert services.reconcile_observations().pending_without_created == sorted(rels)
+
+
+def test_reconcile_skips_malformed_observation(tmp_vault):
+    (tmp_vault["OBSERVATIONS"] / "2026-06-12-gap-broken.md").write_text("---\nnope: [\n---\n")
+    o = services.reconcile_observations()
+    assert o.pending_without_created == []
+    assert o.resolved_without_resolved == []

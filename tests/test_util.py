@@ -133,3 +133,15 @@ def test_set_marker_block_refuses_ambiguous_layouts(body):
     # the old split(begin)[0] + split(end)[1] duplicated "x" for end-first
     with pytest.raises(ValueError, match="sabnyx:related"):
         util.set_marker_block(body, "related", ["- [[b]]"])
+
+
+def test_age_days_reads_the_ledger_clock(monkeypatch):
+    """age_days goes through ledger.now(), the single clock seam, so a fixed
+    clock fixes every age health prints (goldens depend on it)."""
+    from datetime import UTC, date, datetime
+
+    from sabnyx import ledger
+
+    monkeypatch.setattr(ledger, "now", lambda: datetime(2030, 1, 11, tzinfo=UTC))
+    assert util.age_days(date(2030, 1, 1)) == 10
+    assert util.age_days("2030-01-10T00:00:00Z") == 1
