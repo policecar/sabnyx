@@ -11,7 +11,7 @@ import re
 import secrets
 import stat
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Literal
 
 import frontmatter
@@ -85,13 +85,28 @@ def classify(path: Path) -> FileKind:
         parts = path.resolve().relative_to(paths.VAULT.resolve()).parts
     except ValueError:
         parts = path.parts
+    return _classify_parts(parts, path)
+
+
+def classify_relative(rel: PurePath) -> FileKind:
+    """Classify a VAULT-relative path lexically, the same rules as classify().
+
+    Touches no filesystem and resolves no symlink: for a path that names
+    something other than the working-tree file, e.g. a git index entry
+    (lint --staged), where the working tree may hold a different object.
+    Raises ValueError like classify().
+    """
+    return _classify_parts(rel.parts, rel)
+
+
+def _classify_parts(parts: tuple[str, ...], label: PurePath) -> FileKind:
     if ".observations" in parts:
         return "observation"
     if "intake" in parts:
         return "intake"
     if "atlas" in parts:
         return "atlas"
-    raise ValueError(f"{path}: cannot classify (not under intake/atlas/observations)")
+    raise ValueError(f"{label}: cannot classify (not under intake/atlas/observations)")
 
 
 def load(path: Path) -> tuple[dict, str, FileKind]:

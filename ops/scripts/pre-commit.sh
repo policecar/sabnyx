@@ -21,11 +21,19 @@ done
 SCRIPT_PATH="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)/$(basename -- "$SCRIPT_PATH")"
 CODE_ROOT="$(cd -- "$(dirname -- "$SCRIPT_PATH")/../.." && pwd)"
 
-# Only run if there are staged .md files under vault/. Keep the git call
-# separate from grep so a failed index read cannot be swallowed as "no files".
-staged="$(git -C "$DATA_ROOT" diff --cached --name-only --diff-filter=ACMR)"
-if ! grep -q '^vault/.*\.md$' <<<"$staged"; then
+# Only run if anything under vault/ is staged; lint --staged picks the pages.
+# Ask with a pathspec, never by parsing names: --name-only C-quotes a
+# non-ASCII name ("vault/intake/caf\303\251.md"), which a '^vault/' match
+# misses, and the gate would wave the commit through. --quiet exits 1 for
+# "changes", 0 for "none"; anything else is a failed index read: fail closed.
+if git -C "$DATA_ROOT" diff --cached --quiet --no-ext-diff -- vault; then
     exit 0
+else
+    status=$?
+    if [[ $status -ne 1 ]]; then
+        echo "sabnyx: could not inspect staged files (git exit $status); commit blocked."
+        exit 1
+    fi
 fi
 
 echo "sabnyx: linting staged vault files..."
