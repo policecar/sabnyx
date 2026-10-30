@@ -393,9 +393,13 @@ note; run `/security-review` before Verify closes.
 - **Reweave target containment (own branch).** `reweave._pending_targets`
   builds `DATA_ROOT / subject` from `reweave.proposed` subjects and checks
   only `is_file()`. A local or synced ledger writer can supply a subject that
-  resolves outside the intended vault area (an absolute path, `..`
-  segments, or a symlink), and reweave then puts that file's contents
-  into its LLM prompt before any later path check fails. The Cycle 2 review
+  resolves outside the intended vault area. An absolute subject outside
+  DATA_ROOT is stopped before the model call: both callers
+  (`tend._reweave_pending`, `reweave_cmd`) run `relative_to(DATA_ROOT)`
+  before `reweave_one`, which raises. What still gets through is lexical
+  `..` segments and a symlink under the vault that points outside it: both
+  pass every check, and reweave puts that file's contents into its LLM
+  prompt. The Cycle 2 review
   found no remote-ingest route to such a subject: only `promote_file` emits
   `reweave.proposed`, with a fixed type folder plus a slug file name. The
   fix:
