@@ -95,14 +95,18 @@ def lint_cmd(files: tuple[Path, ...], staged: bool) -> None:
     for path in targets:
         errs: list[str] = []
         try:
-            meta, _body, kind = fm.load(path)
-        except fm.FrontmatterError as e:
-            failures.append((path, e.errors))
-            continue
+            fm.classify(path)
         except ValueError:
             # No schema tier applies (domains/ carries its own per-topic
             # schema, SPEC §1) — skip with a note, like sources/ (ADR-0005).
+            # Only classification may skip: load() raises other ValueErrors
+            # (UnicodeDecodeError is one), and those are failures.
             skipped += 1
+            continue
+        try:
+            meta, _body, kind = fm.load(path)
+        except fm.FrontmatterError as e:
+            failures.append((path, e.errors))
             continue
         except Exception as e:
             failures.append((path, [f"parse error: {e}"]))

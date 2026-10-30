@@ -149,3 +149,16 @@ class TestDomainsSkipped:
         assert result.exit_code == 0, result.output
         assert "skipped" in result.output
         assert "lint OK" in result.output
+
+    def test_undecodable_file_fails_not_skipped(self, tmp_vault, monkeypatch):
+        """UnicodeDecodeError is a ValueError, but only classification may
+        skip a file: an intake file that is not UTF-8 is a failure."""
+        _patch_lint(monkeypatch, tmp_vault)
+        (tmp_vault["INTAKE"] / "latin1.md").write_bytes(
+            b'---\ntype: note\ndescription: "caf\xe9 caf\xe9 caf\xe9 caf\xe9 caf\xe9"\n---\n'
+        )
+
+        result = _run_lint([])
+        assert result.exit_code == 1, result.output
+        assert "skipped" not in result.output
+        assert "parse error" in result.output
