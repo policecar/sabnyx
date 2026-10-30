@@ -122,8 +122,11 @@ One schedulable command that runs the whole self-maintenance cycle:
    Below threshold, `--max-age-days` (default 7; `0` disables) is a fallback:
    once the oldest deferred item has waited that long, the whole deferred
    batch is triaged in one call, so a slow-filling queue can't starve forever.
-3. **Reweave** — consume pending `reweave.proposed` intents (backward links +
-   contradiction observations).
+3. **Reweave** — reweave every promoted atlas page not yet reweaved (backward
+   links + contradiction observations). The queue is replayed from the ledger:
+   `atlas.promoted` or `reweave.proposed` queues a page, `reweave.completed`
+   or `atlas.removed` takes it out, so a promotion interrupted before its
+   intent was written is still picked up.
 4. **Health** — a concise audit summary.
 
 Between reweave and health, `tend` resolves every pending gap whose `target`

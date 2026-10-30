@@ -143,10 +143,19 @@ def promote_file(
         dest.unlink()
         raise RuntimeError(f"wrote invalid atlas file, rolled back: {e}") from e
 
-    # Ledger BEFORE unlinking the source: the append is the commit point. If the
-    # process dies after this, the promotion is recorded (and the reweave intent
-    # preserved) and the next tend's duplicate-slug gate refuses a re-promote —
-    # far better than the inverse (file moved, no ledger record, lost reweave).
+    # Ledger BEFORE unlinking the source: the atlas.promoted append is the
+    # commit point. Every later step can fail on its own, and each leaves the
+    # intake source in place (a re-promote is then refused as a duplicate):
+    #   - reweave.proposed missing: the reweave queue still holds this page,
+    #     because reweave._pending_targets counts atlas.promoted as pending.
+    #     The explicit intent is redundant for recovery; it is kept as the
+    #     intent-plane record.
+    #   - unlink failed: the source stays next to its atlas page. Not cleaned
+    #     up automatically; tend reports it as a gate-5 duplicate each run.
+    #   - knowledge-log append failed: the promotion stands without its log
+    #     line. Nothing reports this; health's Gate 3 reads the page's
+    #     promoted_from, which is already set.
+    # Far better than the inverse (file moved, no ledger record, lost reweave).
     src_rel = str(source.relative_to(DATA_ROOT))
     dest_rel = str(dest.relative_to(DATA_ROOT))
     ledger.append_event(
@@ -221,6 +230,11 @@ def reconcile_atlas() -> Reconciliation:
     the compensating record for a legitimate deletion (SPEC §10) — it takes
     the file back out of the expected set, in ledger order, so a deliberate
     removal doesn't stay red forever.
+
+    `clean` means only that atlas files and promotion events agree. It does
+    not mean every promotion finished: a promotion interrupted after its
+    `atlas.promoted` append is clean here, and its owed reweave is found by
+    the reweave queue (commands/reweave.py::_pending_targets) instead.
     """
     promoted: set[str] = set()
     for e in ledger.replay():

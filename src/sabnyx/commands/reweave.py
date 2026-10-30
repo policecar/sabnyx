@@ -1,7 +1,8 @@
 """`sabnyx reweave` — backward enrichment after promotion (plan §Phase 3).
 
-Consumes the `reweave.proposed` intents that `promote` has been emitting
-since stage 0. For each target (a recently promoted atlas file):
+Consumes the reweave queue: every atlas file whose last reweave-relevant
+ledger event is `atlas.promoted` or the `reweave.proposed` intent that
+`promote` emits beside it (see _pending_targets). For each target:
 
   1. assemble context: the target in full, every other atlas file as a
      description + body excerpt, pending observations
@@ -59,32 +60,42 @@ ReweaveChangeset. Rules, in addition to the SPEC and ROUTING contract above:
 - Reasons are one line, specific, no filler."""
 
 
-def _pending_targets() -> list[Path]:
-    """Atlas files whose LAST reweave event is a `reweave.proposed` intent.
+# Events that put a subject in the reweave queue. `atlas.promoted` counts on
+# its own: promote_file appends it and `reweave.proposed` separately, so a
+# failure between the two appends would otherwise leave a committed promotion
+# with no queued reweave and nothing that ever retries it (R05).
+_QUEUES = ("atlas.promoted", "reweave.proposed")
 
-    Last event wins per subject (matching opsctl project's semantics), so a
-    file that is deleted, re-ingested, and re-promoted after a completed
-    reweave queues again — a historical completion never masks a later
-    intent. The ledger is the queue."""
-    status: dict[str, str] = {}  # subject -> last-seen kind, insertion-ordered
+
+def _pending_targets() -> list[Path]:
+    """Atlas files with reweave work still owed, derived by replaying the ledger.
+
+    Per subject, the last relevant event wins (the same rule as
+    opsctl/src/project.rs):
+
+      atlas.promoted, reweave.proposed  -> pending
+      reweave.completed                 -> done
+      atlas.removed                     -> forgotten
+
+    So a promotion is queued even if its `reweave.proposed` append never
+    landed; a completed reweave stays done until the path is promoted (or
+    proposed) again; and an intent left behind by a removed page never
+    resurfaces against a page later written to the same path by hand.
+    The listing is read-only: recovery writes nothing, and replaying twice
+    gives the same answer. A subject whose file is missing is skipped.
+    """
+    status: dict[str, bool] = {}  # subject -> pending?, insertion-ordered
     for e in ledger.replay():
-        if e.kind in ("reweave.proposed", "reweave.completed"):
-            status[e.subject] = e.kind
+        if e.kind in _QUEUES:
+            status[e.subject] = True
+        elif e.kind == "reweave.completed":
+            status[e.subject] = False
+        elif e.kind == "atlas.removed":
+            status.pop(e.subject, None)
     out: list[Path] = []
-    for subj, kind in status.items():
-        if kind != "reweave.proposed":
-            continue
+    for subj, pending in status.items():
         p = paths.DATA_ROOT / subj
-        # is_file() stands in for "not deleted" rather than consuming
-        # atlas.removed directly (unlike opsctl/src/project.rs and
-        # services.reconcile_atlas). Functionally equivalent today, with one
-        # low-probability edge case: delete this path (logging a compensating
-        # atlas.removed), then re-promote a *different* file to the exact
-        # same path with no intervening reweave.completed -- the stale
-        # pre-deletion reweave.proposed intent would resurface against the
-        # new file. If that bites, switch to consuming atlas.removed
-        # explicitly for parity with the Rust projection.
-        if p.is_file():
+        if pending and p.is_file():
             out.append(p)
     return out
 
@@ -308,8 +319,9 @@ def reweave_one(
 def reweave_cmd(target: Path | None, role: ModelRole, yes: bool, dry_run: bool) -> None:
     """Backward enrichment: link a promoted file into the existing graph.
 
-    With no TARGET, consumes every pending reweave.proposed intent from
-    the ledger. With a TARGET, reweaves just that atlas file.
+    With no TARGET, reweaves every atlas file the ledger says is still owed
+    one: promoted or proposed, and not completed since. With a TARGET,
+    reweaves just that atlas file.
     """
     console = Console()
 
@@ -322,7 +334,7 @@ def reweave_cmd(target: Path | None, role: ModelRole, yes: bool, dry_run: bool) 
     else:
         targets = _pending_targets()
         if not targets:
-            console.print("[dim]no pending reweave.proposed intents; nothing to do[/dim]")
+            console.print("[dim]no pending reweave work; nothing to do[/dim]")
             return
         console.print(f"pending reweave targets: [bold]{len(targets)}[/bold]")
 
