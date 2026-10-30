@@ -229,6 +229,58 @@ def test_tend_recovers_missing_intent_on_a_later_run(tmp_vault, monkeypatch):
 # -- adjacent failure boundaries -----------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [PermissionError(13, "injected: open before promotion append"), KeyboardInterrupt()],
+    ids=["oserror", "ctrl-c"],
+)
+def test_failure_before_promotion_append_rolls_back_and_retry_succeeds(tmp_vault, exc):
+    """Nothing reached the ledger (ADR 0008 pre-write class), so the page this
+    call wrote is removed and the promotion can simply be retried."""
+    source = _bookmark(tmp_vault)
+    original = source.read_bytes()
+    with pytest.MonkeyPatch.context() as mp:
+        _fail_append_open(mp, 1, exc)
+        with pytest.raises(type(exc)):
+            services.promote_file(source, "reference")
+
+    assert not _dest(tmp_vault, source).exists()
+    assert source.read_bytes() == original
+    assert _ledger_bytes() == b""
+    assert services.reconcile_atlas().clean
+    assert rw._pending_targets() == []
+
+    dest = services.promote_file(source, "reference")
+    assert rw._pending_targets() == [dest]
+    assert _kinds() == ["atlas.promoted", "reweave.proposed"]
+
+
+def test_failed_rollback_reports_both_errors_and_keeps_source(tmp_vault):
+    """If removing the new page also fails, the error names both failures and
+    the leftover state, which reconcile reports as an unledgered page."""
+    source = _bookmark(tmp_vault)
+    original = source.read_bytes()
+    dest = _dest(tmp_vault, source)
+
+    def guarded(self: Path, *a: Any, **k: Any) -> None:
+        if self == dest:
+            raise PermissionError(13, "injected: unlink new page")
+        _REAL_UNLINK(self, *a, **k)
+
+    with pytest.MonkeyPatch.context() as mp:
+        _fail_append_open(mp, 1, PermissionError(13, "injected: open before promotion append"))
+        mp.setattr(Path, "unlink", guarded)
+        with pytest.raises(RuntimeError, match="unledgered") as excinfo:
+            services.promote_file(source, "reference")
+
+    assert isinstance(excinfo.value.__cause__, PermissionError)  # the undo error
+    assert "before promotion append" in str(excinfo.value.__cause__.__context__)
+    assert dest.is_file()
+    assert source.read_bytes() == original
+    assert _ledger_bytes() == b""
+    assert services.reconcile_atlas().unledgered == [_rel(tmp_vault, dest)]
+
+
 def test_promotion_append_possibly_written_keeps_page_and_queues_it(tmp_vault):
     """LedgerWriteError on the first append: the line may be on disk (here it
     is), so the page must stay. Replay then sees the promotion and queues it."""
