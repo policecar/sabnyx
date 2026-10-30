@@ -432,6 +432,16 @@ the heartbeat script's target along with everything else.
   `ls ~/sabnyx-vault/.git/rebase-merge` or `.../rebase-apply` existing, the
   script crashed before this guard ran (or was hand-interrupted); run
   `git -C ~/sabnyx-vault rebase --abort` yourself before the next tick.
+- **An autostash conflict stops the heartbeat until you resolve it.** If an
+  uncommitted edit on the server collides with what the pull brought in, git
+  still exits 0 but leaves conflict markers and an unmerged index. The script
+  checks the index, not the exit code. It exits non-zero before tend and does
+  not stage, commit or push anything. It keeps refusing on every tick until
+  the conflict is gone, and never resets, picks a side or drops the stash for
+  you. To recover in `~/sabnyx-vault`: fix the markers in the listed files,
+  `git add` them, review `git diff --cached`, then `git stash list`. An
+  `autostash` entry still holds your pre-pull local changes. Drop it once
+  they are in the tree. The next tick syncs normally.
 - **systemd hardening is namespace-free by necessity.** Mount-namespace directives
   (`ProtectSystem`, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectKernel*`,
   `ProtectControlGroups`) require **unprivileged user namespaces**, which Debian

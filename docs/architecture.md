@@ -143,6 +143,14 @@ at the OS level (no reader ever sees a partial line), and the file carries a
 server interleave instead of conflicting — serializing it behind the vault
 lock would defeat that design.
 
+Raw sources (`vault/sources/`) are the one place a replace would be wrong:
+they are write-once, and CLI `ingest` captures without the vault lock. So
+`sources.capture` writes a private temp file and then *hard-links* it to the
+chosen name. `link(2)` fails if the name already exists, so two concurrent
+captures can never overwrite each other. The name also appears only once its
+bytes are complete, so a contender never mistakes a half-written file for a
+capture it could reuse. The loser just moves on to the next content-hash name.
+
 ### The clock (`opsctl`, in Rust)
 
 `opsctl` is a small, fast control plane that owns the logbook and **schedules**

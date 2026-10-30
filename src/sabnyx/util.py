@@ -136,32 +136,61 @@ def get_marker_block(body: str, name: str) -> str | None:
     return inner.strip("\n")
 
 
-def set_marker_block(body: str, name: str, lines: list[str], heading: str | None = None) -> str:
+def set_marker_block(
+    body: str,
+    name: str,
+    lines: list[str],
+    heading: str | None = None,
+    *,
+    newline: str = "\n",
+) -> str:
     """Replace the named marker block's content, preserving everything
     outside it byte-for-byte. If the block is absent, append a new
     section at the end (optionally under `heading`) — append, never
     rewrite, per the round-trip invariant in docs/reserved-syntax.md.
 
-    Raises ValueError when exactly one of BEGIN/END is present (a half-open
-    block, e.g. after a manual edit): appending a fresh block there would
-    nest/duplicate markers, which SPEC §8 forbids. Callers report and skip."""
-    begin, end = _markers(name)
-    content = "\n".join(lines)
-    block = f"{begin}\n{content}\n{end}" if lines else f"{begin}\n{end}"
+    Owned region of an existing block: the bytes strictly between the end of
+    the BEGIN marker and the start of the END marker. It is re-rendered as
+    ``newline`` + lines joined by ``newline`` + ``newline`` (just ``newline``
+    when `lines` is empty). Every byte before BEGIN and from END on is copied.
 
-    if begin in body and end in body:
-        pre = body.split(begin, 1)[0]
-        post = body.split(end, 1)[1]
-        return pre + block + post
-    if begin in body or end in body:
-        half = "BEGIN" if begin in body else "END"
+    Missing block: `body` is kept as is, then a separator only as long as
+    needed for it to end in one blank line (nothing if it already ends in
+    two `newline`s, one `newline` if it ends in one, two otherwise), then
+    ``## heading``, a blank line, the block and a final `newline`. Every
+    rendered line ending is `newline`; pass "\\r\\n" for a CRLF file.
+
+    Raises ValueError unless the markers form exactly one ordered pair or
+    are both absent: a half-open block (manual edit damage) or an ambiguous
+    layout (END before BEGIN, a second BEGIN or END) would nest, duplicate
+    or swallow content, which SPEC §8 forbids. Callers report and skip."""
+    begin, end = _markers(name)
+    nl = newline
+    block = f"{begin}{nl}{nl.join(lines)}{nl}{end}" if lines else f"{begin}{nl}{end}"
+
+    n_begin, n_end = body.count(begin), body.count(end)
+    if (n_begin, n_end) == (1, 1):
+        i, j = body.index(begin), body.index(end)
+        if j < i:
+            raise ValueError(
+                f"malformed marker block sabnyx:{name}: END precedes BEGIN — "
+                "refusing to rewrite it (SPEC §8)"
+            )
+        return body[:i] + block + body[j + len(end) :]
+    if {n_begin, n_end} == {0, 1}:
+        half = "BEGIN" if n_begin else "END"
         raise ValueError(
             f"half-open marker block sabnyx:{name}: found {half} without its pair — "
             "refusing to append a duplicate block (SPEC §8)"
         )
+    if (n_begin, n_end) != (0, 0):
+        raise ValueError(
+            f"ambiguous marker blocks sabnyx:{name}: {n_begin} BEGIN / {n_end} END — "
+            "refusing to guess which one to edit (SPEC §8)"
+        )
 
-    sep = "" if body.endswith("\n\n") else ("\n" if body.endswith("\n") else "\n\n")
-    section = f"## {heading}\n\n{block}\n" if heading else f"{block}\n"
+    sep = "" if body.endswith(nl * 2) else (nl if body.endswith(nl) else nl * 2)
+    section = f"## {heading}{nl}{nl}{block}{nl}" if heading else f"{block}{nl}"
     return body + sep + section
 
 
