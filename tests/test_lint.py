@@ -289,13 +289,18 @@ class TestStagedReadsIndex:
         assert sha in result.output
 
     def test_not_a_repository_fails_closed(self, tmp_vault, monkeypatch):
+        """The git error arrives whole, on one line, at any console width:
+        it embeds DATA_ROOT, so a hard wrap lands wherever the path's length
+        puts it (CI once split "not a git" / "repository")."""
         _patch_lint(monkeypatch, tmp_vault)
         _isolate_git(monkeypatch, tmp_vault["DATA_ROOT"])
+        monkeypatch.setenv("COLUMNS", "40")
 
         result = _run_lint(["--staged"])
         assert result.exit_code == 1, result.output
-        assert "could not inspect staged files" in result.output
-        assert "not a git repository" in result.output
+        line = next(ln for ln in result.output.splitlines() if "could not inspect" in ln)
+        assert "could not inspect staged files: git rev-parse" in line
+        assert "not a git repository" in line
 
 
 def test_split_root_hook_checks_data_repo(tmp_path):

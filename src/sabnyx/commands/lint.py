@@ -203,7 +203,9 @@ def lint_cmd(files: tuple[Path, ...], staged: bool) -> None:
         try:
             targets, failures = _staged_targets()
         except _StagedError as e:
-            console.print(Text(f"could not inspect staged files: {e}", style="red"))
+            # soft_wrap: one line whatever the width, so a hook log or a grep
+            # sees the whole git error (it carries DATA_ROOT, of any length).
+            console.print(Text(f"could not inspect staged files: {e}", style="red"), soft_wrap=True)
             sys.exit(1)
     elif files:
         targets = [f for f in files if _lintable(f)]
