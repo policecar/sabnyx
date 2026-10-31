@@ -2,7 +2,8 @@
 //
 // Demonstrates "segments are authority; projections rebuild."
 // - Counts per kind
-// - Pending reweave intents (reweave.proposed minus later reweave.completed for same subject)
+// - Pending reweave (atlas.promoted or reweave.proposed, minus a later
+//   reweave.completed or atlas.removed for the same subject)
 // - Current atlas files (atlas.promoted minus later atlas.removed subjects)
 // - Last tend.completed payload
 
@@ -25,7 +26,12 @@ pub fn build(events_path: &Path) -> anyhow::Result<Projection> {
     let mut counts_by_kind: HashMap<String, usize> = HashMap::new();
 
     // Track reweave state per subject: events replay in file order, so the last
-    // reweave.* event for a subject wins. proposed → pending; completed → resolved.
+    // relevant event for a subject wins. promoted or proposed → pending;
+    // completed → resolved; removed → forgotten. atlas.promoted queues on its
+    // own because promote appends it and reweave.proposed separately: a
+    // failure between the two must not lose the reweave (R05). Same rule as
+    // src/sabnyx/commands/reweave.py::_pending_targets, which additionally
+    // skips subjects whose file is missing.
     let mut reweave_pending: HashMap<String, bool> = HashMap::new();
 
     let mut atlas_files: HashSet<String> = HashSet::new();
@@ -45,6 +51,7 @@ pub fn build(events_path: &Path) -> anyhow::Result<Projection> {
             // "atlas.created" kind, so it is not matched here.
             "atlas.promoted" => {
                 atlas_files.insert(event.subject.clone());
+                reweave_pending.insert(event.subject.clone(), true);
             }
             "atlas.removed" => {
                 atlas_files.remove(&event.subject);
@@ -57,7 +64,7 @@ pub fn build(events_path: &Path) -> anyhow::Result<Projection> {
         }
     }
 
-    // Pending reweave: subjects whose latest reweave event was a proposal.
+    // Pending reweave: subjects whose latest relevant event queued them.
     let mut pending_reweave: Vec<String> = reweave_pending
         .into_iter()
         .filter(|(_, pending)| *pending)
@@ -112,9 +119,11 @@ fn print_human(proj: &Projection) {
         println!("  {:40}  {}", kind, count);
     }
 
-    // Pending reweave
+    // Pending reweave. Ledger-only: a page deleted without an atlas.removed
+    // still shows here (reconcile flags it as orphaned), while
+    // `sabnyx reweave` skips it because its file is missing.
     println!(
-        "\nPending reweave intents ({}):",
+        "\nPending reweave, ledger view ({}):",
         proj.pending_reweave.len()
     );
     if proj.pending_reweave.is_empty() {
@@ -215,7 +224,41 @@ mod tests {
             Some(json!({"run": 2})),
             "last tend.completed payload wins"
         );
-        assert!(proj.pending_reweave.is_empty());
+        // A promotion with no reweave.completed still owes its reweave.
+        assert_eq!(
+            proj.pending_reweave,
+            vec!["vault/atlas/concepts/x.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_promotion_without_intent_is_pending_until_completed() {
+        // promote appends atlas.promoted and reweave.proposed separately; a
+        // failure between them must still leave the reweave queued, and the
+        // usual completion / re-promotion rules must apply (R05).
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path();
+
+        // a: promoted, intent lost → pending.
+        emit(path, "atlas.promoted", "vault/atlas/a.md", json!({}));
+        // b: promoted, intent lost, completed → resolved.
+        emit(path, "atlas.promoted", "vault/atlas/b.md", json!({}));
+        emit(path, "reweave.completed", "vault/atlas/b.md", json!({}));
+        // c: normal promotion completed, removed, re-promoted without intent → pending.
+        emit(path, "atlas.promoted", "vault/atlas/c.md", json!({}));
+        emit(path, "reweave.proposed", "vault/atlas/c.md", json!({}));
+        emit(path, "reweave.completed", "vault/atlas/c.md", json!({}));
+        emit(path, "atlas.removed", "vault/atlas/c.md", json!({}));
+        emit(path, "atlas.promoted", "vault/atlas/c.md", json!({}));
+
+        let proj = build(path).expect("build");
+        assert_eq!(
+            proj.pending_reweave,
+            vec![
+                "vault/atlas/a.md".to_string(),
+                "vault/atlas/c.md".to_string()
+            ]
+        );
     }
 
     #[test]

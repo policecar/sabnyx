@@ -12,6 +12,13 @@ route progress to a terminal or a string buffer.
 @decision DEC-02: auto_promote_decision is pure (no IO)
 @rationale: Six boolean gates that depend only on passed-in data → fully
   unit-testable with no fixtures, no filesystem, no monkeypatching.
+@decision DEC-03: promote_file rolls back only before atlas.promoted is written
+@rationale: ADR 0008. A pre-write failure of that append leaves no event, so
+  removing the new page restores the pre-call state and a retry works. From
+  the first write(2) on, the event may be on disk: nothing is undone, and the
+  reweave queue (derived from atlas.promoted) carries the owed work. A Ctrl-C
+  stays a KeyboardInterrupt even if the rollback fails, so tend's per-file
+  `except Exception` cannot swallow it.
 """
 
 from __future__ import annotations
@@ -91,7 +98,10 @@ def promote_file(
     Returns the destination Path.
     Raises RuntimeError when the destination already exists (never
     overwrites the atlas tier) or on validation failure (the file this
-    call wrote — and only that file — is rolled back).
+    call wrote — and only that file — is rolled back). The same rollback
+    runs when the atlas.promoted append fails before writing (ADR 0008);
+    from that append on, nothing is rolled back and the intake source is
+    kept on any failure (see the commit-point comment below).
     """
     from . import fm
     from .paths import ATLAS_TYPE_DIRS, DATA_ROOT
@@ -143,23 +153,58 @@ def promote_file(
         dest.unlink()
         raise RuntimeError(f"wrote invalid atlas file, rolled back: {e}") from e
 
-    # Ledger BEFORE unlinking the source: the append is the commit point. If the
-    # process dies after this, the promotion is recorded (and the reweave intent
-    # preserved) and the next tend's duplicate-slug gate refuses a re-promote —
-    # far better than the inverse (file moved, no ledger record, lost reweave).
+    # Ledger BEFORE unlinking the source: the atlas.promoted append is the
+    # commit point (DEC-03). Every later step can fail on its own, and none is
+    # rolled back:
+    #   - reweave.proposed missing: the source is kept, and the reweave queue
+    #     still holds this page, because reweave._pending_targets counts
+    #     atlas.promoted as pending. The explicit intent is redundant for
+    #     recovery; it is kept as the intent-plane record.
+    #   - unlink failed: the source stays next to its atlas page, and a
+    #     re-promote is refused as a duplicate. Not cleaned up automatically.
+    #     tend's pass 1 prints a gate-5 deferral for it on every run; pass 2
+    #     sends it to triage at most once per file content (a promote verdict
+    #     is ledgered as skipped_atlas_dup), then remembers the decision.
+    #   - knowledge-log append failed: runs after the unlink, so the source is
+    #     already gone and the promotion stands without its log line. Nothing
+    #     reports this; health's Gate 3 reads the page's promoted_from.
+    # Far better than the inverse (file moved, no ledger record, lost reweave).
     src_rel = str(source.relative_to(DATA_ROOT))
     dest_rel = str(dest.relative_to(DATA_ROOT))
-    ledger.append_event(
-        kind="atlas.promoted",
-        actor=actor,
-        subject=dest_rel,
-        payload={
-            "from": src_rel,
-            "as": atlas_type,
-            "description": meta["description"],
-            "source_url": meta.get("source_url"),
-        },
-    )
+    try:
+        ledger.append_event(
+            kind="atlas.promoted",
+            actor=actor,
+            subject=dest_rel,
+            payload={
+                "from": src_rel,
+                "as": atlas_type,
+                "description": meta["description"],
+                "source_url": meta.get("source_url"),
+            },
+        )
+    except (ledger.LedgerWriteError, ledger.LedgerWriteInterrupted):
+        raise  # the line may be on disk: the promotion stands (ADR 0008)
+    except (Exception, KeyboardInterrupt) as ledger_err:
+        # No byte reached the ledger (ADR 0008), so remove the page this call
+        # wrote: the vault is back to its pre-call state and a retry works.
+        try:
+            dest.unlink()
+        except Exception as undo_err:
+            detail = (
+                f"{dest_rel}: ledger append failed ({ledger_err!r}) and removing the "
+                f"new atlas page failed too ({undo_err!r}); the page is left with no "
+                "atlas.promoted event (reconcile lists it as unledgered)"
+            )
+            if isinstance(ledger_err, KeyboardInterrupt):
+                # An interrupt stays an interrupt: tend wraps each promote in
+                # `except Exception`, which would swallow a RuntimeError and
+                # carry on. The rollback failure rides along as a note.
+                ledger_err.add_note(detail)
+                raise ledger_err from None
+            # undo_err.__context__ is ledger_err: both are in the chain.
+            raise RuntimeError(detail) from undo_err
+        raise
 
     # Emit a reweave prompt as a separate event (not an action yet).
     ledger.append_event(
@@ -221,6 +266,11 @@ def reconcile_atlas() -> Reconciliation:
     the compensating record for a legitimate deletion (SPEC §10) — it takes
     the file back out of the expected set, in ledger order, so a deliberate
     removal doesn't stay red forever.
+
+    `clean` means only that atlas files and promotion events agree. It does
+    not mean every promotion finished: a promotion interrupted after its
+    `atlas.promoted` append is clean here, and its owed reweave is found by
+    the reweave queue (commands/reweave.py::_pending_targets) instead.
     """
     promoted: set[str] = set()
     for e in ledger.replay():

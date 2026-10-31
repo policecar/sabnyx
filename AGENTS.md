@@ -80,7 +80,11 @@ fields, and the transition is ledgered.
 ## 5. Reweave after every promote
 
 `promote` emits a `reweave.proposed` event carrying a prompt. The
-reweave agent (or the operator in stage 0) runs the backward pass:
+reweave queue is replayed from the ledger, and `atlas.promoted` queues
+a page on its own, so a promotion interrupted before its intent was
+written is still reweaved. `reweave.completed` or `atlas.removed`
+takes the page out. The reweave agent (or the operator in stage 0)
+runs the backward pass:
 
   1. Identify entities the new file mentions or embodies
   2. Search the vault for files that should link to it and don't

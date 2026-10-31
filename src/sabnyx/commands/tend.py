@@ -5,7 +5,7 @@ One schedulable command that drives the self-maintaining vault cycle:
   1. Auto-promote pass  — deterministic gate, no LLM.
   2. LLM triage pass   — batched model call for deferred items (≥ threshold,
                           or any item past --max-age-days, whichever fires).
-  3. Reweave pass       — consume pending reweave.proposed intents.
+  3. Reweave pass       — reweave every promoted page not yet reweaved.
      Gap closure        — resolve pending gaps whose target page now exists.
   4. Health pass        — print a concise audit summary.
 
@@ -213,7 +213,7 @@ def _item_age_days(
 
 
 def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
-    """Consume pending reweave.proposed intents via reweave.reweave_one.
+    """Consume the pending reweave queue (reweave._pending_targets) via reweave.reweave_one.
 
     Delegates the LLM call, guards, apply, and ledger event to the shared
     helper so the apply path lives in one place. tend's --dry-run skips the
@@ -223,7 +223,7 @@ def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
 
     targets = rw._pending_targets()
     if not targets:
-        console.print("[dim]reweave: no pending intents[/dim]")
+        console.print("[dim]reweave: no pending work[/dim]")
         return 0
 
     console.print(f"reweave: [bold]{len(targets)}[/bold] pending target(s)")
