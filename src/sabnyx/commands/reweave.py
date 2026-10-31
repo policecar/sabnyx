@@ -60,6 +60,12 @@ ReweaveChangeset. Rules, in addition to the SPEC and ROUTING contract above:
 - Reasons are one line, specific, no filler."""
 
 
+# @decision DEC-RW-002: the reweave queue is replayed, not repaired.
+# @rationale: deriving pending work from events already committed needs no
+#   repair write, is idempotent, and closes the gap between promote's two
+#   appends; reordering the appends would only move that gap. Same rule as
+#   opsctl/src/project.rs, which lists ledger state without checking files.
+#
 # Events that put a subject in the reweave queue. `atlas.promoted` counts on
 # its own: promote_file appends it and `reweave.proposed` separately, so a
 # failure between the two appends would otherwise leave a committed promotion

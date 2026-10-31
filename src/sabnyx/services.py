@@ -12,6 +12,13 @@ route progress to a terminal or a string buffer.
 @decision DEC-02: auto_promote_decision is pure (no IO)
 @rationale: Six boolean gates that depend only on passed-in data → fully
   unit-testable with no fixtures, no filesystem, no monkeypatching.
+@decision DEC-03: promote_file rolls back only before atlas.promoted is written
+@rationale: ADR 0008. A pre-write failure of that append leaves no event, so
+  removing the new page restores the pre-call state and a retry works. From
+  the first write(2) on, the event may be on disk: nothing is undone, and the
+  reweave queue (derived from atlas.promoted) carries the owed work. A Ctrl-C
+  stays a KeyboardInterrupt even if the rollback fails, so tend's per-file
+  `except Exception` cannot swallow it.
 """
 
 from __future__ import annotations
@@ -147,17 +154,20 @@ def promote_file(
         raise RuntimeError(f"wrote invalid atlas file, rolled back: {e}") from e
 
     # Ledger BEFORE unlinking the source: the atlas.promoted append is the
-    # commit point. Every later step can fail on its own, and each leaves the
-    # intake source in place (a re-promote is then refused as a duplicate):
-    #   - reweave.proposed missing: the reweave queue still holds this page,
-    #     because reweave._pending_targets counts atlas.promoted as pending.
-    #     The explicit intent is redundant for recovery; it is kept as the
-    #     intent-plane record.
-    #   - unlink failed: the source stays next to its atlas page. Not cleaned
-    #     up automatically; tend reports it as a gate-5 duplicate each run.
-    #   - knowledge-log append failed: the promotion stands without its log
-    #     line. Nothing reports this; health's Gate 3 reads the page's
-    #     promoted_from, which is already set.
+    # commit point (DEC-03). Every later step can fail on its own, and none is
+    # rolled back:
+    #   - reweave.proposed missing: the source is kept, and the reweave queue
+    #     still holds this page, because reweave._pending_targets counts
+    #     atlas.promoted as pending. The explicit intent is redundant for
+    #     recovery; it is kept as the intent-plane record.
+    #   - unlink failed: the source stays next to its atlas page, and a
+    #     re-promote is refused as a duplicate. Not cleaned up automatically.
+    #     tend's pass 1 prints a gate-5 deferral for it on every run; pass 2
+    #     sends it to triage at most once per file content (a promote verdict
+    #     is ledgered as skipped_atlas_dup), then remembers the decision.
+    #   - knowledge-log append failed: runs after the unlink, so the source is
+    #     already gone and the promotion stands without its log line. Nothing
+    #     reports this; health's Gate 3 reads the page's promoted_from.
     # Far better than the inverse (file moved, no ledger record, lost reweave).
     src_rel = str(source.relative_to(DATA_ROOT))
     dest_rel = str(dest.relative_to(DATA_ROOT))

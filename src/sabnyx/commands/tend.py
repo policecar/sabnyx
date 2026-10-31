@@ -223,7 +223,7 @@ def _reweave_pending(*, dry_run: bool, yes: bool, console: Console) -> int:
 
     targets = rw._pending_targets()
     if not targets:
-        console.print("[dim]reweave: no pending intents[/dim]")
+        console.print("[dim]reweave: no pending work[/dim]")
         return 0
 
     console.print(f"reweave: [bold]{len(targets)}[/bold] pending target(s)")

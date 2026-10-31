@@ -119,9 +119,11 @@ fn print_human(proj: &Projection) {
         println!("  {:40}  {}", kind, count);
     }
 
-    // Pending reweave
+    // Pending reweave. Ledger-only: a page deleted without an atlas.removed
+    // still shows here (reconcile flags it as orphaned), while
+    // `sabnyx reweave` skips it because its file is missing.
     println!(
-        "\nPending reweave intents ({}):",
+        "\nPending reweave, ledger view ({}):",
         proj.pending_reweave.len()
     );
     if proj.pending_reweave.is_empty() {
