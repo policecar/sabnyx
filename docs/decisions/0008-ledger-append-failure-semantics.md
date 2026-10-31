@@ -1,7 +1,7 @@
 # ADR 0008 — Ledger append failure semantics
 
 Date: 2026-10-25
-Status: accepted
+Status: accepted; amended 2026-10-31 (see Amendment)
 
 ## Context
 
@@ -86,7 +86,7 @@ replacing `append_event`.
   `KeyboardInterrupt`, restore.
 - Today only `writers.transition_observation` implements the restore. The
   older callers (`write_observation`, `write_intake`, promote and the
-  others) never restore. That is safe under this rule, since they never
+  others) never restore. (Promote has since adopted it; see Amendment.) That is safe under this rule, since they never
   undo a change whose line may be on disk. But a pre-write failure leaves
   them with a changed file and no event, and a retry is not offered.
   Adopting the restore is a per-caller change, not made here.
@@ -111,3 +111,26 @@ replacing `append_event`.
   must use the same classification: a distinct error (and a distinct
   interrupt) from the first `write(2)` through `close` and any directory
   sync after it, and pass through anything earlier unchanged.
+
+## Amendment — 2026-10-31
+
+`services.promote_file` now follows rule 3 for its `atlas.promoted`
+append, the promotion's commit point. On a pre-write failure (any other
+`Exception`, or a `KeyboardInterrupt`) it removes the atlas page it just
+wrote and re-raises, so the vault is back to its pre-call state and the
+promotion can be retried. On `LedgerWriteError` / `LedgerWriteInterrupted`
+it keeps the page. It never undoes anything after that append.
+`reweave._pending_targets` counts `atlas.promoted` as pending, so a page
+whose promotion event may be on disk is still reweaved.
+
+Rule 3 is refined for one case: **the restore fails after a
+`KeyboardInterrupt`.** Raising a chained `RuntimeError` there turns the
+interrupt into an ordinary `Exception`, and a caller that loops with
+`except Exception` swallows it and carries on. `tend` wraps each promote
+that way. The interrupt is re-raised as itself instead, with the restore
+failure attached as a note (`add_note`). Any other pre-write error whose
+restore fails still raises the chained `RuntimeError`.
+
+`writers.transition_observation` still raises the chained `RuntimeError`
+in that case. No caller swallows it today, so it has not been changed.
+A new caller of the rule should use the refined form.
