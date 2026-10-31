@@ -181,12 +181,19 @@ def promote_file(
         try:
             dest.unlink()
         except Exception as undo_err:
-            # undo_err.__context__ is ledger_err: both are in the chain.
-            raise RuntimeError(
+            detail = (
                 f"{dest_rel}: ledger append failed ({ledger_err!r}) and removing the "
                 f"new atlas page failed too ({undo_err!r}); the page is left with no "
                 "atlas.promoted event (reconcile lists it as unledgered)"
-            ) from undo_err
+            )
+            if isinstance(ledger_err, KeyboardInterrupt):
+                # An interrupt stays an interrupt: tend wraps each promote in
+                # `except Exception`, which would swallow a RuntimeError and
+                # carry on. The rollback failure rides along as a note.
+                ledger_err.add_note(detail)
+                raise ledger_err from None
+            # undo_err.__context__ is ledger_err: both are in the chain.
+            raise RuntimeError(detail) from undo_err
         raise
 
     # Emit a reweave prompt as a separate event (not an action yet).

@@ -311,6 +311,49 @@ def test_failed_rollback_reports_both_errors_and_keeps_source(tmp_vault):
     assert services.reconcile_atlas().unledgered == [_rel(tmp_vault, dest)]
 
 
+def test_failed_rollback_after_ctrl_c_stays_an_interrupt(tmp_vault):
+    """A Ctrl-C before the promotion append, plus a failed rollback, must
+    still surface as KeyboardInterrupt (not RuntimeError) so no
+    `except Exception` caller can swallow it; the rollback failure is a note."""
+    source = _bookmark(tmp_vault)
+    dest = _dest(tmp_vault, source)
+    interrupt = KeyboardInterrupt("injected: Ctrl-C before promotion append")
+
+    with pytest.MonkeyPatch.context() as mp:
+        _fail_append_open(mp, "atlas.promoted", interrupt)
+        _fail_unlink(mp, dest)
+        # Catch every interrupt, then assert the type: a wrong interrupt type
+        # escaping pytest.raises would abort the whole session.
+        with pytest.raises(KeyboardInterrupt) as excinfo:
+            services.promote_file(source, "reference")
+
+    assert excinfo.value is interrupt
+    assert not isinstance(excinfo.value, ledger.LedgerWriteInterrupted)
+    assert any("unledgered" in n for n in getattr(excinfo.value, "__notes__", []))
+    assert dest.is_file()
+    assert source.is_file()
+    assert _ledger_bytes() == b""
+
+
+def test_tend_stops_on_ctrl_c_even_when_rollback_fails(tmp_vault):
+    """Through the heartbeat: the interrupt ends the run. Before the fix tend
+    printed "promote failed", carried on, and ledgered tend.completed."""
+    from sabnyx.commands import tend as tend_mod
+
+    source = _bookmark(tmp_vault)
+    dest = _dest(tmp_vault, source)
+    with pytest.MonkeyPatch.context() as mp:
+        _fail_append_open(mp, "atlas.promoted", KeyboardInterrupt("injected: Ctrl-C"))
+        _fail_unlink(mp, dest)
+        # click turns the KeyboardInterrupt into Abort (exit 1, "Aborted!").
+        result = CliRunner().invoke(tend_mod.tend_cmd, ["--no-reweave", "--no-health"])
+
+    assert result.exit_code != 0, result.output
+    assert "promote failed" not in result.output
+    assert "tend.completed" not in _kinds()
+    assert source.is_file()
+
+
 def test_promotion_append_possibly_written_keeps_page_and_queues_it(tmp_vault):
     """LedgerWriteError on the first append: the line may be on disk (here it
     is), so the page must stay. Replay then sees the promotion and queues it."""
