@@ -69,34 +69,54 @@ def _ledger_bytes() -> bytes:
     return ledger.EVENTS_JSONL.read_bytes() if ledger.EVENTS_JSONL.exists() else b""
 
 
-def _fail_append_open(mp: pytest.MonkeyPatch, nth: int, exc: BaseException) -> None:
-    """Raise `exc` from the nth append-mode open of the ledger file: a
-    pre-write failure, so no byte of that event reaches the file."""
-    calls = 0
+def _track_kind(mp: pytest.MonkeyPatch) -> list[str]:
+    """Record the kind of the event append_event is about to write.
+
+    append_event builds its LedgerEvent immediately before opening the file,
+    so at open/fsync time this names the event being appended. Only the model
+    is wrapped; append_event and its I/O run for real.
+    """
+    current: list[str] = []
+
+    class Recording(ledger.LedgerEvent):
+        def __init__(self, **data: Any) -> None:
+            super().__init__(**data)
+            current[:] = [data["kind"]]
+
+    mp.setattr(ledger, "LedgerEvent", Recording)
+    return current
+
+
+def _fail_append_open(mp: pytest.MonkeyPatch, kind: str, exc: BaseException) -> None:
+    """Raise `exc` from the ledger's append-mode open for the first `kind`
+    event: a pre-write failure, so no byte of that event reaches the file.
+    Keyed by kind, so unrelated events appended earlier don't shift it."""
+    current = _track_kind(mp)
+    fired = False
 
     def guarded(self: Path, *a: Any, **k: Any) -> Any:
-        nonlocal calls
-        if self == ledger.EVENTS_JSONL and (a[:1] == ("ab",) or k.get("mode") == "ab"):
-            calls += 1
-            if calls == nth:
-                raise exc
+        nonlocal fired
+        is_append = a[:1] == ("ab",) or k.get("mode") == "ab"
+        if self == ledger.EVENTS_JSONL and is_append and current == [kind] and not fired:
+            fired = True
+            raise exc
         return _REAL_OPEN(self, *a, **k)
 
     mp.setattr(Path, "open", guarded)
 
 
-def _fail_file_fsync(mp: pytest.MonkeyPatch, nth: int) -> None:
-    """Raise OSError from the nth fsync of the ledger file itself: the full
-    line is already on disk, so append_event raises LedgerWriteError."""
+def _fail_file_fsync(mp: pytest.MonkeyPatch, kind: str) -> None:
+    """Raise OSError from the ledger file's fsync for the first `kind` event:
+    the full line is already on disk, so append_event raises LedgerWriteError."""
+    current = _track_kind(mp)
     real = ledger._fsync
-    calls = 0
+    fired = False
 
     def guarded(fd: int) -> None:
-        nonlocal calls
-        if not stat.S_ISDIR(os.fstat(fd).st_mode):
-            calls += 1
-            if calls == nth:
-                raise OSError(5, "injected: fsync EIO after the line was written")
+        nonlocal fired
+        if not stat.S_ISDIR(os.fstat(fd).st_mode) and current == [kind] and not fired:
+            fired = True
+            raise OSError(5, "injected: fsync EIO after the line was written")
         real(fd)
 
     mp.setattr(ledger, "_fsync", guarded)
@@ -112,11 +132,13 @@ def _empty_changeset(**kwargs: Any) -> Any:
 
 
 def _missing_intent_state(tmp_vault) -> tuple[Path, Path]:
-    """Promote with the second append's open failing: atlas page and
+    """Promote with the intent append's open failing: atlas page and
     atlas.promoted committed, reweave.proposed never written."""
     source = _bookmark(tmp_vault)
     with pytest.MonkeyPatch.context() as mp:
-        _fail_append_open(mp, 2, PermissionError(13, "injected: open before intent append"))
+        _fail_append_open(
+            mp, "reweave.proposed", PermissionError(13, "injected: open before intent append")
+        )
         with pytest.raises(PermissionError, match="before intent append"):
             services.promote_file(source, "reference")
     return source, _dest(tmp_vault, source)
@@ -205,7 +227,9 @@ def test_tend_recovers_missing_intent_on_a_later_run(tmp_vault, monkeypatch):
     source = _bookmark(tmp_vault)
     dest = _dest(tmp_vault, source)
     with pytest.MonkeyPatch.context() as mp:
-        _fail_append_open(mp, 2, PermissionError(13, "injected: open before intent append"))
+        _fail_append_open(
+            mp, "reweave.proposed", PermissionError(13, "injected: open before intent append")
+        )
         run1 = CliRunner().invoke(
             tend_mod.tend_cmd, ["--no-reweave", "--no-health"], catch_exceptions=False
         )
@@ -240,7 +264,7 @@ def test_failure_before_promotion_append_rolls_back_and_retry_succeeds(tmp_vault
     source = _bookmark(tmp_vault)
     original = source.read_bytes()
     with pytest.MonkeyPatch.context() as mp:
-        _fail_append_open(mp, 1, exc)
+        _fail_append_open(mp, "atlas.promoted", exc)
         with pytest.raises(type(exc)):
             services.promote_file(source, "reference")
 
@@ -255,6 +279,15 @@ def test_failure_before_promotion_append_rolls_back_and_retry_succeeds(tmp_vault
     assert _kinds() == ["atlas.promoted", "reweave.proposed"]
 
 
+def _fail_unlink(mp: pytest.MonkeyPatch, target: Path) -> None:
+    def guarded(self: Path, *a: Any, **k: Any) -> None:
+        if self == target:
+            raise PermissionError(13, "injected: unlink new page")
+        _REAL_UNLINK(self, *a, **k)
+
+    mp.setattr(Path, "unlink", guarded)
+
+
 def test_failed_rollback_reports_both_errors_and_keeps_source(tmp_vault):
     """If removing the new page also fails, the error names both failures and
     the leftover state, which reconcile reports as an unledgered page."""
@@ -262,14 +295,11 @@ def test_failed_rollback_reports_both_errors_and_keeps_source(tmp_vault):
     original = source.read_bytes()
     dest = _dest(tmp_vault, source)
 
-    def guarded(self: Path, *a: Any, **k: Any) -> None:
-        if self == dest:
-            raise PermissionError(13, "injected: unlink new page")
-        _REAL_UNLINK(self, *a, **k)
-
     with pytest.MonkeyPatch.context() as mp:
-        _fail_append_open(mp, 1, PermissionError(13, "injected: open before promotion append"))
-        mp.setattr(Path, "unlink", guarded)
+        _fail_append_open(
+            mp, "atlas.promoted", PermissionError(13, "injected: open before promotion append")
+        )
+        _fail_unlink(mp, dest)
         with pytest.raises(RuntimeError, match="unledgered") as excinfo:
             services.promote_file(source, "reference")
 
@@ -286,7 +316,7 @@ def test_promotion_append_possibly_written_keeps_page_and_queues_it(tmp_vault):
     is), so the page must stay. Replay then sees the promotion and queues it."""
     source = _bookmark(tmp_vault)
     with pytest.MonkeyPatch.context() as mp:
-        _fail_file_fsync(mp, 1)
+        _fail_file_fsync(mp, "atlas.promoted")
         with pytest.raises(ledger.LedgerWriteError):
             services.promote_file(source, "reference")
 
@@ -302,7 +332,7 @@ def test_intent_append_possibly_written_keeps_everything(tmp_vault):
     and the source both stay, and the page is queued exactly once."""
     source = _bookmark(tmp_vault)
     with pytest.MonkeyPatch.context() as mp:
-        _fail_file_fsync(mp, 2)
+        _fail_file_fsync(mp, "reweave.proposed")
         with pytest.raises(ledger.LedgerWriteError):
             services.promote_file(source, "reference")
 
