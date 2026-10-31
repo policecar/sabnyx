@@ -86,9 +86,10 @@ replacing `append_event`.
   `KeyboardInterrupt`, restore.
 - Today only `writers.transition_observation` implements the restore. The
   older callers (`write_observation`, `write_intake`, promote and the
-  others) never restore. (Promote has since adopted it; see Amendment.) That is safe under this rule, since they never
-  undo a change whose line may be on disk. But a pre-write failure leaves
-  them with a changed file and no event, and a retry is not offered.
+  others) never restore. (Promote has since adopted it; see Amendment.)
+  That is safe under this rule, since they never undo a change whose
+  line may be on disk. But a pre-write failure leaves them with a
+  changed file and no event, and a retry is not offered.
   Adopting the restore is a per-caller change, not made here.
   `write_observation` is the first candidate: it is the other path where
   an operator will actually meet a changed file with no event.
