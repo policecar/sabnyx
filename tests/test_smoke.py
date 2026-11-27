@@ -194,3 +194,21 @@ def test_impossible_date_is_a_frontmatter_error(tmp_vault):
         fm.load_text(text, "intake", path=p)
     with pytest.raises(fm.PatchError, match="malformed YAML"):
         fm.patch_frontmatter(text, {"status": "resolved"})
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "flag: !!bool maybe",  # KeyError
+        "n: !!int ''",  # IndexError
+        "observed: !!timestamp soon",  # AttributeError
+    ],
+)
+def test_explicitly_tagged_bad_scalar_is_a_frontmatter_error(tmp_vault, line):
+    """With an explicit tag PyYAML skips its own pattern check, and the
+    scalar constructors fail with whatever the bad value trips over. Same
+    consequence as the impossible date: a raw exception out of every reader."""
+    p = tmp_vault["INTAKE"] / "bad-tag.md"
+    p.write_text(f"---\ntype: note\n{line}\n---\nbody\n", encoding="utf-8")
+    with pytest.raises(fm.FrontmatterError, match="malformed YAML"):
+        fm.load(p)
