@@ -54,7 +54,16 @@ class _SafeYAML(YAMLHandler):
     """
 
     def load(self, fm: str, **kwargs: object) -> Any:
-        return yaml.safe_load(fm)
+        try:
+            return yaml.safe_load(fm)
+        except (ValueError, LookupError, AttributeError) as e:
+            # PyYAML's scalar constructors raise a plain ValueError for a
+            # well-formed but impossible value (`observed: 2026-04-31`), and
+            # KeyError, IndexError or AttributeError for a bad value under an
+            # explicit tag (`flag: !!bool maybe`). Every caller of this seam
+            # catches YAMLError, so re-raise as one. The type is named because
+            # a KeyError's text is only the offending value.
+            raise yaml.YAMLError(f"{type(e).__name__}: {e}") from e
 
     def split(self, text: str) -> tuple[str, str]:
         boundary = self.FM_BOUNDARY
