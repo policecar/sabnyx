@@ -694,8 +694,9 @@ def ingest_text(
     ``(summary, written_paths)``; the summary ends with a line naming any
     proposed file that was not filed because an intake file already holds the
     same text. An identical retained source is reused: if an earlier ingest
-    of it was applied, nothing is extracted again and ``ingest.skipped`` is
-    ledgered; otherwise it is extracted (a retry). If extraction fails, the
+    of it was applied and a note it filed is still in intake, nothing is
+    extracted again and ``ingest.skipped`` is ledgered; otherwise it is
+    extracted (a retry, or a deliberate repeat). If extraction fails, the
     artifact remains intact and an ``ingest.failed`` event records the failed
     derivation.
     """
@@ -714,28 +715,30 @@ def ingest_text(
     )
     src_rel = str(src_path.relative_to(paths.DATA_ROOT))
     # The capture above reuses an identical source so that a failed or declined
-    # extraction can be retried (ADR 0005). One that already succeeded is not
-    # paid for again; a deliberate re-extraction goes through `sabnyx ingest`.
+    # extraction can be retried (ADR 0005). One that succeeded is not paid for
+    # again while a note it filed is still in intake: that is a double
+    # delivery. Once the note was promoted, rejected or deleted, the same
+    # message is a new request and is extracted again.
     # Found by the source's file name, so only an apply after the name's
     # latest capture counts: `capture` ledgers `source.captured` only when it
     # publishes new bytes, e.g. under a name a removed source left free.
-    earlier: list[list[str]] = []
+    filed: list[str] = []
     for e in ledger.replay():
         if e.subject != src_rel:
             continue
         if e.kind == "source.captured":
-            earlier = []
+            filed = []
         elif e.kind == "ingest.applied":
-            earlier.append(e.payload.get("written", []))
-    if earlier:
+            filed += e.payload.get("written") or []
+    waiting = [rel for rel in dict.fromkeys(filed) if (paths.DATA_ROOT / rel).is_file()]
+    if waiting:
         ledger.append_event(
             kind="ingest.skipped",
             actor=actor,
             subject=src_rel,
             payload={"reason": "already_applied"},
         )
-        filed = ", ".join(earlier[-1]) or "nothing"
-        return f"already ingested as {src_rel} (filed then: {filed}).", []
+        return f"already ingested as {src_rel} (still in intake: {', '.join(waiting)}).", []
     try:
         proposal = build_ingest_proposal(
             text=text,

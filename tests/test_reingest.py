@@ -4,7 +4,8 @@ Sources are kept and reused so that a failed or declined extraction can be
 retried (ADR 0005). The daemon channels used that reuse for every repeat: a
 message delivered twice paid for a second extraction, and any change in the
 model's wording filed a near-duplicate note. `ingest_text` now stops when the
-ledger shows an earlier `ingest.applied` for the identical source.
+ledger shows an earlier `ingest.applied` for the identical source and a note
+it filed is still in intake.
 Real files under tmp_vault; only the model call is replaced.
 """
 
@@ -79,6 +80,29 @@ def test_changed_content_is_ingested_again(tmp_vault, monkeypatch):
     assert len(calls) == 2
     assert written == ["vault/intake/budget-notes-2.md"]
     assert "ingest.skipped" not in _kinds()
+
+
+def test_a_repeat_is_filed_again_once_the_earlier_note_has_left_intake(tmp_vault, monkeypatch):
+    """A repeat is stopped only while what the earlier ingest filed is still
+    waiting in intake. After that note was promoted, rejected or deleted, the
+    same message sent again is a new request (a weekly reminder, a note the
+    operator wants back), not a double delivery."""
+    calls = _model(monkeypatch)
+    _ingest()
+    (tmp_vault["INTAKE"] / "budget-notes-1.md").unlink()
+
+    summary, written = _ingest()
+
+    assert len(calls) == 2
+    assert "already ingested" not in summary
+    assert written == ["vault/intake/budget-notes-2.md"]
+    assert "ingest.skipped" not in _kinds()
+
+    summary, written = _ingest()  # and that note now stops the next repeat
+
+    assert len(calls) == 2
+    assert written == []
+    assert "still in intake: vault/intake/budget-notes-2.md" in summary
 
 
 def test_new_text_under_a_freed_source_name_is_extracted(tmp_vault, monkeypatch):
