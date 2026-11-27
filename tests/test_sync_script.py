@@ -188,10 +188,11 @@ def _setup(
     }
 
 
-def _run_script(env: dict) -> subprocess.CompletedProcess:
+def _run_script(env: dict, cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", str(SCRIPT)],
         env=env,
+        cwd=cwd,
         capture_output=True,
         text=True,
     )
@@ -664,6 +665,48 @@ def test_tilde_in_data_dir_is_expanded_like_paths_py(tmp_path):
     head = _git("rev-parse", "HEAD", cwd=vault).stdout.strip()
     hub_head = _git("rev-parse", "main", cwd=hub).stdout.strip()
     assert hub_head == head, f"hub did not receive the push; hub log:\n{_hub_log(hub)}"
+
+
+def test_default_data_dir_is_passed_on_to_tend(tmp_path):
+    """With SABNYX_DATA_DIR unset the script falls back to ~/sabnyx-vault, and
+    tend must be told the same directory. The default was assigned but not
+    exported, so tend resolved its own root (.env, else the code checkout):
+    the script synced one tree while tend wrote, uncommitted, into another.
+    The fake `uv` fails on an unset SABNYX_DATA_DIR, as tend's own fallback
+    would silently not."""
+    ctx = _setup(tmp_path)
+    vault, flag_file, tend_calls = ctx["vault"], ctx["flag_file"], ctx["tend_calls"]
+    flag_file.write_text("touch", encoding="utf-8")
+    (tmp_path / "sabnyx-vault").symlink_to(vault, target_is_directory=True)
+    env = {**ctx["env"], "HOME": str(tmp_path)}
+    del env["SABNYX_DATA_DIR"]
+
+    result = _run_script(env)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert tend_calls.read_text(encoding="utf-8").count("called") == 1
+    assert "updated" in (vault / "vault" / "atlas" / "x.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("var", ["SABNYX_DATA_DIR", "SABNYX_CODE_DIR"])
+def test_relative_directory_is_refused(tmp_path, var):
+    """A relative directory names different places for the script (its start
+    directory, and after its own `cd`s the vault) and for tend (the code
+    checkout), so the script refuses it before touching anything. Started
+    where the relative path does exist, so only the new check can stop it."""
+    ctx = _setup(tmp_path)
+    vault, flag_file, tend_calls = ctx["vault"], ctx["flag_file"], ctx["tend_calls"]
+    flag_file.write_text("touch", encoding="utf-8")
+    head_before = _git("rev-parse", "HEAD", cwd=vault).stdout.strip()
+    absolute = Path(ctx["env"][var])
+    env = {**ctx["env"], var: absolute.name}
+
+    result = _run_script(env, cwd=absolute.parent)
+
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert f"{var} must be an absolute path" in result.stderr
+    assert not tend_calls.exists() or "called" not in tend_calls.read_text(encoding="utf-8")
+    assert _git("rev-parse", "HEAD", cwd=vault).stdout.strip() == head_before
 
 
 def test_syncs_the_checked_out_branch_not_a_hardcoded_main(tmp_path):
