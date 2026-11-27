@@ -178,3 +178,19 @@ def test_load_wraps_malformed_yaml_as_frontmatter_error(tmp_vault):
     p.write_text("---\ntype: note\n\tdescription: x\n---\nbody\n", encoding="utf-8")
     with pytest.raises(fm.FrontmatterError, match="malformed YAML"):
         fm.load(p)
+
+
+def test_impossible_date_is_a_frontmatter_error(tmp_vault):
+    """PyYAML's timestamp constructor raises a plain ValueError (not a
+    YAMLError) for a well-formed but impossible date. All three parse sites
+    must turn it into the recoverable error; a raw ValueError escaped fm and
+    aborted every heartbeat until the file was fixed by hand."""
+    p = tmp_vault["INTAKE"] / "bad-date.md"
+    text = "---\ntype: note\ncreated: 2026-04-31\n---\nbody\n"
+    p.write_text(text, encoding="utf-8")
+    with pytest.raises(fm.FrontmatterError, match="malformed YAML"):
+        fm.load(p)
+    with pytest.raises(fm.FrontmatterError, match="malformed YAML"):
+        fm.load_text(text, "intake", path=p)
+    with pytest.raises(fm.PatchError, match="malformed YAML"):
+        fm.patch_frontmatter(text, {"status": "resolved"})

@@ -54,7 +54,13 @@ class _SafeYAML(YAMLHandler):
     """
 
     def load(self, fm: str, **kwargs: object) -> Any:
-        return yaml.safe_load(fm)
+        try:
+            return yaml.safe_load(fm)
+        except ValueError as e:
+            # PyYAML's scalar constructors raise a plain ValueError for a
+            # well-formed but impossible value (`observed: 2026-04-31`).
+            # Every caller of this seam catches YAMLError, so re-raise as one.
+            raise yaml.YAMLError(str(e)) from e
 
     def split(self, text: str) -> tuple[str, str]:
         boundary = self.FM_BOUNDARY

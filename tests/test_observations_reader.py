@@ -177,6 +177,21 @@ def test_unparseable_yaml_is_malformed_not_raised(tmp_vault):
     assert "malformed YAML" in malformed[0][1]
 
 
+def test_impossible_date_is_malformed_not_raised(tmp_vault):
+    """`observed: 2026-04-31` once raised a raw ValueError out of load_all,
+    which killed tend's gap closure, `observations list` and /status."""
+    from sabnyx import observations as obs
+
+    paths.OBSERVATIONS.mkdir(parents=True, exist_ok=True)
+    (paths.OBSERVATIONS / "2026-04-30-gap-bad-date.md").write_text(
+        "---\ntype: observation\ncategory: gap\nobserved: 2026-04-31\n---\n", encoding="utf-8"
+    )
+    valid, malformed = obs.load_all()
+    assert valid == []
+    assert len(malformed) == 1
+    assert "malformed YAML" in malformed[0][1]
+
+
 def test_observations_module_never_imports_writers():
     # IDD §3: imports point one way; the reader never writes.
     import ast
