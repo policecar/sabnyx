@@ -28,7 +28,7 @@ import time
 import click
 from rich.console import Console
 
-from .. import ledger, services, spend
+from .. import ledger, services, sources, spend
 from ..adapters import telegram
 from ..config import ingress_max_calls, ingress_window_minutes
 from ..paths import ensure_tree
@@ -144,6 +144,7 @@ def handle(env: NormalizedEnvelope) -> str:
     # ingest_url / ingest_text
     if action == "ingest_url":
         try:
+            arg = sources.normalize_url(arg)
             body = telegram_fetch(arg)
         except Exception as e:  # noqa: BLE001 — generic reply; detail to the ledger only
             # Exception text can carry paths/provider detail — never echo it to
@@ -167,8 +168,6 @@ def handle(env: NormalizedEnvelope) -> str:
 
 def telegram_fetch(url: str) -> str:
     """Indirection point so tests can stub URL fetching."""
-    from .. import sources
-
     return sources.fetch_url(url)
 
 

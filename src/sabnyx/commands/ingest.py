@@ -67,6 +67,7 @@ def ingest_cmd(
     actor = services.ACTOR_INGEST_WEB if url else services.ACTOR_INGEST
 
     if url:
+        url = sources.normalize_url(url)
         text = sources.fetch_url(url)
         src_title = title or url
         src_kind = "web"

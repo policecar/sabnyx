@@ -118,6 +118,35 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+# Query parameters that identify a click, not a page.
+_TRACKING_PARAMS = frozenset({"fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid", "igshid"})
+
+
+def normalize_url(url: str) -> str:
+    """One spelling per page, so the same page is captured as the same source.
+
+    Lowercases scheme and host, drops a default port, the fragment and
+    click-tracking parameters (`utm_*` and `_TRACKING_PARAMS`), and gives an
+    empty path its `/`. Path, trailing slash and every other parameter are
+    kept as written, in order and un-re-encoded: servers may tell them apart.
+    Raises ValueError for a URL urlsplit cannot parse.
+    """
+    parts = urllib.parse.urlsplit(url.strip())
+    scheme = parts.scheme.lower()
+    userinfo, at, hostport = parts.netloc.rpartition("@")
+    hostport = hostport.lower().removesuffix({"http": ":80", "https": ":443"}.get(scheme, "\0"))
+    query = "&".join(
+        pair
+        for pair in parts.query.split("&")
+        if pair
+        and not (key := pair.partition("=")[0].lower()).startswith("utm_")
+        and key not in _TRACKING_PARAMS
+    )
+    return urllib.parse.urlunsplit(
+        (scheme, f"{userinfo}{at}{hostport}", parts.path or "/", query, "")
+    )
+
+
 def fetch_url(url: str, timeout: int = 30) -> str:
     """Fetch a URL's raw body as text. No HTML parsing — the model reads
     markup fine, and the raw artifact is the point.
