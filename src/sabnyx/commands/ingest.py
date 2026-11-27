@@ -152,7 +152,7 @@ def ingest_cmd(
         return
 
     # -- 6. apply through the validated writers --------------------------------------
-    written = services.apply_ingest(
+    written, _duplicates = services.apply_ingest(
         proposal,
         title=src_title,
         source_kind=src_kind,

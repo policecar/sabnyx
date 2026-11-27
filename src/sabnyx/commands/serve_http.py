@@ -84,7 +84,7 @@ def _ask(text: str) -> dict:
     if result.answer.capture is not None:
         try:
             with vault_lock():
-                rel = services.capture_answer(
+                captured = services.capture_answer(
                     result.answer.capture, question=text, console=_quiet(), actor=ACTOR
                 )
         except VaultLocked:
@@ -92,8 +92,10 @@ def _ask(text: str) -> dict:
             # (non-critical) auto-capture didn't happen this time.
             out["capture_error"] = "vault busy — not captured"
         else:
-            if rel:
-                out["captured"] = rel
+            if captured.kind == "written":
+                out["captured"] = captured.rel
+            elif captured.kind == "exists":
+                out["already_captured"] = captured.rel
     return out
 
 

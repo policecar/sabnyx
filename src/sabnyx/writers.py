@@ -51,6 +51,23 @@ def _write_checked(path, meta: dict, body: str, *, console: Console) -> str | No
     return str(path.relative_to(paths.DATA_ROOT))
 
 
+def _intake_text(path: Path) -> str:
+    """An intake file's heading and body, without frontmatter or the trailing
+    provenance comment: what write_intake compares to tell a repeat from a
+    new capture. The trailer names the source (or the day), so it differs
+    between two captures of the same text. "" for a file that cannot be read
+    as text + frontmatter, which therefore never counts as a repeat.
+    """
+    try:
+        _meta, body = fm.split_text(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    lines = body.strip().splitlines()
+    if lines and lines[-1].startswith("<!-- source-id:"):
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
 def write_intake(
     pi: ProposedIntake,
     *,
@@ -59,15 +76,46 @@ def write_intake(
     source_url: str | None = None,
     trailer: str | None = None,
     console: Console,
-) -> str | None:
+) -> WriteOutcome:
     """Write one intake file from a model proposal.
 
     `trailer` is an optional provenance HTML comment appended to the body
-    (reserved syntax, docs/reserved-syntax.md). Returns the path relative
-    to ROOT, or None if skipped/rolled back.
+    (reserved syntax, docs/reserved-syntax.md).
+
+    A taken filename never loses an extraction silently. The name is the
+    first free of `slug`, `slug-2` .. `slug-99`; but if a file already holding
+    one of those names has the same text (see `_intake_text`), nothing is
+    written, `intake.skipped` is appended and the outcome is `exists` with
+    that file's path. Otherwise `written`, or `invalid` (rolled back).
     """
     slug = slugify(pi.title)
-    path = paths.INTAKE / f"{slug}.md"
+    text = f"# {pi.title}\n\n{pi.body.strip()}"
+    names = [slug, *(f"{slug}-{n}" for n in range(2, _MAX_SUFFIX + 1))]
+    path = None
+    # Compared as _intake_text reads a file back: read_text and splitlines
+    # rewrite CRLF, form feeds and Unicode line separators.
+    same = "\n".join(text.splitlines()).strip()
+    # Every taken name is compared, not only those before the first free one:
+    # promotion moves intake files away and leaves gaps in the suffixes.
+    for candidate in (paths.INTAKE / f"{name}.md" for name in names):
+        if not candidate.exists():
+            path = path or candidate
+        elif _intake_text(candidate) == same:
+            rel = str(candidate.relative_to(paths.DATA_ROOT))
+            ledger.append_event(
+                kind="intake.skipped",
+                actor=actor,
+                subject=rel,
+                payload={"reason": "duplicate", "slug": slug},
+            )
+            console.print(f"  [yellow]skip (same text already filed)[/yellow] {rel}")
+            return WriteOutcome("exists", candidate)
+    if path is None:
+        return _invalid(
+            f"no free filename: {slug}.md and -2 .. -{_MAX_SUFFIX} are all taken",
+            dry_run=False,
+            console=console,
+        )
 
     if pi.type in ("bookmark", "paper") and not source_url:
         # SPEC §3: bookmark/paper require a source_url. A model can propose
@@ -89,10 +137,10 @@ def write_intake(
     }
     if source_url:
         meta["source_url"] = source_url
-    body = f"# {pi.title}\n\n{pi.body.strip()}\n" + (f"\n{trailer}\n" if trailer else "")
+    body = f"{text}\n" + (f"\n{trailer}\n" if trailer else "")
     rel = _write_checked(path, meta, body, console=console)
     if rel is None:
-        return None
+        return WriteOutcome("invalid", None, error="failed validation after write; rolled back")
 
     ledger.append_event(
         kind="intake.created",
@@ -101,7 +149,7 @@ def write_intake(
         payload={"type": pi.type, "description": pi.description, "slug": slug},
     )
     console.print(f"  [green]wrote[/green] {rel}")
-    return rel
+    return WriteOutcome("written", path)
 
 
 def append_knowledge_log(operation: str, title: str, fields: dict[str, str | None]) -> None:

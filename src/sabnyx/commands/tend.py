@@ -68,6 +68,28 @@ def _intake_files() -> list[Path]:
     return sorted(p for p in INTAKE.glob("*.md") if p.is_file())
 
 
+def _gate5_slug(p: Path, atlas_slugs: set[str]) -> str:
+    """The slug gate 5 (no atlas page under this slug yet) checks for `p`.
+
+    write_intake files a capture whose title is taken under `slug-N`, so the
+    stem alone would let a second capture of a title past the gate once the
+    first is in atlas. For a file named `<title slug>-N`, where the title is
+    the body's heading as write_intake writes it, the title's slug is checked
+    when atlas holds it. Any other file is checked by its stem, as before.
+    """
+    stem = p.stem.lower()
+    try:
+        _meta, body = fm.split_text(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return stem
+    heading = body.lstrip().split("\n", 1)[0]
+    if not heading.startswith("# "):
+        return stem
+    title = util.slugify(heading[2:])
+    suffixed = stem.startswith(f"{title}-") and stem[len(title) + 1 :].isdigit()
+    return title if suffixed and title in atlas_slugs else stem
+
+
 def _ledger_memory() -> tuple[dict[str, str | None], dict[str, datetime]]:
     """One replay() pass collecting both triage-decision memory and intake
     creation timestamps, keyed by vault-relative subject path.
@@ -427,7 +449,7 @@ def tend_cmd(
             kind,
             trusted=trusted,
             atlas_slugs=atlas_slugs,
-            source_slug=p.stem.lower(),
+            source_slug=_gate5_slug(p, atlas_slugs),
         )
 
         if decision.promotable:
@@ -562,7 +584,7 @@ def tend_cmd(
                         # contains duplicate-slug deferrals, and the triage
                         # prompt never sees the atlas index — never let the
                         # LLM overwrite an existing atlas file.
-                        if path.stem.lower() in atlas_slugs:
+                        if _gate5_slug(path, atlas_slugs) in atlas_slugs:
                             console.print(
                                 f"  [yellow]skip promote[/yellow] {item.slug}: slug already "
                                 f"exists in atlas (kept in intake)"
