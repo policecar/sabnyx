@@ -396,7 +396,9 @@ variable is unset it uses `~/sabnyx-vault`. It exports the directory it
 settled on, so the `tend` it runs works on that same directory —
 relocating the vault via this variable moves the heartbeat script's target
 along with everything else. Give it as an absolute path (or `~/…`): the
-script and `tend` resolve a relative path against different directories. For a manual run with a relocated vault, load
+script refuses a relative `SABNYX_DATA_DIR` or `SABNYX_CODE_DIR`, because the
+script and `tend` would resolve it against different directories. For a manual
+run with a relocated vault, load
 `.env` first (`set -a; . ~/sabnyx/.env; set +a`).
 
 ---

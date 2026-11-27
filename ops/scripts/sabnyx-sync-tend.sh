@@ -20,10 +20,18 @@ SABNYX_DATA_DIR="${SABNYX_DATA_DIR/#\~/$HOME}"
 # above is only a shell variable, and `sabnyx tend` below would resolve its own
 # root (.env, else the code checkout) — a different tree from the one this
 # script pulls, locks and commits. A real env var beats .env in paths.py, so
-# tend then works on the directory this script syncs. That holds for an
-# absolute path: a relative one is resolved against this script's start
-# directory here and against the code checkout in tend, so do not use one.
+# tend then works on the directory this script syncs.
 export SABNYX_DATA_DIR
+
+# Both must be absolute. A relative path names a different place for each
+# reader: this script's start directory, the vault after the `cd` below, and
+# (for the data dir) the code checkout inside tend.
+for var in SABNYX_CODE_DIR SABNYX_DATA_DIR; do
+  case "${!var}" in
+    /*) ;;
+    *) echo "sabnyx-sync-tend: $var must be an absolute path (or ~/...), got: ${!var}" >&2; exit 1 ;;
+  esac
+done
 
 [ -d "$SABNYX_CODE_DIR" ] || { echo "sabnyx code dir not found: $SABNYX_CODE_DIR" >&2; exit 1; }
 [ -d "$SABNYX_DATA_DIR" ] || { echo "sabnyx data dir not found: $SABNYX_DATA_DIR" >&2; exit 1; }

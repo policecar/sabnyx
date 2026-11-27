@@ -188,10 +188,11 @@ def _setup(
     }
 
 
-def _run_script(env: dict) -> subprocess.CompletedProcess:
+def _run_script(env: dict, cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", str(SCRIPT)],
         env=env,
+        cwd=cwd,
         capture_output=True,
         text=True,
     )
@@ -685,6 +686,27 @@ def test_default_data_dir_is_passed_on_to_tend(tmp_path):
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert tend_calls.read_text(encoding="utf-8").count("called") == 1
     assert "updated" in (vault / "vault" / "atlas" / "x.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("var", ["SABNYX_DATA_DIR", "SABNYX_CODE_DIR"])
+def test_relative_directory_is_refused(tmp_path, var):
+    """A relative directory names different places for the script (its start
+    directory, and after its own `cd`s the vault) and for tend (the code
+    checkout), so the script refuses it before touching anything. Started
+    where the relative path does exist, so only the new check can stop it."""
+    ctx = _setup(tmp_path)
+    vault, flag_file, tend_calls = ctx["vault"], ctx["flag_file"], ctx["tend_calls"]
+    flag_file.write_text("touch", encoding="utf-8")
+    head_before = _git("rev-parse", "HEAD", cwd=vault).stdout.strip()
+    absolute = Path(ctx["env"][var])
+    env = {**ctx["env"], var: absolute.name}
+
+    result = _run_script(env, cwd=absolute.parent)
+
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert f"{var} must be an absolute path" in result.stderr
+    assert not tend_calls.exists() or "called" not in tend_calls.read_text(encoding="utf-8")
+    assert _git("rev-parse", "HEAD", cwd=vault).stdout.strip() == head_before
 
 
 def test_syncs_the_checked_out_branch_not_a_hardcoded_main(tmp_path):
