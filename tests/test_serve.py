@@ -461,3 +461,53 @@ def test_serve_once_drains(tmp_vault, monkeypatch):
     result = CliRunner().invoke(serve.serve_cmd, ["--once"])
     assert result.exit_code == 0, result.output
     assert len(sent) == 1
+
+
+def _serve_once_with_polls(monkeypatch, polls):
+    """Run `serve --once` against a scripted getUpdates; returns (result, calls)."""
+    from sabnyx.commands import serve
+
+    monkeypatch.setenv("SABNYX_TELEGRAM_ALLOW", "555")
+    _fake_llm(monkeypatch)
+    calls: list[tuple] = []
+
+    def fake_get_updates(offset, timeout=30):
+        calls.append((offset, timeout))
+        step = polls[len(calls) - 1]
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    monkeypatch.setattr(telegram, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram, "send_message", lambda chat, text: None)
+    return CliRunner().invoke(serve.serve_cmd, ["--once"]), calls
+
+
+def test_serve_once_acknowledges_its_batch(tmp_vault, monkeypatch):
+    """Telegram confirms an update only when getUpdates is called again with a
+    higher offset. Without that second call the next poller (the daemon after
+    a `--once` smoke test, or the next cron run) was handed the same messages
+    and answered, and extracted, them again."""
+    result, calls = _serve_once_with_polls(
+        monkeypatch, [[_update(10, "/status"), _update(13, "/status")], []]
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == [(None, 30), (14, 0)]  # ack: max update_id + 1, no long-poll
+
+
+def test_serve_once_with_no_updates_does_not_ack(tmp_vault, monkeypatch):
+    result, calls = _serve_once_with_polls(monkeypatch, [[]])
+    assert result.exit_code == 0, result.output
+    assert calls == [(None, 30)]
+
+
+def test_serve_once_reports_a_failed_acknowledgement(tmp_vault, monkeypatch):
+    """The batch was handled but not confirmed: say so and exit non-zero, so
+    the operator knows the next poll will see these messages again."""
+    result, calls = _serve_once_with_polls(
+        monkeypatch,
+        [[_update(10, "/status")], RuntimeError("telegram getUpdates failed: HTTP 502")],
+    )
+    assert result.exit_code == 1
+    assert "not acknowledged" in result.output
+    assert calls == [(None, 30), (11, 0)]

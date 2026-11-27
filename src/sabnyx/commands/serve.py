@@ -27,6 +27,7 @@ import time
 
 import click
 from rich.console import Console
+from rich.markup import escape
 
 from .. import ledger, services, spend
 from ..adapters import telegram
@@ -249,6 +250,26 @@ def _dispatch_batch(updates: list[dict], trusted: set[str]) -> int:
     return next_offset
 
 
+def _acknowledge(offset: int | None, console: Console) -> None:
+    """Confirm a handled batch to Telegram before a `--once` run exits.
+
+    Telegram treats an update as confirmed only when getUpdates is next
+    called with a higher offset. The daemon does that on its next poll; a
+    `--once` run has no next poll, so without this call the following poller
+    is handed the same updates and replies (and runs the LLM) a second time.
+    Updates this call itself returns are not confirmed by it, so dropping
+    them here loses nothing: the next poller receives them.
+    """
+    try:
+        telegram.get_updates(offset, timeout=0)
+    except Exception as e:  # noqa: BLE001 — same failure surface as the poll above
+        console.print(
+            f"[red]batch handled but not acknowledged:[/red] {escape(str(e))}; "
+            "the next poll will receive these updates again"
+        )
+        raise SystemExit(1) from e
+
+
 @click.command("serve")
 @click.option("--once", is_flag=True, help="Drain the current backlog and exit (cron/testing).")
 @click.option("--timeout", default=30, help="Long-poll timeout in seconds.")
@@ -283,4 +304,6 @@ def serve_cmd(once: bool, timeout: int) -> None:
         if updates:
             offset = _dispatch_batch(updates, trusted)
         if once:
+            if updates:
+                _acknowledge(offset, console)
             break
