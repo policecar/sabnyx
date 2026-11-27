@@ -398,6 +398,23 @@ class TestTendAutoPromote:
         kinds = [e.kind for e in ledger.replay()]
         assert "atlas.promoted" in kinds
 
+    def test_defer_line_prints_frontmatter_text_literally(self, tmp_vault, monkeypatch):
+        """The defer reason quotes the file's `source_agent`. Printed
+        unescaped, `[/b]` in that hand-editable value raised MarkupError and
+        aborted tend in pass 1 on every heartbeat."""
+        from sabnyx.commands import tend as tend_mod
+
+        _make_intake(
+            tmp_vault["INTAKE"], "my-bookmark", _good_meta("bookmark", source_agent="bot[/b]")
+        )
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        result = CliRunner().invoke(tend_mod.tend_cmd, ["--no-reweave", "--no-health"])
+
+        assert result.exit_code == 0, result.output
+        assert "source_agent 'bot[/b]' not in trusted set" in result.output
+        assert "tend.completed" in [e.kind for e in ledger.replay()]
+
     def test_untrusted_bookmark_deferred(self, tmp_vault, monkeypatch):
         from sabnyx.commands import tend as tend_mod
 

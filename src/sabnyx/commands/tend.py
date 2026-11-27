@@ -451,7 +451,7 @@ def tend_cmd(
                 auto_promoted.append(p)
         else:
             reason_str = "; ".join(decision.reasons) if decision.reasons else "no reason"
-            console.print(f"  [dim]defer[/dim] {p.name}  ({reason_str})")
+            console.print(f"  [dim]defer[/dim] {escape(p.name)}  ({escape(reason_str)})")
             deferred.append(p)
 
     console.print(
