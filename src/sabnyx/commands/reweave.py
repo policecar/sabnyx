@@ -26,6 +26,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.markup import escape
 
 from .. import context, fm, ledger, llm, paths, retrieval, writers
 from .. import observations as obs
@@ -246,14 +247,23 @@ def reweave_one(
     observations → ledger ``reweave.completed``.
 
     Returns ``(files_linked, observations_written)`` when changes are applied,
-    or ``None`` on a dry run or when the operator declines (intent left
-    pending). Callers own their per-target framing and decide whether to call
+    or ``None`` on a dry run, when the operator declines, or when the target's
+    own frontmatter is invalid (intent left pending in all three). Callers own their per-target framing and decide whether to call
     this under --dry-run at all: tend skips it to avoid the LLM call, while
     reweave_cmd calls it to preview the changeset.
     """
+    try:
+        user = _context_for(tgt, index)
+    except fm.FrontmatterError as e:
+        # The target itself does not validate (a hand-edit typo). Skip it, as
+        # _apply_links skips such a link target: raising here stopped the
+        # whole queue at this page on every run. No LLM call, no ledger
+        # event, so it stays pending until the page is repaired.
+        console.print(f"  [red]skip (invalid frontmatter)[/red] {escape(str(e.errors))}")
+        return None
     changeset = llm.parse_structured(
         task_system=_TASK_SYSTEM,
-        user=_context_for(tgt, index),
+        user=user,
         output_format=ReweaveChangeset,
         role=role,
         actor=actor,
