@@ -1495,6 +1495,27 @@ class TestTendRobustness:
         assert "skip (invalid)" in result.output
         # the good file was still promoted and the run completed
         assert (tmp_vault["ATLAS_REFERENCES"] / "good-bookmark.md").exists()
+
+    def test_malformed_yaml_quoting_markup_does_not_abort_run(self, tmp_vault, monkeypatch):
+        """The YAML error text quotes the offending line. With `[/b]` on it,
+        printing the error as rich markup raised MarkupError in pass 1 and
+        aborted the run the skip was meant to protect."""
+        from sabnyx.commands import tend as tend_mod
+
+        (tmp_vault["INTAKE"] / "broken.md").write_text(
+            "---\ntype: note\ntags: [/b] [unclosed\n---\nbody\n", encoding="utf-8"
+        )
+        _make_intake(tmp_vault["INTAKE"], "good-bookmark", _good_meta("bookmark"))
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        result = CliRunner().invoke(
+            tend_mod.tend_cmd, ["--no-reweave", "--no-health"], catch_exceptions=False
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "skip (invalid) broken.md" in result.output
+        assert "[/b]" in result.output
+        assert (tmp_vault["ATLAS_REFERENCES"] / "good-bookmark.md").exists()
         assert "tend complete" in result.output
         assert "tend.completed" in [e.kind for e in ledger.replay()]
 

@@ -167,7 +167,9 @@ def _apply_links(
         try:
             meta, body = fm.load_text(raw, fm.classify(path), path=path)
         except fm.FrontmatterError as e:
-            console.print(f"  [red]skip (invalid frontmatter)[/red] {add.file}: {e.errors}")
+            console.print(
+                f"  [red]skip (invalid frontmatter)[/red] {escape(add.file)}: {escape(str(e.errors))}"
+            )
             continue
 
         existing = {link.lower() for link in extract_wikilinks(body)}
@@ -204,7 +206,9 @@ def _apply_links(
         except ValueError as e:
             # half-open or ambiguous marker block (manual edit damage): report
             # and skip the file rather than nest/duplicate markers (SPEC §8)
-            console.print(f"  [red]skip (corrupt marker block)[/red] {add.file}: {e}")
+            console.print(
+                f"  [red]skip (corrupt marker block)[/red] {escape(add.file)}: {escape(str(e))}"
+            )
             continue
         patched = head + new_raw_body
         after_meta, _ = fm.load_text(patched, fm.classify(path), path=path)

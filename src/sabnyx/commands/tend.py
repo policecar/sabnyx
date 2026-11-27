@@ -414,12 +414,12 @@ def tend_cmd(
         try:
             meta, _body, kind = fm.load(p)
         except fm.FrontmatterError as e:
-            console.print(f"  [red]skip (invalid)[/red] {p.name}: {e.errors}")
+            console.print(f"  [red]skip (invalid)[/red] {escape(p.name)}: {escape(str(e.errors))}")
             deferred.append(p)
             continue
         except Exception as e:
             # Per-file robustness: one unreadable file must not abort the run.
-            console.print(f"  [red]skip (unreadable)[/red] {p.name}: {e}")
+            console.print(f"  [red]skip (unreadable)[/red] {escape(p.name)}: {escape(str(e))}")
             deferred.append(p)
             continue
 
@@ -445,7 +445,7 @@ def tend_cmd(
                     # get false-positive "no duplicate" passes.
                     atlas_slugs.add(p.stem.lower())
                 except Exception as e:
-                    console.print(f"  [red]promote failed:[/red] {e}")
+                    console.print(f"  [red]promote failed:[/red] {escape(str(e))}")
                     deferred.append(p)
             else:
                 auto_promoted.append(p)
@@ -532,7 +532,7 @@ def tend_cmd(
                             # Fail closed: provenance can't be established from
                             # invalid frontmatter, and promote_file would refuse
                             # the file anyway. Report and continue (M3 contract).
-                            console.print(f"  [red]promote failed:[/red] {e}")
+                            console.print(f"  [red]promote failed:[/red] {escape(str(e))}")
                             _record_triage_decision(
                                 path,
                                 slug=item.slug,
@@ -629,7 +629,7 @@ def tend_cmd(
                             llm_triaged += 1
                             atlas_slugs.add(path.stem.lower())
                         except Exception as e:
-                            console.print(f"  [red]promote failed:[/red] {e}")
+                            console.print(f"  [red]promote failed:[/red] {escape(str(e))}")
                             _record_triage_decision(
                                 path,
                                 slug=item.slug,
