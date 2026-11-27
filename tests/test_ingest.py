@@ -400,6 +400,29 @@ def test_url_ingest_is_non_trusted_provenance(tmp_vault, monkeypatch):
     assert services.ACTOR_INGEST_WEB not in config.trusted_sources()
 
 
+def test_url_ingest_fetches_and_stores_the_normalized_url(tmp_vault, monkeypatch):
+    """`sabnyx ingest --url` and Telegram must agree on what one page is
+    called: the URL is normalized before it is fetched and before it is
+    written into the source's provenance header."""
+    from sabnyx.commands import ingest as ingest_mod
+
+    fetched: list[str] = []
+
+    def fetch(url: str) -> str:
+        fetched.append(url)
+        return "remote body text\n"
+
+    monkeypatch.setattr(ingest_mod.sources, "fetch_url", fetch)
+    result, _ = _run_ingest(
+        tmp_vault, monkeypatch, ["--url", "https://Example.net/post?utm_source=feed#top", "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert fetched == ["https://example.net/post"]
+    (source,) = tmp_vault["SOURCES"].glob("*.md")
+    assert source.read_text().startswith("<!-- source-url: https://example.net/post -->\n")
+
+
 def test_auto_promote_rejects_web_provenance():
     from sabnyx import services
 
