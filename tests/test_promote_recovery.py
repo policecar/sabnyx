@@ -45,7 +45,9 @@ def _bookmark(tmp_vault, slug: str = "interrupted-promotion-bookmark") -> Path:
         "source_url: https://example.net/resource\n"
         "status: draft\n"
         "source_agent: sabnyx-ingest\n"
-        "created: 2026-10-29T12:00:00+00:00\n"
+        # Fresh on every run: tend triages by LLM once the oldest intake item is
+        # past --max-age-days, and these tests are not about triage.
+        f"created: {ledger.now().isoformat(timespec='seconds')}\n"
         "---\n"
         f"# {slug}\n\nbody\n",
         encoding="utf-8",
