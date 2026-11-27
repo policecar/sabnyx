@@ -191,6 +191,67 @@ def test_reweave_pending_applies_guarded_changeset(tmp_vault, monkeypatch):
     assert "nothing to do" in result2.output
 
 
+def test_target_with_invalid_frontmatter_is_skipped_not_fatal(tmp_vault, monkeypatch):
+    """One hand-edited page with a typo'd key must not stop the queue.
+
+    The broken page keeps its place at the head of the queue, so a raw
+    FrontmatterError from building its context aborted every run before any
+    later target was reached. It is skipped (and stays pending for the run
+    after it is fixed); the next target is still reweaved."""
+    from sabnyx.commands import reweave as rw
+
+    concepts = tmp_vault["ATLAS_CONCEPTS"]
+    broken = _make_atlas_file(
+        concepts, "gamma", "a concept about gamma things, long enough to pass"
+    )
+    target = _make_atlas_file(concepts, "alpha", "a concept about alpha things, long enough yes")
+    _make_atlas_file(concepts, "beta", "a concept about beta things, also long enough to pass")
+    broken_rel = str(broken.relative_to(tmp_vault["DATA_ROOT"]))
+    rel = str(target.relative_to(tmp_vault["DATA_ROOT"]))
+    _propose_reweave(broken_rel)  # queued first
+    _propose_reweave(rel)
+    text = broken.read_text(encoding="utf-8")
+    broken.write_text(text.replace("status: final", "staus: final", 1), encoding="utf-8")
+    assert "staus: final" in broken.read_text(encoding="utf-8")
+
+    result, calls = _run_reweave(monkeypatch, ["--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "skip (invalid frontmatter)" in result.output
+    # the broken page cost no LLM call; the page behind it was reweaved
+    assert [c["purpose"] for c in calls] == ["reweave:alpha"]
+    completed = [e.subject for e in ledger.replay() if e.kind == "reweave.completed"]
+    assert completed == [rel]
+    # still pending: it is picked up again once the page is repaired
+    assert rw._pending_targets() == [broken]
+
+
+def test_tend_reweave_pass_survives_a_broken_target(tmp_vault, monkeypatch):
+    """The heartbeat's reweave pass shares reweave_one: the same broken page
+    must not raise out of tend (which would also skip gap closure)."""
+    from rich.console import Console
+
+    from sabnyx.commands import reweave as rw
+    from sabnyx.commands import tend
+
+    concepts = tmp_vault["ATLAS_CONCEPTS"]
+    broken = _make_atlas_file(
+        concepts, "gamma", "a concept about gamma things, long enough to pass"
+    )
+    target = _make_atlas_file(concepts, "alpha", "a concept about alpha things, long enough yes")
+    _make_atlas_file(concepts, "beta", "a concept about beta things, also long enough to pass")
+    _propose_reweave(str(broken.relative_to(tmp_vault["DATA_ROOT"])))
+    _propose_reweave(str(target.relative_to(tmp_vault["DATA_ROOT"])))
+    text = broken.read_text(encoding="utf-8")
+    broken.write_text(text.replace("status: final", "staus: final", 1), encoding="utf-8")
+    monkeypatch.setattr(rw.llm, "parse_structured", lambda **kwargs: CANNED)
+
+    reweaved = tend._reweave_pending(dry_run=False, yes=True, console=Console(quiet=True))
+
+    assert reweaved == 1
+    assert rw._pending_targets() == [broken]
+
+
 def test_reweave_observation_records_producer_reweave(tmp_vault, monkeypatch):
     from sabnyx import observations
 
