@@ -198,3 +198,47 @@ def test_a_repeat_is_recognised_whatever_line_breaks_the_body_has(tmp_vault, bod
     assert first.kind == "written"
     assert again.kind == "exists"
     assert _intake_names(tmp_vault) == ["meeting-notes.md"]
+
+
+def test_a_suffixed_capture_does_not_pass_the_duplicate_slug_gate(tmp_vault, monkeypatch):
+    """Gate 5 (no atlas page under this slug yet) compared the file stem, so
+    `some-article-2` was auto-promoted beside atlas/some-article.md: a second
+    page for one title, past the gate meant to stop it. The gate checks the
+    title's slug; the capture stays in intake for the operator."""
+    from click.testing import CliRunner
+
+    from sabnyx.commands import tend as tend_mod
+
+    monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+    def capture(body: str):
+        return write_intake(
+            ProposedIntake(
+                type="bookmark", title="Some Article", description=DESCRIPTION, tags=[], body=body
+            ),
+            actor="sabnyx-ingest",
+            source="web",
+            source_url="https://example.com/a",
+            console=QUIET,
+        )
+
+    def tend() -> None:
+        result = CliRunner().invoke(
+            tend_mod.tend_cmd, ["--no-reweave", "--no-health"], catch_exceptions=False
+        )
+        assert result.exit_code == 0, result.output
+
+    def atlas() -> list[str]:
+        return sorted(p.name for p in tmp_vault["ATLAS"].rglob("*.md"))
+
+    capture("first read")
+    tend()
+    assert atlas() == ["some-article.md"]
+
+    capture("second read")  # the name is free again in intake; the stem is blocked
+    third = capture("third read")
+    assert third.rel == "vault/intake/some-article-2.md"
+    tend()
+
+    assert atlas() == ["some-article.md"]
+    assert _intake_names(tmp_vault) == ["some-article-2.md", "some-article.md"]
