@@ -114,6 +114,21 @@ def _telegram(monkeypatch, bodies: list[str], texts: list[str]) -> list[str]:
     return sent
 
 
+def test_a_repeat_is_skipped_even_when_an_earlier_name_is_free(tmp_vault):
+    """Promotion moves intake files away, leaving gaps in the suffixes. The
+    repeat check must look at every taken name, not stop at the first gap."""
+    _write("monday: budget")
+    _write("tuesday: hiring")
+    third = _write("wednesday: roadmap")
+    (tmp_vault["INTAKE"] / "meeting-notes-2.md").unlink()
+
+    again = _write("wednesday: roadmap")
+
+    assert again.kind == "exists"
+    assert again.rel == third.rel
+    assert _intake_names(tmp_vault) == ["meeting-notes-3.md", "meeting-notes.md"]
+
+
 def test_telegram_files_a_second_capture_with_the_same_title(tmp_vault, monkeypatch):
     sent = _telegram(
         monkeypatch,

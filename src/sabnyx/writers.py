@@ -92,11 +92,12 @@ def write_intake(
     text = f"# {pi.title}\n\n{pi.body.strip()}"
     names = [slug, *(f"{slug}-{n}" for n in range(2, _MAX_SUFFIX + 1))]
     path = None
+    # Every taken name is compared, not only those before the first free one:
+    # promotion moves intake files away and leaves gaps in the suffixes.
     for candidate in (paths.INTAKE / f"{name}.md" for name in names):
         if not candidate.exists():
-            path = candidate
-            break
-        if _intake_text(candidate) == text:
+            path = path or candidate
+        elif _intake_text(candidate) == text:
             rel = str(candidate.relative_to(paths.DATA_ROOT))
             ledger.append_event(
                 kind="intake.skipped",
