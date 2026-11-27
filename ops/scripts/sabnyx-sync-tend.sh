@@ -16,6 +16,14 @@ SABNYX_CODE_DIR="${SABNYX_CODE_DIR/#\~/$HOME}"   # ~ expansion, same as paths.py
 SABNYX_DATA_DIR="${SABNYX_DATA_DIR:-$HOME/sabnyx-vault}"
 # paths.py applies expanduser(); mirror it so `~/...` in the env file works here too.
 SABNYX_DATA_DIR="${SABNYX_DATA_DIR/#\~/$HOME}"
+# Export it: when the variable was not already in the environment, the default
+# above is only a shell variable, and `sabnyx tend` below would resolve its own
+# root (.env, else the code checkout) — a different tree from the one this
+# script pulls, locks and commits. A real env var beats .env in paths.py, so
+# tend then works on the directory this script syncs. That holds for an
+# absolute path: a relative one is resolved against this script's start
+# directory here and against the code checkout in tend, so do not use one.
+export SABNYX_DATA_DIR
 
 [ -d "$SABNYX_CODE_DIR" ] || { echo "sabnyx code dir not found: $SABNYX_CODE_DIR" >&2; exit 1; }
 [ -d "$SABNYX_DATA_DIR" ] || { echo "sabnyx data dir not found: $SABNYX_DATA_DIR" >&2; exit 1; }

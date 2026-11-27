@@ -389,9 +389,15 @@ git -C ~/sabnyx-vault status -sb | head -1                      # expected below
 | `SABNYX_INGRESS_MAX_CALLS` | rolling-window LLM call cap shared by `serve` + `serve-http` (default `60`; `<= 0` disables it; non-integer fails fast at startup). Unit is **requests to the LLM tier**, not provider calls: a schema-repair re-ask costs a second full-price call this cap doesn't see, so each counted request can cost up to `1 + _MAX_REPAIR_ATTEMPTS` (currently 2) provider calls — size accordingly | no |
 | `SABNYX_INGRESS_WINDOW_MINUTES` | window size (minutes) for the above (default `60`; must be an integer `>= 1`, fails fast at startup otherwise — `0` would silently disable the cap) | no |
 
-`sabnyx-sync-tend.sh` reads `SABNYX_DATA_DIR` too, with the same precedence
-(real env var over `.env`) — relocating the vault via this variable moves
-the heartbeat script's target along with everything else.
+`sabnyx-sync-tend.sh` reads `SABNYX_DATA_DIR` too, but only from its
+environment: it does not read `.env` itself (the systemd unit's
+`EnvironmentFile` supplies the variable for timer runs), and when the
+variable is unset it uses `~/sabnyx-vault`. It exports the directory it
+settled on, so the `tend` it runs works on that same directory —
+relocating the vault via this variable moves the heartbeat script's target
+along with everything else. Give it as an absolute path (or `~/…`): the
+script and `tend` resolve a relative path against different directories. For a manual run with a relocated vault, load
+`.env` first (`set -a; . ~/sabnyx/.env; set +a`).
 
 ---
 
