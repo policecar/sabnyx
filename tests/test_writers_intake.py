@@ -9,6 +9,7 @@ Real files under tmp_vault; the ledger is read back with ledger.replay().
 
 from __future__ import annotations
 
+import pytest
 from rich.console import Console
 
 from sabnyx import ledger, paths, services
@@ -179,3 +180,21 @@ def test_capture_answer_files_a_different_answer_under_the_same_title(tmp_vault)
     assert (first.kind, second.kind) == ("written", "written")
     assert _intake_names(tmp_vault) == ["meeting-notes-2.md", "meeting-notes.md"]
     assert paths.KNOWLEDGE_LOG.read_text().count("ask-capture") == 2
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["a\r\nb", "a\rb", "a\x0cb", "a b", "a\x85b", "", "  \n"],
+    ids=["crlf", "cr", "form-feed", "line-separator", "nel", "empty", "whitespace"],
+)
+def test_a_repeat_is_recognised_whatever_line_breaks_the_body_has(tmp_vault, body):
+    """The file side of the comparison goes through read_text and splitlines,
+    which rewrite CRLF, form feeds (PDF text) and Unicode line separators.
+    The proposed side must be normalised the same way, or every repeat of
+    such a body is filed again as `-2`, `-3`, ..."""
+    first = _write(body)
+    again = _write(body)
+
+    assert first.kind == "written"
+    assert again.kind == "exists"
+    assert _intake_names(tmp_vault) == ["meeting-notes.md"]
