@@ -679,6 +679,47 @@ class TestTendLLMTriage:
         assert (tmp_vault["INTAKE"] / "note-0.md").exists()  # kept in intake
         assert "atlas.promoted" not in [e.kind for e in ledger.replay()]
 
+    def test_llm_promote_of_a_suffixed_duplicate_is_skipped(self, tmp_vault, monkeypatch):
+        """write_intake files a second capture of a taken title as `slug-2`.
+        Once the title's page is in atlas, an LLM 'promote' for the suffixed
+        file must be skipped like one for the plain slug, or the title gets a
+        second atlas page."""
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        _make_atlas(tmp_vault["ATLAS_CONCEPTS"], "weekly-sync")
+        _make_intake(
+            tmp_vault["INTAKE"], "weekly-sync-2", _good_meta("note"), "# Weekly sync\n\nmore\n"
+        )
+        for i in range(4):
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note"))
+
+        batch = TriageBatch(
+            items=[
+                TriageItem(
+                    slug="weekly-sync-2", action="promote", atlas_type="concept", reason="dup"
+                ),
+                *[
+                    TriageItem(slug=f"note-{i}", action="keep", atlas_type=None, reason="ok")
+                    for i in range(4)
+                ],
+            ]
+        )
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+
+        result = CliRunner().invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert "skip promote" in result.output
+
+        assert (tmp_vault["INTAKE"] / "weekly-sync-2.md").exists()  # kept in intake
+        assert not (tmp_vault["ATLAS_CONCEPTS"] / "weekly-sync-2.md").exists()
+        assert "atlas.promoted" not in [e.kind for e in ledger.replay()]
+
     def test_keep_and_discard_decisions_are_ledgered(self, tmp_vault, monkeypatch):
         """DEC-02: 'note it' must survive an unattended run — as ledger events,
         not console output alone."""
