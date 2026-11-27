@@ -26,6 +26,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.markup import escape
 
 from .. import context, fm, ledger, llm, paths, retrieval, writers
 from .. import observations as obs
@@ -159,7 +160,7 @@ def _apply_links(
         # index keys are lowercased slugs (context.slug_index)
         path = index.get(add.file.lower())
         if path is None:
-            console.print(f"  [yellow]drop[/yellow] unknown file slug: {add.file}")
+            console.print(f"  [yellow]drop[/yellow] unknown file slug: {escape(add.file)}")
             continue
         # bytes → str without universal-newline translation (CRLF survives)
         raw = path.read_bytes().decode("utf-8")
@@ -184,7 +185,9 @@ def _apply_links(
                 # second is dropped as a duplicate, not silently uncounted.
                 dropped.append(link)
         if dropped:
-            console.print(f"  [dim]drop (unknown/self/duplicate): {', '.join(dropped)}[/dim]")
+            console.print(
+                f"  [dim]drop (unknown/self/duplicate): {escape(', '.join(dropped))}[/dim]"
+            )
         if not new_links:
             continue
 
@@ -226,8 +229,9 @@ def _apply_links(
             },
         )
         console.print(
-            f"  [green]linked[/green] {rel} += {', '.join(f'[[{link}]]' for link in new_links)} "
-            f"[dim]({add.priority}: {add.reason})[/dim]"
+            f"  [green]linked[/green] {escape(rel)} += "
+            f"{escape(', '.join(f'[[{link}]]' for link in new_links))} "
+            f"[dim]({add.priority}: {escape(add.reason)})[/dim]"
         )
     return modified
 
@@ -260,14 +264,14 @@ def reweave_one(
         purpose=f"reweave:{tgt.stem}",
     )
 
-    console.print(f"[bold]Proposed:[/bold] {changeset.summary}")
+    console.print(f"[bold]Proposed:[/bold] {escape(changeset.summary)}")
     for add in changeset.related_additions:
         console.print(
-            f"  [green]+ links[/green] {add.file} += "
-            f"{', '.join(add.add_links)} [dim]({add.priority}: {add.reason})[/dim]"
+            f"  [green]+ links[/green] {escape(add.file)} += "
+            f"{escape(', '.join(add.add_links))} [dim]({add.priority}: {escape(add.reason)})[/dim]"
         )
     for ob in changeset.observations:
-        console.print(f"  [yellow]+ observation[/yellow] ({ob.category}) {ob.title}")
+        console.print(f"  [yellow]+ observation[/yellow] ({ob.category}) {escape(ob.title)}")
     if not changeset.related_additions and not changeset.observations:
         console.print("  [dim]nothing qualifies — graph already coherent[/dim]")
 

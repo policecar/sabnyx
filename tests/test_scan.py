@@ -145,6 +145,33 @@ def test_scan_skips_tiny_atlas(tmp_vault, monkeypatch):
 _DESC = "a concept page long enough to satisfy the atlas description schema"
 
 
+def test_scan_prints_model_text_literally_and_files_the_finding(tmp_vault, monkeypatch):
+    """Summary and titles are model output. Unescaped, a `[/r/python]` raised
+    MarkupError after scan.completed was ledgered and before any finding was
+    filed, so the paid scan's findings were all lost."""
+    c = tmp_vault["ATLAS_CONCEPTS"]
+    _atlas(c, "alpha", "a concept about alpha, long enough to satisfy the schema")
+    _atlas(c, "beta", "a concept about beta, also long enough to satisfy the schema")
+    scan = ContradictionScan(
+        summary="one conflict, see [/r/python]",
+        findings=[
+            ProposedObservation(
+                category="contradiction",
+                title="[[alpha]] vs [/beta]",
+                body="alpha says X; beta says not-X.",
+                involves=["alpha.md", "beta.md"],
+            )
+        ],
+    )
+
+    result, _calls = _run_scan(monkeypatch, ["--yes"], scan=scan)
+
+    assert result.exit_code == 0, result.output
+    assert "one conflict, see [/r/python]" in result.output
+    assert "[[alpha]] vs [/beta]" in result.output
+    assert len(list(tmp_vault["OBSERVATIONS"].glob("*-contradiction-*.md"))) == 1
+
+
 def _four_pages(tmp_vault):
     for slug in ("alpha", "beta", "gamma", "delta"):
         _atlas(tmp_vault["ATLAS_CONCEPTS"], slug, f"{slug}: {_DESC}")

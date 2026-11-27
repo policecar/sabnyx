@@ -679,6 +679,36 @@ class TestTendLLMTriage:
         assert (tmp_vault["INTAKE"] / "note-0.md").exists()  # kept in intake
         assert "atlas.promoted" not in [e.kind for e in ledger.replay()]
 
+    def test_llm_reason_with_markup_characters_is_printed_not_parsed(self, tmp_vault, monkeypatch):
+        """A triage reason is model output. Printed unescaped, `[/b]` raised
+        MarkupError mid-batch (later keep decisions were never ledgered) and a
+        `[[wikilink]]` was swallowed from the line."""
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        for i in range(5):
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note"))
+        reasons = ["see [/b] tag", "dup of [[alpha]]", "ok", "ok", "ok"]
+        batch = TriageBatch(
+            items=[
+                TriageItem(slug=f"note-{i}", action="keep", atlas_type=None, reason=reasons[i])
+                for i in range(5)
+            ]
+        )
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+
+        result = CliRunner().invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "(see [/b] tag)" in result.output
+        assert "(dup of [[alpha]])" in result.output
+        decided = [e for e in ledger.replay() if e.kind == "triage.decided"]
+        assert len(decided) == 5  # the whole batch was recorded
+
     def test_keep_and_discard_decisions_are_ledgered(self, tmp_vault, monkeypatch):
         """DEC-02: 'note it' must survive an unattended run — as ledger events,
         not console output alone."""

@@ -83,7 +83,7 @@ def ask_cmd(question: str, role: ModelRole | None, capture_flag: bool | None, ye
     pi = answer.capture
     console.print(
         f"\n[bold]capture proposed:[/bold] {slugify(pi.title)}.md ({pi.type})\n"
-        f"  [dim]{pi.description}[/dim]"
+        f"  [dim]{escape(pi.description)}[/dim]"
     )
     accept = capture_flag is True or yes or click.confirm("file into intake/?", default=True)
     if not accept:

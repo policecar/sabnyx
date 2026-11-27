@@ -191,6 +191,35 @@ def test_reweave_pending_applies_guarded_changeset(tmp_vault, monkeypatch):
     assert "nothing to do" in result2.output
 
 
+def test_reweave_prints_model_text_and_wikilinks_literally(tmp_vault, monkeypatch):
+    """Summary, reasons and link names are model output. Unescaped, a `[/i]`
+    in the summary raised MarkupError after the paid call and before
+    reweave.completed (so every later run repeated both), and the "linked"
+    line printed `+= []` with the link name gone."""
+    from sabnyx.commands import reweave as rw
+
+    concepts = tmp_vault["ATLAS_CONCEPTS"]
+    target = _make_atlas_file(concepts, "alpha", "a concept about alpha things, long enough yes")
+    _make_atlas_file(concepts, "beta", "a concept about beta things, also long enough to pass")
+    rel = str(target.relative_to(tmp_vault["DATA_ROOT"]))
+    _propose_reweave(rel)
+    changeset = ReweaveChangeset(
+        summary="alpha [/i] bridges to [[beta]]",
+        related_additions=[
+            RelatedAddition(file="beta", add_links=["alpha"], reason="see [/b]", priority="bridge")
+        ],
+        observations=[],
+    )
+    monkeypatch.setattr(rw.llm, "parse_structured", lambda **kwargs: changeset)
+
+    result = CliRunner().invoke(rw.reweave_cmd, ["--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "Proposed: alpha [/i] bridges to [[beta]]" in result.output
+    assert "beta.md += [[alpha]] (bridge: see [/b])" in result.output
+    assert [e.subject for e in ledger.replay() if e.kind == "reweave.completed"] == [rel]
+
+
 def test_reweave_observation_records_producer_reweave(tmp_vault, monkeypatch):
     from sabnyx import observations
 

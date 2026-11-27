@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from .. import context, fm, ledger, paths, writers
@@ -129,7 +130,12 @@ def list_cmd(type_: str | None) -> None:
     table.add_column("description", overflow="fold")
     for slug, atlas_type, meta in pages:
         aliases = ", ".join(meta.get("aliases", []) or [])
-        table.add_row(atlas_type, slug, aliases or "[dim]—[/dim]", meta.get("description", ""))
+        table.add_row(
+            atlas_type,
+            escape(slug),
+            escape(aliases) or "[dim]—[/dim]",
+            escape(str(meta.get("description", ""))),
+        )
     console.print(table)
     console.print(f"[dim]{len(pages)} entity page(s)[/dim]")
 
@@ -277,7 +283,7 @@ def resolve_cmd() -> None:
         for tok in sorted(collisions):
             owners = collisions[tok]
             claimants = "; ".join(f"{s} ({how})" for s, how in sorted(owners.items()))
-            table.add_row(tok, claimants)
+            table.add_row(escape(tok), escape(claimants))
         console.print(table)
         console.print(
             f"[yellow]{len(collisions)} collision(s)[/yellow] — review and merge manually"
