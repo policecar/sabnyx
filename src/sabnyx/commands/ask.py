@@ -90,6 +90,6 @@ def ask_cmd(question: str, role: ModelRole | None, capture_flag: bool | None, ye
         console.print("[dim]declined; answer not captured[/dim]")
         return
 
-    rel = services.capture_answer(pi, question=question, console=console)
-    if rel:
+    out = services.capture_answer(pi, question=question, console=console)
+    if out.kind == "written":
         console.print("[green]captured[/green] — triage will route it like any intake")

@@ -127,7 +127,7 @@ def handle(env: NormalizedEnvelope) -> str:
         if result.answer.capture is not None:
             try:
                 with vault_lock():
-                    rel = services.capture_answer(
+                    out = services.capture_answer(
                         result.answer.capture, question=arg, console=_quiet(), actor=ACTOR
                     )
             except VaultLocked:
@@ -135,8 +135,10 @@ def handle(env: NormalizedEnvelope) -> str:
                 # busy lock, just note the (non-critical) capture was skipped.
                 reply += "\n\n(vault busy — not captured; try again shortly)"
             else:
-                if rel:
-                    reply += f"\n\n(captured to {rel})"
+                if out.kind == "written":
+                    reply += f"\n\n(captured to {out.rel})"
+                elif out.kind == "exists":
+                    reply += f"\n\n(already captured as {out.rel})"
         return reply
 
     # ingest_url / ingest_text
@@ -189,7 +191,7 @@ def _ingest(text: str, *, title: str, source_kind: str, source_url: str | None) 
         return str(e)
     if written:
         return f"{head}\n\nfiled {len(written)}: " + ", ".join(written)
-    return f"{head}\n\n(nothing new filed — already covered)"
+    return f"{head}\n\n(nothing new filed)"
 
 
 def _status() -> str:

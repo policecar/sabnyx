@@ -615,13 +615,15 @@ def apply_ingest(
     src_rel: str,
     console: Console,
     actor: str = ACTOR_INGEST,
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Write the proposed intake files + observations, log provenance,
-    ledger ingest.applied. Returns relative paths written."""
+    ledger ingest.applied. Returns (relative paths written, relative paths of
+    intake files that already hold a proposed file's text, so it was skipped)."""
     written: list[str] = []
+    duplicates: list[str] = []
     trailer = f"<!-- source-id:sabnyx-sources:{Path(src_rel).name} -->"
     for pi in proposal.changeset.intake_files:
-        rel = writers.write_intake(
+        intake = writers.write_intake(
             pi,
             actor=actor,
             source=source_kind,
@@ -629,8 +631,10 @@ def apply_ingest(
             trailer=trailer,
             console=console,
         )
-        if rel:
-            written.append(rel)
+        if intake.kind == "written":
+            written.append(intake.rel)
+        elif intake.kind == "exists":
+            duplicates.append(intake.rel)
     outcomes: list[writers.WriteOutcome] = []
     for ob in proposal.changeset.observations:
         out = writers.write_observation(ob, producer="ingest", actor=actor, console=console)
@@ -657,7 +661,7 @@ def apply_ingest(
     # One run = one ingest apply (IDD §6): dismissed signals it met are
     # counted once each, after ingest.applied.
     writers.ledger_suppressed(outcomes, actor=actor)
-    return written
+    return written, duplicates
 
 
 def record_ingest_failure(src_rel: str, *, actor: str, reason: str) -> None:
@@ -687,7 +691,9 @@ def ingest_text(
     """Capture raw text, then build and apply an ingest proposal.
 
     The whole capture -> propose -> apply pipeline every channel shares. Returns
-    ``(summary, written_paths)``. Identical retained sources are reused for
+    ``(summary, written_paths)``; the summary ends with a line naming any
+    proposed file that was not filed because an intake file already holds the
+    same text. Identical retained sources are reused for
     re-extraction. If extraction fails, the artifact remains intact and an
     ``ingest.failed`` event records the failed derivation.
     """
@@ -717,7 +723,7 @@ def ingest_text(
     except Exception as e:
         record_ingest_failure(src_rel, actor=actor, reason=f"{type(e).__name__}: {e}")
         raise
-    written = apply_ingest(
+    written, duplicates = apply_ingest(
         proposal,
         title=title,
         source_kind=source_kind,
@@ -726,7 +732,10 @@ def ingest_text(
         console=console,
         actor=actor,
     )
-    return proposal.changeset.summary, written
+    summary = proposal.changeset.summary
+    if duplicates:
+        summary += "\n\nnot filed again: same text as " + ", ".join(duplicates)
+    return summary, written
 
 
 # -- ask --------------------------------------------------------------------------------
@@ -833,18 +842,19 @@ def answer_question(
 
 def capture_answer(
     pi: ProposedIntake, *, question: str, console: Console, actor: str = ACTOR_ASK
-) -> str | None:
+) -> writers.WriteOutcome:
     """File a durable answer back into intake/ — Karpathy's 'good answers
-    become pages'. Returns the relative path, or None if skipped."""
-    rel = writers.write_intake(
+    become pages'. Returns write_intake's outcome: `written`, `exists` (an
+    intake file already holds this text; nothing filed) or `invalid`."""
+    out = writers.write_intake(
         pi,
         actor=actor,
         source="manual",
         trailer=f"<!-- source-id:sabnyx-ask:{date_cls.today().isoformat()} -->",
         console=console,
     )
-    if rel:
+    if out.kind == "written":
         writers.append_knowledge_log(
-            "ask-capture", pi.title, {"question": question[:200], "file": rel}
+            "ask-capture", pi.title, {"question": question[:200], "file": out.rel}
         )
-    return rel
+    return out

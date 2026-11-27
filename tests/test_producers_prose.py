@@ -83,7 +83,7 @@ def _apply(*observations: ProposedObservation, actor: str = services.ACTOR_INGES
         depth="shallow",
         role="fast",
     )
-    return services.apply_ingest(
+    written, _duplicates = services.apply_ingest(
         proposal,
         title="a source",
         source_kind="manual",
@@ -92,6 +92,7 @@ def _apply(*observations: ProposedObservation, actor: str = services.ACTOR_INGES
         console=_QUIET,
         actor=actor,
     )
+    return written
 
 
 def test_ingest_dismissed_signal_is_counted_once_per_apply(pages):
