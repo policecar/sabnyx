@@ -81,6 +81,25 @@ def test_changed_content_is_ingested_again(tmp_vault, monkeypatch):
     assert "ingest.skipped" not in _kinds()
 
 
+def test_new_text_under_a_freed_source_name_is_extracted(tmp_vault, monkeypatch):
+    """The earlier ingest is found by the source's file name. If that file
+    was removed and a different text takes the name, the old `ingest.applied`
+    is about other bytes: only an apply after the latest capture counts."""
+    calls = _model(monkeypatch)
+    _ingest("monday we set the budget")
+    (tmp_vault["SOURCES"] / "budget.md").unlink()
+
+    summary, written = _ingest("tuesday we cut the budget")
+
+    assert len(calls) == 2
+    assert "already ingested" not in summary
+    assert written == ["vault/intake/budget-notes-2.md"]
+    assert "ingest.skipped" not in _kinds()
+
+    _ingest("tuesday we cut the budget")  # and the new text is itself not repeated
+    assert len(calls) == 2
+
+
 def test_failed_extraction_can_still_be_retried(tmp_vault, monkeypatch):
     """ADR 0005: the retained source of a failed extraction is reused, not
     refused. Only a successful earlier ingest stops a repeat."""

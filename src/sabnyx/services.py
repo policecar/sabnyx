@@ -716,11 +716,17 @@ def ingest_text(
     # The capture above reuses an identical source so that a failed or declined
     # extraction can be retried (ADR 0005). One that already succeeded is not
     # paid for again; a deliberate re-extraction goes through `sabnyx ingest`.
-    earlier = [
-        e.payload.get("written", [])
-        for e in ledger.replay()
-        if e.kind == "ingest.applied" and e.subject == src_rel
-    ]
+    # Found by the source's file name, so only an apply after the name's
+    # latest capture counts: `capture` ledgers `source.captured` only when it
+    # publishes new bytes, e.g. under a name a removed source left free.
+    earlier: list[list[str]] = []
+    for e in ledger.replay():
+        if e.subject != src_rel:
+            continue
+        if e.kind == "source.captured":
+            earlier = []
+        elif e.kind == "ingest.applied":
+            earlier.append(e.payload.get("written", []))
     if earlier:
         ledger.append_event(
             kind="ingest.skipped",
