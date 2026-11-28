@@ -24,6 +24,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.markup import escape
 
 from .. import llm, services, sources
 from ..paths import DATA_ROOT, ensure_tree
@@ -131,10 +132,10 @@ def ingest_cmd(
     )
 
     changeset = proposal.changeset
-    console.print(f"\n[bold]Proposed:[/bold] {changeset.summary}\n")
+    console.print(f"\n[bold]Proposed:[/bold] {escape(changeset.summary)}\n")
     for pi in changeset.intake_files:
         console.print(f"  [green]+ intake[/green] {slugify(pi.title)}.md ({pi.type})")
-        console.print(f"    [dim]{pi.description}[/dim]")
+        console.print(f"    [dim]{escape(pi.description)}[/dim]")
     for ob in changeset.observations:
         console.print(f"  [yellow]+ observation[/yellow] ({ob.category}) {slugify(ob.title)}")
     if not changeset.intake_files and not changeset.observations:

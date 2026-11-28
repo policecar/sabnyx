@@ -45,7 +45,7 @@ def _write_checked(path, meta: dict, body: str, *, console: Console) -> str | No
     try:
         fm.load(path)  # belt + suspenders
     except fm.FrontmatterError as e:
-        console.print(f"  [red]invalid, rolled back:[/red] {e}")
+        console.print(f"  [red]invalid, rolled back:[/red] {escape(str(e))}")
         path.unlink()
         return None
     return str(path.relative_to(paths.DATA_ROOT))

@@ -46,6 +46,7 @@ from types import TracebackType
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from .. import context, fm, ledger, llm, tend_detectors, util, writers
@@ -413,12 +414,12 @@ def tend_cmd(
         try:
             meta, _body, kind = fm.load(p)
         except fm.FrontmatterError as e:
-            console.print(f"  [red]skip (invalid)[/red] {p.name}: {e.errors}")
+            console.print(f"  [red]skip (invalid)[/red] {escape(p.name)}: {escape(str(e.errors))}")
             deferred.append(p)
             continue
         except Exception as e:
             # Per-file robustness: one unreadable file must not abort the run.
-            console.print(f"  [red]skip (unreadable)[/red] {p.name}: {e}")
+            console.print(f"  [red]skip (unreadable)[/red] {escape(p.name)}: {escape(str(e))}")
             deferred.append(p)
             continue
 
@@ -444,13 +445,13 @@ def tend_cmd(
                     # get false-positive "no duplicate" passes.
                     atlas_slugs.add(p.stem.lower())
                 except Exception as e:
-                    console.print(f"  [red]promote failed:[/red] {e}")
+                    console.print(f"  [red]promote failed:[/red] {escape(str(e))}")
                     deferred.append(p)
             else:
                 auto_promoted.append(p)
         else:
             reason_str = "; ".join(decision.reasons) if decision.reasons else "no reason"
-            console.print(f"  [dim]defer[/dim] {p.name}  ({reason_str})")
+            console.print(f"  [dim]defer[/dim] {escape(p.name)}  ({escape(reason_str)})")
             deferred.append(p)
 
     console.print(
@@ -513,7 +514,9 @@ def tend_cmd(
                 for item in batch.items:
                     path = slug_to_path.get(item.slug.lower())
                     if path is None:
-                        console.print(f"  [yellow]unknown slug from LLM:[/yellow] {item.slug!r}")
+                        console.print(
+                            f"  [yellow]unknown slug from LLM:[/yellow] {escape(repr(item.slug))}"
+                        )
                         continue
 
                     if item.action == "promote" and item.atlas_type:
@@ -529,7 +532,7 @@ def tend_cmd(
                             # Fail closed: provenance can't be established from
                             # invalid frontmatter, and promote_file would refuse
                             # the file anyway. Report and continue (M3 contract).
-                            console.print(f"  [red]promote failed:[/red] {e}")
+                            console.print(f"  [red]promote failed:[/red] {escape(str(e))}")
                             _record_triage_decision(
                                 path,
                                 slug=item.slug,
@@ -543,8 +546,8 @@ def tend_cmd(
                         trusted_provenance = source_agent in trusted
                         if not trusted_provenance and yes:
                             console.print(
-                                f"  [yellow]skip promote[/yellow] {item.slug}: untrusted "
-                                f"provenance (source_agent={source_agent!r}; operator review "
+                                f"  [yellow]skip promote[/yellow] {escape(item.slug)}: untrusted "
+                                f"provenance (source_agent={escape(repr(source_agent))}; operator review "
                                 f"needed)"
                             )
                             _record_triage_decision(
@@ -564,7 +567,7 @@ def tend_cmd(
                         # LLM overwrite an existing atlas file.
                         if path.stem.lower() in atlas_slugs:
                             console.print(
-                                f"  [yellow]skip promote[/yellow] {item.slug}: slug already "
+                                f"  [yellow]skip promote[/yellow] {escape(item.slug)}: slug already "
                                 f"exists in atlas (kept in intake)"
                             )
                             _record_triage_decision(
@@ -577,8 +580,8 @@ def tend_cmd(
                             decided.add(path)
                             continue
                         console.print(
-                            f"  [bold]LLM promote[/bold] {item.slug} → {item.atlas_type}  "
-                            f"[dim]({item.reason})[/dim]"
+                            f"  [bold]LLM promote[/bold] {escape(item.slug)} → {item.atlas_type}  "
+                            f"[dim]({escape(item.reason)})[/dim]"
                         )
                         aborted = False
                         try:
@@ -626,7 +629,7 @@ def tend_cmd(
                             llm_triaged += 1
                             atlas_slugs.add(path.stem.lower())
                         except Exception as e:
-                            console.print(f"  [red]promote failed:[/red] {e}")
+                            console.print(f"  [red]promote failed:[/red] {escape(str(e))}")
                             _record_triage_decision(
                                 path,
                                 slug=item.slug,
@@ -637,11 +640,13 @@ def tend_cmd(
                             decided.add(path)
                     elif item.action in ("keep", "discard"):
                         if item.action == "keep":
-                            console.print(f"  [dim]keep[/dim] {item.slug}  ({item.reason})")
+                            console.print(
+                                f"  [dim]keep[/dim] {escape(item.slug)}  ({escape(item.reason)})"
+                            )
                         else:
                             console.print(
-                                f"  [yellow]discard (noted, not deleted)[/yellow] {item.slug}  "
-                                f"({item.reason})"
+                                f"  [yellow]discard (noted, not deleted)[/yellow] "
+                                f"{escape(item.slug)}  ({escape(item.reason)})"
                             )
                         # Persist the decision (DEC-02: note it, do not delete) so
                         # unattended runs leave a record, not just console output.

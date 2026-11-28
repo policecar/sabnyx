@@ -398,6 +398,23 @@ class TestTendAutoPromote:
         kinds = [e.kind for e in ledger.replay()]
         assert "atlas.promoted" in kinds
 
+    def test_defer_line_prints_frontmatter_text_literally(self, tmp_vault, monkeypatch):
+        """The defer reason quotes the file's `source_agent`. Printed
+        unescaped, `[/b]` in that hand-editable value raised MarkupError and
+        aborted tend in pass 1 on every heartbeat."""
+        from sabnyx.commands import tend as tend_mod
+
+        _make_intake(
+            tmp_vault["INTAKE"], "my-bookmark", _good_meta("bookmark", source_agent="bot[/b]")
+        )
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        result = CliRunner().invoke(tend_mod.tend_cmd, ["--no-reweave", "--no-health"])
+
+        assert result.exit_code == 0, result.output
+        assert "source_agent 'bot[/b]' not in trusted set" in result.output
+        assert "tend.completed" in [e.kind for e in ledger.replay()]
+
     def test_untrusted_bookmark_deferred(self, tmp_vault, monkeypatch):
         from sabnyx.commands import tend as tend_mod
 
@@ -678,6 +695,36 @@ class TestTendLLMTriage:
         assert existing.read_text() == original  # atlas file untouched
         assert (tmp_vault["INTAKE"] / "note-0.md").exists()  # kept in intake
         assert "atlas.promoted" not in [e.kind for e in ledger.replay()]
+
+    def test_llm_reason_with_markup_characters_is_printed_not_parsed(self, tmp_vault, monkeypatch):
+        """A triage reason is model output. Printed unescaped, `[/b]` raised
+        MarkupError mid-batch (later keep decisions were never ledgered) and a
+        `[[wikilink]]` was swallowed from the line."""
+        from sabnyx import services as svc_mod
+        from sabnyx.commands import tend as tend_mod
+
+        for i in range(5):
+            _make_intake(tmp_vault["INTAKE"], f"note-{i}", _good_meta("note"))
+        reasons = ["see [/b] tag", "dup of [[alpha]]", "ok", "ok", "ok"]
+        batch = TriageBatch(
+            items=[
+                TriageItem(slug=f"note-{i}", action="keep", atlas_type=None, reason=reasons[i])
+                for i in range(5)
+            ]
+        )
+        monkeypatch.setattr(svc_mod.llm, "parse_structured", lambda **kw: batch)
+
+        result = CliRunner().invoke(
+            tend_mod.tend_cmd,
+            ["--threshold", "5", "--yes", "--no-reweave", "--no-health"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "(see [/b] tag)" in result.output
+        assert "(dup of [[alpha]])" in result.output
+        decided = [e for e in ledger.replay() if e.kind == "triage.decided"]
+        assert len(decided) == 5  # the whole batch was recorded
 
     def test_keep_and_discard_decisions_are_ledgered(self, tmp_vault, monkeypatch):
         """DEC-02: 'note it' must survive an unattended run — as ledger events,
@@ -1464,6 +1511,27 @@ class TestTendRobustness:
         assert result.exit_code == 0, result.output
         assert "skip (invalid)" in result.output
         # the good file was still promoted and the run completed
+        assert (tmp_vault["ATLAS_REFERENCES"] / "good-bookmark.md").exists()
+
+    def test_malformed_yaml_quoting_markup_does_not_abort_run(self, tmp_vault, monkeypatch):
+        """The YAML error text quotes the offending line. With `[/b]` on it,
+        printing the error as rich markup raised MarkupError in pass 1 and
+        aborted the run the skip was meant to protect."""
+        from sabnyx.commands import tend as tend_mod
+
+        (tmp_vault["INTAKE"] / "broken.md").write_text(
+            "---\ntype: note\ntags: [/b] [unclosed\n---\nbody\n", encoding="utf-8"
+        )
+        _make_intake(tmp_vault["INTAKE"], "good-bookmark", _good_meta("bookmark"))
+        monkeypatch.setenv("SABNYX_TRUSTED_SOURCES", "sabnyx-ingest")
+
+        result = CliRunner().invoke(
+            tend_mod.tend_cmd, ["--no-reweave", "--no-health"], catch_exceptions=False
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "skip (invalid) broken.md" in result.output
+        assert "[/b]" in result.output
         assert (tmp_vault["ATLAS_REFERENCES"] / "good-bookmark.md").exists()
         assert "tend complete" in result.output
         assert "tend.completed" in [e.kind for e in ledger.replay()]

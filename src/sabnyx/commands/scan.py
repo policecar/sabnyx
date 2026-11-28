@@ -24,6 +24,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.markup import escape
 
 from .. import context, ledger, llm, paths, retrieval, writers
 from ..paths import ensure_tree
@@ -144,13 +145,15 @@ def scan_cmd(role: ModelRole, yes: bool, dry_run: bool) -> None:
             },
         )
 
-    console.print(f"\n[bold]{result.summary}[/bold]")
+    console.print(f"\n[bold]{escape(result.summary)}[/bold]")
     if dup:
         console.print(f"[dim]{dup} finding(s) already tracked — skipped[/dim]")
     if suppressed:
         console.print(f"[dim]{len(suppressed)} finding(s) dismissed earlier — not filed[/dim]")
     for f in fresh:
-        console.print(f"  [yellow]contradiction[/yellow] {', '.join(f.involves)} — {f.title}")
+        console.print(
+            f"  [yellow]contradiction[/yellow] {escape(', '.join(f.involves))} — {escape(f.title)}"
+        )
     if not fresh:
         console.print("[green]no new contradictions[/green]")
     if dry_run:

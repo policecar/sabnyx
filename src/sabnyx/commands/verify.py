@@ -18,6 +18,7 @@ import sys
 
 import click
 from rich.console import Console
+from rich.markup import escape
 
 from .. import llm
 from ..schemas import HealthProbe, ModelRole
@@ -91,11 +92,11 @@ def verify_cmd(role: ModelRole, all_roles: bool) -> None:
                 max_tokens=2048,
             )
         except Exception as e:  # noqa: BLE001 — verify reports every failure mode
-            console.print(f"[red]{r}: FAILED[/red] — {type(e).__name__}: {e}")
+            console.print(f"[red]{r}: FAILED[/red] — {type(e).__name__}: {escape(str(e))}")
             failures += 1
             continue
         flag = "[green]ok[/green]" if result.ok else "[yellow]reachable but ok=false[/yellow]"
-        console.print(f"  {flag} — {result.note}")
+        console.print(f"  {flag} — {escape(result.note)}")
 
     # token usage / cache hits are on the ledger (llm.completed); point there
     console.print(
